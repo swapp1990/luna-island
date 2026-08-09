@@ -21,6 +21,18 @@ const COLORS: Record<TerrainKind, number> = {
   rock: 0x7a7a7a,
 }
 
+const FOREST_GROUND = 0x4a7a38 // slightly darker — reads as forest without a tree
+const PATH_COLOR = 0xc9b58a // packed dirt
+const PLAZA_STONE = 0xcfc6b3
+const FOLIAGE_A = 0x2f6b3a
+const FOLIAGE_B = 0x3d7d46
+const BOULDER_A = 0x8a8f98
+const BOULDER_B = 0x6f747c
+const BUSH_GREEN = 0x4e9b47
+const BERRY_RED = 0xd95d67
+const SHALLOW_WATER = 0x5fa3c9
+const DEEP_WATER = 0x3f7fae
+
 /** Render-only mulberry32 from tile coords — never touches sim rng. */
 function tileRng(x: number, y: number, salt: number): () => number {
   let a = ((x * 73856093) ^ (y * 19349663) ^ (salt * 83492791)) >>> 0
@@ -31,6 +43,28 @@ function tileRng(x: number, y: number, salt: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
+
+/** Deterministic [0,1) hash for sparse decoration decisions. */
+function tileHash01(x: number, y: number, salt: number): number {
+  return tileRng(x, y, salt)()
+}
+
+function isLandAdjacentWater(world: WorldState, x: number, y: number): boolean {
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ]
+  for (const [dx, dy] of dirs) {
+    const nx = x + dx
+    const ny = y + dy
+    if (nx < 0 || ny < 0 || nx >= world.width || ny >= world.height) continue
+    const t = world.tiles[ny * world.width + nx]!
+    if (t.kind !== 'water') return true
+  }
+  return false
 }
 
 export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHandle {
@@ -44,12 +78,12 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     return obj
   }
 
-  // Water: single plane
+  // Water: deep base plane + shallow quads on land-adjacent water tiles
   {
     const geo = track(new THREE.PlaneGeometry(world.width + 4, world.height + 4))
     const mat = track(
       new THREE.MeshStandardMaterial({
-        color: COLORS.water,
+        color: DEEP_WATER,
         transparent: true,
         opacity: 0.82,
         roughness: 0.35,
@@ -58,13 +92,48 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     )
     const mesh = new THREE.Mesh(geo, mat)
     mesh.rotation.x = -Math.PI / 2
-    mesh.position.set(world.width / 2 - 0.5, 0.06, world.height / 2 - 0.5)
+    mesh.position.set(world.width / 2 - 0.5, 0.04, world.height / 2 - 0.5)
     mesh.receiveShadow = true
     root.add(mesh)
+
+    const shallowTiles: Array<{ x: number; y: number }> = []
+    for (const tile of world.tiles) {
+      if (tile.kind !== 'water') continue
+      if (isLandAdjacentWater(world, tile.x, tile.y)) {
+        shallowTiles.push({ x: tile.x, y: tile.y })
+      }
+    }
+    if (shallowTiles.length > 0) {
+      const sGeo = track(new THREE.PlaneGeometry(1.02, 1.02))
+      const sMat = track(
+        new THREE.MeshStandardMaterial({
+          color: SHALLOW_WATER,
+          transparent: true,
+          opacity: 0.88,
+          roughness: 0.4,
+          metalness: 0.04,
+        }),
+      )
+      const sInst = new THREE.InstancedMesh(sGeo, sMat, shallowTiles.length)
+      sInst.receiveShadow = true
+      const dummy = new THREE.Object3D()
+      for (let i = 0; i < shallowTiles.length; i++) {
+        const t = shallowTiles[i]!
+        dummy.position.set(t.x, 0.065, t.y)
+        dummy.rotation.set(-Math.PI / 2, 0, 0)
+        dummy.scale.set(1, 1, 1)
+        dummy.updateMatrix()
+        sInst.setMatrixAt(i, dummy.matrix)
+      }
+      sInst.instanceMatrix.needsUpdate = true
+      root.add(sInst)
+    }
   }
 
-  // Collect tile positions per kind (excluding water)
-  const byKind: Record<Exclude<TerrainKind, 'water'>, Array<{ x: number; y: number; elev: number }>> = {
+  // Collect land tiles
+  type LandTile = { x: number; y: number; elev: number; kind: Exclude<TerrainKind, 'water'>; path?: boolean }
+  const land: LandTile[] = []
+  const byKind: Record<Exclude<TerrainKind, 'water'>, LandTile[]> = {
     sand: [],
     grass: [],
     forest: [],
@@ -73,115 +142,188 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
 
   for (const tile of world.tiles) {
     if (tile.kind === 'water') continue
-    byKind[tile.kind].push({ x: tile.x, y: tile.y, elev: tile.elevation })
-  }
-
-  for (const kind of Object.keys(byKind) as Array<Exclude<TerrainKind, 'water'>>) {
-    const list = byKind[kind]
-    if (list.length === 0) continue
-    const h = HEIGHTS[kind]
-    const boxGeo = track(new THREE.BoxGeometry(1, h, 1))
-    // Do NOT set vertexColors — breaks InstancedMesh.setColorAt
-    const mat = track(
-      new THREE.MeshStandardMaterial({
-        color: COLORS[kind],
-        roughness: kind === 'rock' ? 0.9 : 0.85,
-        metalness: 0,
-      }),
-    )
-    const inst = new THREE.InstancedMesh(boxGeo, mat, list.length)
-    inst.castShadow = kind === 'rock' || kind === 'forest'
-    inst.receiveShadow = true
-    const dummy = new THREE.Object3D()
-    for (let i = 0; i < list.length; i++) {
-      const t = list[i]!
-      dummy.position.set(t.x, h / 2, t.y)
-      dummy.rotation.set(0, 0, 0)
-      dummy.scale.set(1, 1, 1)
-      dummy.updateMatrix()
-      inst.setMatrixAt(i, dummy.matrix)
+    const entry: LandTile = {
+      x: tile.x,
+      y: tile.y,
+      elev: tile.elevation,
+      kind: tile.kind,
+      path: tile.path,
     }
-    inst.instanceMatrix.needsUpdate = true
-    root.add(inst)
+    land.push(entry)
+    byKind[tile.kind].push(entry)
   }
 
-  // Trees on forest tiles
+  // Ground boxes — path tiles get packed-dirt color over any walkable kind
+  {
+    const pathTiles = land.filter((t) => t.path)
+    const nonPath = land.filter((t) => !t.path)
+
+    // Non-path by kind (forest ground slightly darker)
+    for (const kind of Object.keys(byKind) as Array<Exclude<TerrainKind, 'water'>>) {
+      const list = nonPath.filter((t) => t.kind === kind)
+      if (list.length === 0) continue
+      const h = HEIGHTS[kind]
+      const boxGeo = track(new THREE.BoxGeometry(1, h, 1))
+      const color = kind === 'forest' ? FOREST_GROUND : COLORS[kind]
+      const mat = track(
+        new THREE.MeshStandardMaterial({
+          color,
+          roughness: kind === 'rock' ? 0.9 : 0.85,
+          metalness: 0,
+        }),
+      )
+      const inst = new THREE.InstancedMesh(boxGeo, mat, list.length)
+      inst.castShadow = kind === 'rock'
+      inst.receiveShadow = true
+      const dummy = new THREE.Object3D()
+      for (let i = 0; i < list.length; i++) {
+        const t = list[i]!
+        dummy.position.set(t.x, h / 2, t.y)
+        dummy.rotation.set(0, 0, 0)
+        dummy.scale.set(1, 1, 1)
+        dummy.updateMatrix()
+        inst.setMatrixAt(i, dummy.matrix)
+      }
+      inst.instanceMatrix.needsUpdate = true
+      root.add(inst)
+    }
+
+    // Path tiles as packed-dirt boxes (slightly lower than grass so they read)
+    if (pathTiles.length > 0) {
+      const h = 0.18
+      const boxGeo = track(new THREE.BoxGeometry(1, h, 1))
+      const mat = track(
+        new THREE.MeshStandardMaterial({
+          color: PATH_COLOR,
+          roughness: 0.92,
+          metalness: 0,
+        }),
+      )
+      const inst = new THREE.InstancedMesh(boxGeo, mat, pathTiles.length)
+      inst.receiveShadow = true
+      const dummy = new THREE.Object3D()
+      for (let i = 0; i < pathTiles.length; i++) {
+        const t = pathTiles[i]!
+        dummy.position.set(t.x, h / 2, t.y)
+        dummy.rotation.set(0, 0, 0)
+        dummy.scale.set(1, 1, 1)
+        dummy.updateMatrix()
+        inst.setMatrixAt(i, dummy.matrix)
+      }
+      inst.instanceMatrix.needsUpdate = true
+      root.add(inst)
+    }
+  }
+
+  // Trees on ~45% of forest tiles (deterministic), scale 0.7–1.3, two foliage greens
   {
     const forests = byKind.forest
-    if (forests.length > 0) {
+    const treeTiles = forests.filter((t) => tileHash01(t.x, t.y, 42) < 0.45)
+    if (treeTiles.length > 0) {
       const trunkGeo = track(new THREE.CylinderGeometry(0.08, 0.12, 0.35, 6))
       const trunkMat = track(new THREE.MeshStandardMaterial({ color: 0x8a5a38, roughness: 0.9 }))
-      const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, forests.length)
+      const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, treeTiles.length)
       trunkInst.castShadow = true
 
       const coneGeo = track(new THREE.ConeGeometry(0.35, 0.7, 7))
-      const coneMat = track(new THREE.MeshStandardMaterial({ color: 0x2f6b3a, roughness: 0.85 }))
-      const coneInst = new THREE.InstancedMesh(coneGeo, coneMat, forests.length)
-      coneInst.castShadow = true
+      // Two foliage materials via two instanced meshes split by hash
+      const foliageA: typeof treeTiles = []
+      const foliageB: typeof treeTiles = []
+      for (const t of treeTiles) {
+        if (tileHash01(t.x, t.y, 43) < 0.5) foliageA.push(t)
+        else foliageB.push(t)
+      }
 
       const dummy = new THREE.Object3D()
-      for (let i = 0; i < forests.length; i++) {
-        const t = forests[i]!
+      for (let i = 0; i < treeTiles.length; i++) {
+        const t = treeTiles[i]!
         const rnd = tileRng(t.x, t.y, 42)
-        const scale = 0.75 + rnd() * 0.5
-        const rot = rnd() * Math.PI * 2
+        const scale = 0.7 + rnd() * 0.6 // 0.7–1.3
+        const yaw = (rnd() - 0.5) * 0.6 // tiny random yaw
         const baseY = HEIGHTS.forest
 
         dummy.position.set(t.x, baseY + 0.175 * scale, t.y)
-        dummy.rotation.set(0, rot, 0)
+        dummy.rotation.set(0, yaw, 0)
         dummy.scale.set(scale, scale, scale)
         dummy.updateMatrix()
         trunkInst.setMatrixAt(i, dummy.matrix)
-
-        dummy.position.set(t.x, baseY + 0.35 * scale + 0.25 * scale, t.y)
-        dummy.rotation.set(0, rot + 0.3, 0)
-        dummy.scale.set(scale, scale, scale)
-        dummy.updateMatrix()
-        coneInst.setMatrixAt(i, dummy.matrix)
       }
       trunkInst.instanceMatrix.needsUpdate = true
-      coneInst.instanceMatrix.needsUpdate = true
       root.add(trunkInst)
-      root.add(coneInst)
+
+      const placeFoliage = (list: typeof treeTiles, color: number) => {
+        if (list.length === 0) return
+        const mat = track(new THREE.MeshStandardMaterial({ color, roughness: 0.85 }))
+        const inst = new THREE.InstancedMesh(coneGeo, mat, list.length)
+        inst.castShadow = true
+        for (let i = 0; i < list.length; i++) {
+          const t = list[i]!
+          const rnd = tileRng(t.x, t.y, 42)
+          const scale = 0.7 + rnd() * 0.6
+          const yaw = (rnd() - 0.5) * 0.6 + 0.3
+          const baseY = HEIGHTS.forest
+          dummy.position.set(t.x, baseY + 0.35 * scale + 0.25 * scale, t.y)
+          dummy.rotation.set(0, yaw, 0)
+          dummy.scale.set(scale, scale, scale)
+          dummy.updateMatrix()
+          inst.setMatrixAt(i, dummy.matrix)
+        }
+        inst.instanceMatrix.needsUpdate = true
+        root.add(inst)
+      }
+      placeFoliage(foliageA, FOLIAGE_A)
+      placeFoliage(foliageB, FOLIAGE_B)
     }
   }
 
-  // Rocks on rock tiles
+  // Rocks: raised grey terrain already drawn; ~15% get a boulder (no trees here)
   {
     const rocks = byKind.rock
-    if (rocks.length > 0) {
+    const boulderTiles = rocks.filter((t) => tileHash01(t.x, t.y, 99) < 0.15)
+    if (boulderTiles.length > 0) {
       const rockGeo = track(new THREE.DodecahedronGeometry(0.28, 0))
-      const rockMat = track(new THREE.MeshStandardMaterial({ color: 0x6e6e6e, roughness: 0.95 }))
-      const rockInst = new THREE.InstancedMesh(rockGeo, rockMat, rocks.length)
-      rockInst.castShadow = true
-      rockInst.receiveShadow = true
-      const dummy = new THREE.Object3D()
-      for (let i = 0; i < rocks.length; i++) {
-        const t = rocks[i]!
-        const rnd = tileRng(t.x, t.y, 99)
-        const s = 0.6 + rnd() * 0.8
-        dummy.position.set(t.x + (rnd() - 0.5) * 0.2, HEIGHTS.rock + 0.15 * s, t.y + (rnd() - 0.5) * 0.2)
-        dummy.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI)
-        dummy.scale.set(s, s * 0.7, s)
-        dummy.updateMatrix()
-        rockInst.setMatrixAt(i, dummy.matrix)
+      const bouldersA = boulderTiles.filter((t) => tileHash01(t.x, t.y, 100) < 0.5)
+      const bouldersB = boulderTiles.filter((t) => tileHash01(t.x, t.y, 100) >= 0.5)
+
+      const placeBoulders = (list: typeof boulderTiles, color: number) => {
+        if (list.length === 0) return
+        const mat = track(new THREE.MeshStandardMaterial({ color, roughness: 0.95 }))
+        const inst = new THREE.InstancedMesh(rockGeo, mat, list.length)
+        inst.castShadow = true
+        inst.receiveShadow = true
+        const dummy = new THREE.Object3D()
+        for (let i = 0; i < list.length; i++) {
+          const t = list[i]!
+          const rnd = tileRng(t.x, t.y, 99)
+          const s = 0.5 + rnd() * 0.5 // 0.5–1.0
+          dummy.position.set(
+            t.x + (rnd() - 0.5) * 0.2,
+            HEIGHTS.rock + 0.15 * s,
+            t.y + (rnd() - 0.5) * 0.2,
+          )
+          dummy.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI)
+          dummy.scale.set(s, s * 0.7, s)
+          dummy.updateMatrix()
+          inst.setMatrixAt(i, dummy.matrix)
+        }
+        inst.instanceMatrix.needsUpdate = true
+        root.add(inst)
       }
-      rockInst.instanceMatrix.needsUpdate = true
-      root.add(rockInst)
+      placeBoulders(bouldersA, BOULDER_A)
+      placeBoulders(bouldersB, BOULDER_B)
     }
   }
 
   // Places
+  const plaza = world.places.find((p) => p.kind === 'plaza')
   for (const place of world.places) {
-    addPlace(root, place, track)
+    addPlace(root, place, track, plaza)
   }
 
   const dispose = () => {
     scene.remove(root)
-    root.traverse((obj) => {
-      if (obj instanceof THREE.Mesh || obj instanceof THREE.InstancedMesh) {
-        // geometries/materials tracked
-      }
+    root.traverse(() => {
+      // geometries/materials tracked
     })
     for (const d of disposables) d.dispose()
   }
@@ -193,11 +335,18 @@ function addPlace(
   root: THREE.Group,
   place: Place,
   track: <T extends { dispose: () => void }>(obj: T) => T,
+  plaza: Place | undefined,
 ): void {
   const baseY = 0.22
   if (place.kind === 'home') {
     const group = new THREE.Group()
     group.position.set(place.x, 0, place.y)
+    // Face the plaza
+    if (plaza) {
+      const dx = plaza.x - place.x
+      const dz = plaza.y - place.y
+      group.rotation.y = Math.atan2(dx, dz)
+    }
 
     const bodyGeo = track(new THREE.BoxGeometry(0.7, 0.45, 0.7))
     const bodyMat = track(new THREE.MeshStandardMaterial({ color: 0xc4a574, roughness: 0.85 }))
@@ -217,36 +366,104 @@ function addPlace(
 
     root.add(group)
   } else if (place.kind === 'well') {
-    const geo = track(new THREE.CylinderGeometry(0.28, 0.32, 0.35, 10))
+    const group = new THREE.Group()
+    group.position.set(place.x, 0, place.y)
+
+    // Stone cylinder
+    const geo = track(new THREE.CylinderGeometry(0.28, 0.32, 0.4, 12))
     const mat = track(new THREE.MeshStandardMaterial({ color: 0x8a8a8a, roughness: 0.9 }))
     const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(place.x, baseY + 0.175, place.y)
+    mesh.position.y = baseY + 0.2
     mesh.castShadow = true
     mesh.receiveShadow = true
-    root.add(mesh)
+    group.add(mesh)
+
+    // Wooden A-frame: two dark beams + tiny pitched roof
+    const beamMat = track(new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 }))
+    const beamGeo = track(new THREE.BoxGeometry(0.06, 0.55, 0.06))
+    const beamL = new THREE.Mesh(beamGeo, beamMat)
+    beamL.position.set(-0.22, baseY + 0.55, 0)
+    beamL.rotation.z = 0.25
+    beamL.castShadow = true
+    group.add(beamL)
+    const beamR = new THREE.Mesh(beamGeo, beamMat)
+    beamR.position.set(0.22, baseY + 0.55, 0)
+    beamR.rotation.z = -0.25
+    beamR.castShadow = true
+    group.add(beamR)
+
+    // Tiny pitched roof (two slats)
+    const roofMat = track(new THREE.MeshStandardMaterial({ color: 0x6b4428, roughness: 0.85 }))
+    const slatGeo = track(new THREE.BoxGeometry(0.55, 0.04, 0.28))
+    const slatL = new THREE.Mesh(slatGeo, roofMat)
+    slatL.position.set(0, baseY + 0.82, 0)
+    slatL.rotation.z = 0.35
+    slatL.castShadow = true
+    group.add(slatL)
+    const slatR = new THREE.Mesh(slatGeo, roofMat)
+    slatR.position.set(0, baseY + 0.82, 0)
+    slatR.rotation.z = -0.35
+    slatR.castShadow = true
+    group.add(slatR)
+
+    root.add(group)
   } else if (place.kind === 'plaza') {
-    const geo = track(new THREE.CylinderGeometry(1.4, 1.4, 0.06, 24))
-    const mat = track(new THREE.MeshStandardMaterial({ color: 0xd4c9b0, roughness: 0.95 }))
+    // Light-stone disc radius ≈ 2.5 tiles
+    const geo = track(new THREE.CylinderGeometry(2.5, 2.5, 0.06, 32))
+    const mat = track(new THREE.MeshStandardMaterial({ color: PLAZA_STONE, roughness: 0.95 }))
     const mesh = new THREE.Mesh(geo, mat)
     mesh.position.set(place.x, baseY + 0.02, place.y)
     mesh.receiveShadow = true
     root.add(mesh)
-  } else if (place.kind === 'berry-bush') {
-    const geo = track(new THREE.SphereGeometry(0.28, 8, 6))
-    const mat = track(new THREE.MeshStandardMaterial({ color: 0x3d7a45, roughness: 0.8 }))
-    const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(place.x, baseY + 0.2, place.y)
-    mesh.scale.set(1, 0.75, 1)
-    mesh.castShadow = true
-    root.add(mesh)
 
-    // berries
-    const berryGeo = track(new THREE.SphereGeometry(0.05, 5, 4))
-    const berryMat = track(new THREE.MeshStandardMaterial({ color: 0xb83a4a, roughness: 0.6 }))
-    for (let i = 0; i < 3; i++) {
+    // Scattered flat stone slabs
+    const slabGeo = track(new THREE.BoxGeometry(0.45, 0.04, 0.35))
+    const slabMat = track(new THREE.MeshStandardMaterial({ color: 0xb8b0a0, roughness: 0.92 }))
+    const offsets: Array<[number, number, number]> = [
+      [1.2, 0.8, 0.2],
+      [-1.0, 1.1, 0.7],
+      [0.6, -1.4, -0.4],
+      [-1.3, -0.7, 1.1],
+      [1.5, -0.5, -0.9],
+    ]
+    for (const [ox, oz, yaw] of offsets) {
+      const slab = new THREE.Mesh(slabGeo, slabMat)
+      slab.position.set(place.x + ox, baseY + 0.06, place.y + oz)
+      slab.rotation.y = yaw
+      slab.receiveShadow = true
+      root.add(slab)
+    }
+  } else if (place.kind === 'berry-bush') {
+    // Cluster of 3 overlapping low spheres + 6–10 tiny red berries
+    const bushMat = track(new THREE.MeshStandardMaterial({ color: BUSH_GREEN, roughness: 0.75 }))
+    const offsets: Array<[number, number, number]> = [
+      [0, 0, 1],
+      [0.18, 0.12, 0.85],
+      [-0.16, 0.1, 0.9],
+    ]
+    for (const [ox, oz, sy] of offsets) {
+      const geo = track(new THREE.SphereGeometry(0.32, 10, 8))
+      const mesh = new THREE.Mesh(geo, bushMat)
+      mesh.position.set(place.x + ox, baseY + 0.22 * sy, place.y + oz)
+      mesh.scale.set(1, 0.7 * sy, 1)
+      mesh.castShadow = true
+      root.add(mesh)
+    }
+
+    const berryGeo = track(new THREE.SphereGeometry(0.045, 6, 5))
+    const berryMat = track(new THREE.MeshStandardMaterial({ color: BERRY_RED, roughness: 0.55 }))
+    const rnd = tileRng(place.x, place.y, 77)
+    const berryCount = 6 + Math.floor(rnd() * 5) // 6–10
+    for (let i = 0; i < berryCount; i++) {
+      const a = (i / berryCount) * Math.PI * 2 + rnd() * 0.4
+      const elev = 0.15 + rnd() * 0.25
+      const r = 0.18 + rnd() * 0.12
       const berry = new THREE.Mesh(berryGeo, berryMat)
-      const a = (i / 3) * Math.PI * 2
-      berry.position.set(place.x + Math.cos(a) * 0.15, baseY + 0.28, place.y + Math.sin(a) * 0.15)
+      berry.position.set(
+        place.x + Math.cos(a) * r,
+        baseY + elev,
+        place.y + Math.sin(a) * r,
+      )
       root.add(berry)
     }
   }

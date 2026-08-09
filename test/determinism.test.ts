@@ -70,4 +70,29 @@ describe('determinism', () => {
       expect(slept).toBe(true)
     }
   })
+
+  it('sleep flip-flop regression: ≤4 sleep starts per agent per sim-day over 3 days', () => {
+    const sim = new Simulation(42)
+    sim.advanceTicks(4320) // 3 days
+    const events = sim.getEvents()
+
+    for (const agent of sim.state.agents) {
+      // Day index from event tick: tick 0 = day 1 06:00; calendar day via toSimTime-like math
+      const sleepStarts = events.filter(
+        (e) =>
+          e.agentId === agent.id &&
+          e.type === 'action:start' &&
+          e.data?.kind === 'sleep',
+      )
+      // Bucket by calendar day (tick + 360) / 1440
+      const perDay = new Map<number, number>()
+      for (const e of sleepStarts) {
+        const day = Math.floor((e.tick + 360) / 1440) + 1
+        perDay.set(day, (perDay.get(day) ?? 0) + 1)
+      }
+      for (const [day, count] of perDay) {
+        expect(count, `${agent.id} day ${day} sleep starts`).toBeLessThanOrEqual(4)
+      }
+    }
+  })
 })

@@ -1,10 +1,20 @@
-# Dispatch C — Visual polish: make the island read as a cozy village
+# Dispatch C — Behavior fix + visual polish: make the island read as a cozy village
 
 ## Your role
 
 You are the SOLE IMPLEMENTER for this dispatch. Work synchronously. NEVER spawn subagents. NEVER run `git`. Don't edit `README.md`, `CLAUDE.md`, `plans/`, `specs/`. If a gate won't go green after 3 distinct fix attempts, STOP and report. Read the existing code first; make surgical changes in its style — this is a tuning pass, not a rewrite.
 
 Working directory: `D:\MyProjects\Claude\luna-island`. Dispatches A+B built a working sim (island, day/night, agents, inspector, replay). All existing tests/e2e must stay green. Determinism invariants in `CLAUDE.md` remain law; worldgen changes WILL change hashes (fine — tests compare run-vs-run, not golden values), but sim purity and snapshot round-tripping must survive.
+
+## 0. BEHAVIOR BUG (highest priority): sleep flip-flop churns all afternoon
+
+QA evidence: an agent's activity log shows `Started sleep 13:54 → Finished sleep 13:55 (energy 62%→62%) → Started sleep 13:55 → ...` repeating for hours, energy pinned at ~62%. Root cause: the wake condition `energy ≥ 0.95 OR hour ≥ 7` is true all afternoon, so any daytime nap ends after one tick, then sleep immediately wins the next decide. Fix in `utilityBrain.ts` (and wherever the keep-sleeping check lives):
+
+- **Wake rule:** wake when `energy ≥ 0.95`, or at the **07:00 boundary crossing** (asleep as the clock passes 7:00), not whenever `hour ≥ 7`.
+- **Sleep scoring:** `sleep = (1 − energy) × nightBias + (energy < 0.2 ? 1.0 : 0)` with nightBias **1.6** in 21:00–06:00 and **0.15** during the day. (Day naps only happen on near-collapse; the exhaustion term guarantees they do happen.)
+- **Minimum action duration:** once any action starts, no re-decide for 30 ticks unless an urgent interrupt (a *different* need < 0.15) fires. This kills event-log spam generally.
+- **Reason copy must match reality:** "Feeling tired" only when energy < 0.35; bedtime at night says night-time copy. No more "Feeling tired (energy 62%)".
+- Add a vitest regression: over 3 sim-days, no agent has more than 4 `action:start` events with `kind: 'sleep'` per sim-day.
 
 ## Problems observed in QA screenshots (fix each with the given numbers)
 

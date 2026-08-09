@@ -11,6 +11,7 @@ import {
   makeObservation,
   scoreCurrentAction,
   shouldKeepSleeping,
+  urgentDifferentNeed,
 } from './utilityBrain'
 import type {
   AgentState,
@@ -199,7 +200,7 @@ export class Simulation {
 
     for (const agent of world.agents) {
       this.stepNeeds(agent, positions)
-      this.stepMovementAndAction(agent, hour)
+      this.stepMovementAndAction(agent)
       this.maybeRedecide(agent, hour)
     }
   }
@@ -278,7 +279,7 @@ export class Simulation {
     return atTarget(agent, target.x, target.y)
   }
 
-  private stepMovementAndAction(agent: AgentState, hour: number): void {
+  private stepMovementAndAction(agent: AgentState): void {
     const kind = agent.action.kind
     if (kind === 'idle') return
 
@@ -339,10 +340,10 @@ export class Simulation {
 
     agent.x = target.x
     agent.y = target.y
-    this.performAtTarget(agent, hour)
+    this.performAtTarget(agent)
   }
 
-  private performAtTarget(agent: AgentState, hour: number): void {
+  private performAtTarget(agent: AgentState): void {
     const kind = agent.action.kind
     agent.actionTicks++
 
@@ -379,17 +380,19 @@ export class Simulation {
 
     if (kind === 'sleep') {
       // energy regen applied in stepNeeds while performing sleep
-      if (agent.needs.energy >= 0.95 || hour >= 7) {
-        // Only wake on hour>=7 if we've actually slept a bit, or energy full
-        if (agent.needs.energy >= 0.95 || (hour >= 7 && hour < 21)) {
-          this.endAction(
-            agent,
-            `woke up, energy ${pct(agent.actionStartNeeds.energy)}%→${pct(agent.needs.energy)}%`,
-          )
-          agent.action = { kind: 'idle', reason: 'Rested and ready' }
-          agent.actionTicks = 0
-          agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
-        }
+      // Wake when fully rested, or when the clock crosses 07:00 (not "any daytime hour").
+      const curr = toSimTime(this.state.tick)
+      const prev = toSimTime(Math.max(0, this.state.tick - 1))
+      const crossed7am =
+        this.state.tick > 0 && prev.hour === 6 && curr.hour === 7
+      if (agent.needs.energy >= 0.95 || crossed7am) {
+        this.endAction(
+          agent,
+          `woke up, energy ${pct(agent.actionStartNeeds.energy)}%→${pct(agent.needs.energy)}%`,
+        )
+        agent.action = { kind: 'idle', reason: 'Rested and ready' }
+        agent.actionTicks = 0
+        agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       }
       return
     }
@@ -422,9 +425,10 @@ export class Simulation {
 
   private maybeRedecide(agent: AgentState, hour: number): void {
     const tick = this.state.tick
-    const urgent = anyNeedCritical(agent)
     const idle = agent.action.kind === 'idle'
     const due = tick - agent.lastDecideTick >= REDECIDE_INTERVAL
+    // Urgent only for a *different* need than the one this action is serving
+    const urgent = idle ? anyNeedCritical(agent) : urgentDifferentNeed(agent)
 
     // Keep sleeping unless urgent interrupt (natural wake is handled in performAtTarget)
     if (
@@ -436,7 +440,12 @@ export class Simulation {
       return
     }
 
-    // Don't interrupt eat/drink mid-meal unless urgent
+    // Minimum action duration: once started, no re-decide for 30 ticks unless urgent
+    if (!idle && !urgent && tick - agent.lastDecideTick < REDECIDE_INTERVAL) {
+      return
+    }
+
+    // Don't interrupt eat/drink mid-meal unless urgent (duration-gated above also covers this)
     if (
       (agent.action.kind === 'eat' || agent.action.kind === 'drink') &&
       this.isPerforming(agent) &&
@@ -469,7 +478,7 @@ export class Simulation {
     }
 
     // Hysteresis: keep current unless competitor beats by ≥ 0.15, except urgent
-    const urgent = anyNeedCritical(agent)
+    const urgent = urgentDifferentNeed(agent)
     if (!urgent && currentKind !== 'idle' && currentKind !== 'wander') {
       // wander can be freely replaced; idle always takes new intent
       const currentScore = scoreCurrentAction(obs, currentKind)
@@ -483,7 +492,7 @@ export class Simulation {
     if (
       currentKind === 'sleep' &&
       this.isPerforming(agent) &&
-      shouldKeepSleeping(agent, toSimTime(this.state.tick).hour) &&
+      shouldKeepSleeping(agent) &&
       !urgent
     ) {
       return

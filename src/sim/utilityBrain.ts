@@ -74,7 +74,7 @@ interface Scored {
 }
 
 function sleepReason(energy: number, night: boolean): string {
-  if (energy < 0.25) {
+  if (energy < 0.2) {
     return night
       ? 'Exhausted after a long day — going home to sleep'
       : `Running on empty (energy ${pct(energy)}%) — heading home to rest`
@@ -82,7 +82,22 @@ function sleepReason(energy: number, night: boolean): string {
   if (night) {
     return `Night has fallen (energy ${pct(energy)}%) — time for bed`
   }
-  return `Feeling tired (energy ${pct(energy)}%) — going home to nap`
+  // Daytime: "Feeling tired" only when truly low; otherwise short rest copy
+  if (energy < 0.35) {
+    return `Feeling tired (energy ${pct(energy)}%) — going home to nap`
+  }
+  return `Catching a short rest (energy ${pct(energy)}%)`
+}
+
+/** Night bias for sleep utility: strong at night, tiny by day (naps only near collapse). */
+export function sleepNightBias(hour: number): number {
+  return isNight(hour) ? 1.6 : 0.15
+}
+
+/** sleep = (1 − energy) × nightBias + exhaustion bonus when energy < 0.2 */
+export function sleepScore(energy: number, hour: number): number {
+  const nightBias = sleepNightBias(hour)
+  return (1 - energy) * nightBias + (energy < 0.2 ? 1.0 : 0)
 }
 
 function eatReason(hunger: number): string {
@@ -113,14 +128,13 @@ export class UtilityBrain implements Brain {
     const { self, time, world } = obs
     const hour = time.hour
     const night = isNight(hour)
-    const nightBias = night ? 1.6 : 0.4
 
     const candidates: Scored[] = []
 
-    // sleep → own home
-    {
+    // sleep → own home (only when not already well-rested — avoids 90% micro-naps all night)
+    if (self.needs.energy < 0.85) {
       const home = placeById(world, self.homeId)
-      const score = (1 - self.needs.energy) * nightBias
+      const score = sleepScore(self.needs.energy, hour)
       candidates.push({
         score,
         intent: {
@@ -218,12 +232,12 @@ export class UtilityBrain implements Brain {
 export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
   const { self, time } = obs
   const hour = time.hour
-  const night = isNight(hour)
-  const nightBias = night ? 1.6 : 0.4
 
   switch (kind) {
     case 'sleep':
-      return (1 - self.needs.energy) * nightBias
+      // Match decide(): don't treat sleep as competitive when already rested
+      if (self.needs.energy >= 0.85) return 0
+      return sleepScore(self.needs.energy, hour)
     case 'eat': {
       let s = (1 - self.needs.hunger) * 1.3
       if (self.needs.hunger < 0.25) s += 0.5
@@ -246,15 +260,39 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
   }
 }
 
-export function shouldKeepSleeping(agent: AgentState, hour: number): boolean {
+/**
+ * Stay asleep until fully rested. Morning wake is handled in the sim at the
+ * 07:00 boundary crossing — not "any daytime hour ≥ 7".
+ */
+export function shouldKeepSleeping(agent: AgentState, _hour?: number): boolean {
   if (agent.action.kind !== 'sleep') return false
   if (agent.needs.energy >= 0.95) return false
-  if (hour >= 7 && hour < 21) return false
   return true
 }
 
 export function anyNeedCritical(agent: AgentState): boolean {
   return agent.needs.hunger < 0.15 || agent.needs.energy < 0.15 || agent.needs.social < 0.15
+}
+
+/**
+ * Urgent interrupt for mid-action redecide: a *different* need is critical
+ * (not the need the current action is already serving).
+ */
+export function urgentDifferentNeed(agent: AgentState): boolean {
+  const { hunger, energy, social } = agent.needs
+  const kind = agent.action.kind
+  switch (kind) {
+    case 'sleep':
+    case 'drink':
+      // serving energy
+      return hunger < 0.15 || social < 0.15
+    case 'eat':
+      return energy < 0.15 || social < 0.15
+    case 'socialize':
+      return hunger < 0.15 || energy < 0.15
+    default:
+      return anyNeedCritical(agent)
+  }
 }
 
 export function makeObservation(agent: AgentState, world: WorldState): Observation {

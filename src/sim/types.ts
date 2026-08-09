@@ -4,7 +4,15 @@ export interface SimTime { day: number; hour: number; minute: number; tick: Tick
 
 export type TerrainKind = 'water' | 'sand' | 'grass' | 'forest' | 'rock'
 
-export interface Tile { x: number; y: number; kind: TerrainKind; walkable: boolean; elevation: number }
+export interface Tile {
+  x: number
+  y: number
+  kind: TerrainKind
+  walkable: boolean
+  elevation: number
+  /** Village footpath — agents prefer these (lower path cost). */
+  path?: boolean
+}
 
 export type PlaceKind = 'home' | 'berry-bush' | 'well' | 'plaza'
 

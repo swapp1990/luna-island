@@ -48,7 +48,8 @@ function classify(elevation: number, forestNoise: number): { kind: TerrainKind; 
   if (elevation < 0.3) return { kind: 'water', walkable: false }
   if (elevation < 0.36) return { kind: 'sand', walkable: true }
   if (elevation > 0.78) return { kind: 'rock', walkable: false }
-  if (forestNoise > 0.55) return { kind: 'forest', walkable: true }
+  // Higher threshold keeps forest ≤ ~25% of land (was a tree-wall at 0.55)
+  if (forestNoise > 0.68) return { kind: 'forest', walkable: true }
   return { kind: 'grass', walkable: true }
 }
 
@@ -103,6 +104,88 @@ function isWalkableGrass(tiles: Tile[], x: number, y: number): boolean {
   if (!inBounds(x, y)) return false
   const t = tiles[idx(x, y)]!
   return t.walkable && t.kind === 'grass'
+}
+
+/** BFS corridor over walkable tiles; marks every tile on the path (incl. ends). */
+function bfsCorridor(
+  tiles: Tile[],
+  sx: number,
+  sy: number,
+  gx: number,
+  gy: number,
+): Array<[number, number]> | null {
+  if (!inBounds(sx, sy) || !inBounds(gx, gy)) return null
+  if (!tiles[idx(sx, sy)]!.walkable || !tiles[idx(gx, gy)]!.walkable) return null
+  if (sx === gx && sy === gy) return [[sx, sy]]
+
+  const visited = new Uint8Array(WIDTH * HEIGHT)
+  const parent = new Int32Array(WIDTH * HEIGHT)
+  parent.fill(-1)
+  const qx: number[] = [sx]
+  const qy: number[] = [sy]
+  visited[idx(sx, sy)] = 1
+  let head = 0
+  const dirs: Array<[number, number]> = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ]
+  let found = false
+  while (head < qx.length) {
+    const cx = qx[head]!
+    const cy = qy[head]!
+    head++
+    if (cx === gx && cy === gy) {
+      found = true
+      break
+    }
+    for (const [dx, dy] of dirs) {
+      const nx = cx + dx
+      const ny = cy + dy
+      if (!inBounds(nx, ny)) continue
+      const ni = idx(nx, ny)
+      if (visited[ni]) continue
+      if (!tiles[ni]!.walkable) continue
+      visited[ni] = 1
+      parent[ni] = idx(cx, cy)
+      qx.push(nx)
+      qy.push(ny)
+    }
+  }
+  if (!found) return null
+  const path: Array<[number, number]> = []
+  let ci = idx(gx, gy)
+  const startI = idx(sx, sy)
+  while (ci !== startI) {
+    path.push([ci % WIDTH, (ci / WIDTH) | 0])
+    ci = parent[ci]!
+    if (ci < 0) return null
+  }
+  path.push([sx, sy])
+  path.reverse()
+  return path
+}
+
+/** Mark village footpaths from each home to plaza and plaza to well. */
+function markPathCorridor(tiles: Tile[], plazaX: number, plazaY: number, places: Place[]): void {
+  const paint = (path: Array<[number, number]> | null) => {
+    if (!path) return
+    for (const [x, y] of path) {
+      const t = tiles[idx(x, y)]!
+      if (t.walkable) t.path = true
+    }
+  }
+
+  for (const p of places) {
+    if (p.kind === 'home') {
+      paint(bfsCorridor(tiles, p.x, p.y, plazaX, plazaY))
+    }
+  }
+  const well = places.find((p) => p.kind === 'well')
+  if (well) {
+    paint(bfsCorridor(tiles, plazaX, plazaY, well.x, well.y))
+  }
 }
 
 export function generateWorld(seed: number): WorldState {
@@ -210,65 +293,62 @@ export function generateWorld(seed: number): WorldState {
     places.push({ id: 'well-0', kind: 'well', x: plazaX, y: plazaY })
   }
 
-  // 10 homes in a loose ring radius 3–5
+  // 10 homes on a ring radius 4–7 (expand outer radius if needed), Chebyshev spacing ≥ 2
   const occupied = new Set<string>()
   occupied.add(`${plazaX},${plazaY}`)
   for (const p of places) occupied.add(`${p.x},${p.y}`)
 
-  const homeCandidates: Array<[number, number]> = []
-  for (let r = 3; r <= 5; r++) {
-    for (let angle = 0; angle < 32; angle++) {
-      const rad = (angle / 32) * Math.PI * 2
-      const hx = Math.round(plazaX + Math.cos(rad) * r)
-      const hy = Math.round(plazaY + Math.sin(rad) * r)
-      if (!isWalkableGrass(tiles, hx, hy)) continue
-      const key = `${hx},${hy}`
-      if (occupied.has(key)) continue
-      // keep some spacing from plaza clear zone is ok
-      homeCandidates.push([hx, hy])
+  const chebyshev = (ax: number, ay: number, bx: number, by: number) =>
+    Math.max(Math.abs(ax - bx), Math.abs(ay - by))
+
+  const homeTooClose = (hx: number, hy: number): boolean => {
+    for (const p of places) {
+      if (p.kind !== 'home') continue
+      if (chebyshev(p.x, p.y, hx, hy) < 2) return true
     }
-  }
-  // Deterministic order: sort by angle then distance
-  homeCandidates.sort((a, b) => {
-    const aa = Math.atan2(a[1] - plazaY, a[0] - plazaX)
-    const ab = Math.atan2(b[1] - plazaY, b[0] - plazaX)
-    if (aa !== ab) return aa - ab
-    const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
-    const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
-    return da - db
-  })
-  // Dedup
-  const seenHomes = new Set<string>()
-  const uniqueHomes: Array<[number, number]> = []
-  for (const h of homeCandidates) {
-    const key = `${h[0]},${h[1]}`
-    if (seenHomes.has(key)) continue
-    seenHomes.add(key)
-    uniqueHomes.push(h)
+    return false
   }
 
   let homeCount = 0
-  for (const [hx, hy] of uniqueHomes) {
-    if (homeCount >= 10) break
-    // spacing: no home within 1 tile of another home
-    let tooClose = false
-    for (const p of places) {
-      if (p.kind !== 'home') continue
-      if (Math.abs(p.x - hx) + Math.abs(p.y - hy) < 2) {
-        tooClose = true
-        break
+  // Expand outer radius before giving up (4–7, then 4–8, … up to 4–14)
+  for (let maxR = 7; maxR <= 14 && homeCount < 10; maxR++) {
+    const homeCandidates: Array<[number, number]> = []
+    for (let r = 4; r <= maxR; r++) {
+      for (let angle = 0; angle < 48; angle++) {
+        const rad = (angle / 48) * Math.PI * 2
+        const hx = Math.round(plazaX + Math.cos(rad) * r)
+        const hy = Math.round(plazaY + Math.sin(rad) * r)
+        if (!isWalkableGrass(tiles, hx, hy)) continue
+        const key = `${hx},${hy}`
+        if (occupied.has(key)) continue
+        homeCandidates.push([hx, hy])
       }
     }
-    if (tooClose) continue
-    places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
-    occupied.add(`${hx},${hy}`)
-    homeCount++
+    // Deterministic order: sort by angle then distance
+    homeCandidates.sort((a, b) => {
+      const aa = Math.atan2(a[1] - plazaY, a[0] - plazaX)
+      const ab = Math.atan2(b[1] - plazaY, b[0] - plazaX)
+      if (aa !== ab) return aa - ab
+      const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
+      const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
+      return da - db
+    })
+    const seenHomes = new Set<string>()
+    for (const [hx, hy] of homeCandidates) {
+      if (homeCount >= 10) break
+      const key = `${hx},${hy}`
+      if (seenHomes.has(key) || occupied.has(key)) continue
+      seenHomes.add(key)
+      if (homeTooClose(hx, hy)) continue
+      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
+      occupied.add(key)
+      homeCount++
+    }
   }
 
-  // Fallback: fill remaining homes from grass region via rng
+  // Fallback: fill remaining homes from grass region via rng (still spaced)
   if (homeCount < 10) {
     const shuffled = grassRegion.slice()
-    // Fisher-Yates with sim rng
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = rng.int(i + 1)
       const tmp = shuffled[i]!
@@ -280,13 +360,17 @@ export function generateWorld(seed: number): WorldState {
       const key = `${hx},${hy}`
       if (occupied.has(key)) continue
       if (!isWalkableGrass(tiles, hx, hy)) continue
+      if (homeTooClose(hx, hy)) continue
       const dist = Math.sqrt((hx - plazaX) ** 2 + (hy - plazaY) ** 2)
-      if (dist < 3 || dist > 8) continue
+      if (dist < 4 || dist > 14) continue
       places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
       occupied.add(key)
       homeCount++
     }
   }
+
+  // Footpaths: BFS corridor home→plaza and plaza→well; mark tiles path:true
+  markPathCorridor(tiles, plazaX, plazaY, places)
 
   // 8 berry-bushes on grass/forest, 4–12 tiles from plaza
   const bushCandidates: Array<[number, number]> = []

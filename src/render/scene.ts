@@ -40,8 +40,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   renderer.shadowMap.type = THREE.PCFSoftShadowMap
   container.appendChild(renderer.domElement)
 
-  const islandCenterX = world.width / 2
-  const islandCenterZ = world.height / 2
+  // Default camera frames the village (plaza), not the whole island center
+  const plaza = world.places.find((p) => p.kind === 'plaza')
+  const targetX = plaza?.x ?? world.width / 2
+  const targetZ = plaza?.y ?? world.height / 2
 
   const camera = new THREE.PerspectiveCamera(
     50,
@@ -49,14 +51,14 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     0.1,
     300,
   )
-  camera.position.set(islandCenterX + 26, 24, islandCenterZ + 26)
-  camera.lookAt(islandCenterX, 0, islandCenterZ)
+  camera.position.set(targetX + 14, 13, targetZ + 14)
+  camera.lookAt(targetX, 0, targetZ)
 
   const controls = new OrbitControls(camera, renderer.domElement)
-  controls.target.set(islandCenterX, 0.2, islandCenterZ)
+  controls.target.set(targetX, 0.2, targetZ)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
-  controls.minDistance = 10
+  controls.minDistance = 8
   controls.maxDistance = 90
   controls.maxPolarAngle = (80 * Math.PI) / 180
   controls.update()

@@ -110,7 +110,10 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   const frame = (ts: number) => {
     if (!running) return
     if (!lastTs) lastTs = ts
-    const dt = Math.min(0.1, (ts - lastTs) / 1000)
+    // Higher speeds must not drop wall time on slow WebGL frames (headless + terrain).
+    // Cap still bounds spiral-of-death; pure sim is >> 1k ticks/s so a 1s catch-up is fine.
+    const dtCap = speed >= 64 ? 1.0 : speed >= 8 ? 0.25 : 0.1
+    const dt = Math.min(dtCap, (ts - lastTs) / 1000)
     lastTs = ts
 
     if (speed > 0) {
@@ -122,20 +125,18 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
       if (mode === 'live') {
         if (steps > 0) {
-          // Classic fixed-timestep: previous = state before last step in batch
-          for (let i = 0; i < steps; i++) {
-            prevPositions = capturePositions(live)
-            live.advanceTicks(1)
-          }
+          // Positions before the batch for interp; step the whole batch at once
+          prevPositions = capturePositions(live)
+          live.advanceTicks(steps)
         }
       } else if (fork) {
         if (steps > 0) {
           const head = live.state.tick
           const room = head - fork.state.tick
           const take = Math.min(steps, room)
-          for (let i = 0; i < take; i++) {
+          if (take > 0) {
             prevPositions = capturePositions(fork)
-            fork.advanceTicks(1)
+            fork.advanceTicks(take)
           }
           if (fork.state.tick >= head) {
             goLive()
