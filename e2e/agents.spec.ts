@@ -387,44 +387,32 @@ test.describe.serial('agents', () => {
     const artifactsDir = path.join(process.cwd(), 'artifacts')
     fs.mkdirSync(artifactsDir, { recursive: true })
 
-    // Run until someone is foraging (or has foraged); select them
+    // Run until someone holds food (forage complete) so inv-row shows the food slot label
     await page.evaluate(() => (window as any).__simControl.setSpeed(64))
 
-    let foundForager = false
-    for (let attempt = 0; attempt < 40 && !foundForager; attempt++) {
-      await page.waitForTimeout(500)
-      const hit = await page.evaluate(() => {
-        const control = (window as any).__simControl
-        const ids = (window as any).__simState.agentIds as string[]
-        // Probe via status bubble after select — DOM updated next frames
-        return ids
-      })
-      for (const id of hit) {
+    let foundFood = false
+    for (let attempt = 0; attempt < 60 && !foundFood; attempt++) {
+      await page.waitForTimeout(400)
+      const ids = await page.evaluate(
+        () => (window as any).__simState.agentIds as string[],
+      )
+      for (const id of ids) {
         await page.evaluate((agentId) => {
           ;(window as any).__simControl.selectAgent(agentId)
         }, id)
-        await page.waitForTimeout(40)
-        const bubble = await page.getByTestId('status-bubble').innerText().catch(() => '')
-        const inspector = page.getByTestId('inspector')
-        const verb = await inspector.locator('div').filter({ hasText: /Picking berries|Eating|Foraging/i }).first().textContent().catch(() => '')
-        if (
-          bubble.includes('Picking berries') ||
-          bubble.includes('berry bushes') ||
-          (verb && /Picking berries/i.test(verb))
-        ) {
-          foundForager = true
+        await page.getByTestId('tab-work').click().catch(() => {})
+        await page.waitForTimeout(30)
+        const invText = await page
+          .getByTestId('inv-row')
+          .innerText()
+          .catch(() => '')
+        if (/food/i.test(invText)) {
+          foundFood = true
           break
         }
       }
     }
-
-    // Fallback: select first agent so inv/wallet rows still assert
-    if (!foundForager) {
-      await page.evaluate(() => {
-        const ids = (window as any).__simState.agentIds as string[]
-        ;(window as any).__simControl.selectAgent(ids[0])
-      })
-    }
+    expect(foundFood, 'expected an agent holding food after forage window').toBe(true)
 
     await page.evaluate(() => (window as any).__simControl.pause())
     const inspector = page.getByTestId('inspector')

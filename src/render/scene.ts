@@ -4,6 +4,7 @@ import type { AgentState, WorldState } from '../sim/types'
 import { buildTerrain, type TerrainHandle } from './terrain'
 import { createDayNight, type DayNightHandle } from './daynight'
 import { createAgents, type AgentsHandle } from './agents'
+import { createFx, type FxHandle } from './fx'
 import {
   createOverlays,
   formatAgentTooltip,
@@ -26,6 +27,7 @@ export interface SceneHandle {
   dayNight: DayNightHandle
   agents: AgentsHandle
   overlays: OverlaysHandle
+  fx: FxHandle
   setTime: (time: SimTime) => void
   updateAgents: (
     agents: AgentState[],
@@ -34,6 +36,7 @@ export interface SceneHandle {
     selectedId: string | null,
     selectedPlaceId?: string | null,
     places?: WorldState['places'],
+    now?: number,
   ) => void
   /** Wire click-to-select; returns cleanup. */
   bindSelection: (cb: SelectionCallbacks) => () => void
@@ -58,7 +61,13 @@ export interface SceneHandle {
   /** Sync bush berry-dot visibility to place inventory stock. */
   updateBushStock: (places: WorldState['places']) => void
   /** Sync farm growth + stall crate visuals. */
-  updateEconomyVisuals: (places: WorldState['places']) => void
+  updateEconomyVisuals: (places: WorldState['places'], now?: number) => void
+  /** Live-only celebration FX from events. */
+  celebrateConstruction: (placeId: string | null, now: number) => void
+  celebrateHarvest: (placeId: string | null, now: number) => void
+  celebrateClose: (agentIdA: string, agentIdB: string, now: number) => void
+  /** Aim orbit camera at a world point (e2e / screenshots). */
+  lookAt: (x: number, z: number, dist?: number) => void
   resize: (w: number, h: number) => void
   dispose: () => void
   render: () => void
@@ -69,6 +78,11 @@ export interface SceneHandle {
 declare global {
   interface Window {
     __cameraTarget?: { x: number; y: number; z: number }
+    __renderProbe?: { hats: number; tools: number; particles: number }
+    /** DEV/e2e: aim orbit camera at world xz. */
+    __renderLookAt?: (x: number, z: number, dist?: number) => void
+    /** DEV/e2e: world pos of a place mesh. */
+    __placePos?: (placeId: string) => { x: number; y: number; z: number } | null
   }
 }
 
@@ -116,6 +130,8 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   const dayNight = createDayNight(scene, world)
   const agents = createAgents(scene, world.agents)
   const overlays = createOverlays(container)
+  const fx = createFx(scene)
+  const treePositions = terrain.getTreePositions()
 
   // Hover / tooltip state (updated from bindSelection pointermove + interval)
   let hoverAgents: AgentState[] = world.agents
@@ -143,10 +159,32 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     selectedId: string | null,
     selectedPlaceId: string | null = null,
     places: WorldState['places'] = [],
+    now = performance.now(),
   ) => {
     hoverAgents = list
     hoverPlaces = places
-    agents.update(list, prev, alpha, selectedId, selectedPlaceId, places)
+    agents.update(
+      list,
+      prev,
+      alpha,
+      selectedId,
+      selectedPlaceId,
+      places,
+      now,
+      fx,
+      treePositions,
+      (tx, tz, tNow) => terrain.shakeTreeAt(tx, tz, tNow),
+    )
+    fx.update(now)
+    // DEV-gated render probe for e2e (vite dev / e2e webServer)
+    if (import.meta.env.DEV) {
+      const juice = agents.getJuiceCounts()
+      window.__renderProbe = {
+        hats: juice.hats,
+        tools: juice.tools,
+        particles: fx.activeCount(),
+      }
+    }
   }
 
   const followAgent = (
@@ -280,9 +318,34 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   const updateBushStock = (places: WorldState['places']) => {
     terrain.updateBushStock(places)
   }
-  const updateEconomyVisuals = (places: WorldState['places']) => {
+  const updateEconomyVisuals = (places: WorldState['places'], now = performance.now()) => {
     hoverPlaces = places
-    terrain.updateEconomyVisuals(places)
+    terrain.updateEconomyVisuals(places, now)
+  }
+
+  const celebrateConstruction = (placeId: string | null, now: number) => {
+    if (placeId) {
+      terrain.popHome(placeId, now)
+      const pos = terrain.getPlaceWorldPos(placeId)
+      if (pos) fx.sparkleBurst(pos.x, pos.y, pos.z)
+    }
+  }
+
+  const celebrateHarvest = (placeId: string | null, now: number) => {
+    void now
+    if (!placeId) return
+    const pos = terrain.getPlaceWorldPos(placeId)
+    if (pos) fx.greenBurst(pos.x, pos.y + 0.2, pos.z)
+  }
+
+  const celebrateClose = (agentIdA: string, agentIdB: string, now: number) => {
+    overlays.pushHearts(agentIdA, agentIdB, now)
+  }
+
+  const lookAt = (x: number, z: number, dist = 12) => {
+    controls.target.set(x, 0.2, z)
+    camera.position.set(x + dist * 0.7, dist * 0.75, z + dist * 0.7)
+    controls.update()
   }
 
   const publishCameraTarget = () => {
@@ -395,6 +458,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     dayNight.dispose()
     agents.dispose()
     overlays.dispose()
+    fx.dispose()
     renderer.dispose()
     if (renderer.domElement.parentElement === container) {
       container.removeChild(renderer.domElement)
@@ -403,6 +467,12 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
 
   // Initial day time (tick 0 = 06:00)
   setTime({ day: 1, hour: 6, minute: 0, tick: 0 })
+
+  // DEV-gated camera helpers for e2e juice screenshots
+  if (import.meta.env.DEV) {
+    window.__renderLookAt = lookAt
+    window.__placePos = (placeId: string) => terrain.getPlaceWorldPos(placeId)
+  }
 
   return {
     renderer,
@@ -413,6 +483,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     dayNight,
     agents,
     overlays,
+    fx,
     setTime,
     updateAgents,
     bindSelection,
@@ -420,6 +491,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     updateOverlays,
     updateBushStock,
     updateEconomyVisuals,
+    celebrateConstruction,
+    celebrateHarvest,
+    celebrateClose,
+    lookAt,
     resize,
     dispose,
     render,

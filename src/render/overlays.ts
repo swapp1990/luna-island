@@ -10,6 +10,10 @@ const CRITICAL_POOL = 5
 const TOAST_TTL_MS = 1500
 const TOAST_POOL = 8
 const INDICATOR_POOL = 24
+const ZZZ_TTL_MS = 2200
+const ZZZ_POOL = 12
+const HEART_TTL_MS = 1800
+const HEART_POOL = 6
 
 const HOME_BILL: Record<'wood' | 'stone', number> = { wood: 12, stone: 6 }
 
@@ -332,6 +336,21 @@ interface IndicatorSlot {
   active: boolean
 }
 
+interface ZzzSlot {
+  el: HTMLElement
+  agentId: string | null
+  born: number
+  active: boolean
+}
+
+interface HeartSlot {
+  el: HTMLElement
+  agentIdA: string | null
+  agentIdB: string | null
+  born: number
+  active: boolean
+}
+
 export interface OverlaysHandle {
   /** Every frame: project bubbles to screen. */
   updateFrame: (args: {
@@ -356,9 +375,19 @@ export interface OverlaysHandle {
     amount: number,
     now: number,
   ) => void
+  /** Twin-hearts float over a pair (relationship:close, live-only). */
+  pushHearts: (agentIdA: string, agentIdB: string, now: number) => void
   /** Hover tooltip (HTML, near cursor). */
   setTooltip: (text: string | null, clientX: number, clientY: number) => void
   dispose: () => void
+}
+
+function isPerformingSleep(agent: AgentState): boolean {
+  return (
+    agent.action.kind === 'sleep' &&
+    (agent.action.path === undefined ||
+      agent.pathIndex >= (agent.action.path?.length ?? 0))
+  )
 }
 
 export function createOverlays(container: HTMLElement): OverlaysHandle {
@@ -444,6 +473,55 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     } as CSSStyleDeclaration)
     root.appendChild(el)
     indicators.push({ el, kind: '', placeId: null, active: false })
+  }
+
+  // Sleeping Zzz glyphs (pooled HTML)
+  const zzzPool: ZzzSlot[] = []
+  for (let i = 0; i < ZZZ_POOL; i++) {
+    const el = document.createElement('div')
+    el.dataset.zzz = String(i)
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      transform: 'translate(-50%, -100%)',
+      color: '#c8d0e8',
+      fontSize: '14px',
+      fontWeight: '800',
+      fontFamily: 'Georgia, serif',
+      fontStyle: 'italic',
+      textShadow: '0 1px 3px rgba(0,0,0,0.65)',
+      pointerEvents: 'none',
+      zIndex: '9',
+      display: 'none',
+    } as CSSStyleDeclaration)
+    el.textContent = 'Z'
+    root.appendChild(el)
+    zzzPool.push({ el, agentId: null, born: 0, active: false })
+  }
+  /** Last Z spawn time per sleeper. */
+  const lastZzzByAgent = new Map<string, number>()
+
+  // Twin-hearts celebration
+  const heartPool: HeartSlot[] = []
+  for (let i = 0; i < HEART_POOL; i++) {
+    const el = document.createElement('div')
+    el.dataset.hearts = String(i)
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      transform: 'translate(-50%, -100%)',
+      fontSize: '16px',
+      pointerEvents: 'none',
+      zIndex: '9',
+      display: 'none',
+      whiteSpace: 'nowrap',
+      filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.45))',
+    } as CSSStyleDeclaration)
+    el.textContent = '💛💛'
+    root.appendChild(el)
+    heartPool.push({ el, agentIdA: null, agentIdB: null, born: 0, active: false })
   }
 
   // Hover tooltip
@@ -545,6 +623,52 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     tooltipEl.style.display = 'block'
     tooltipEl.style.left = `${clientX}px`
     tooltipEl.style.top = `${clientY}px`
+  }
+
+  const freeOldestZzz = () => {
+    let oldest: ZzzSlot | null = null
+    for (const s of zzzPool) {
+      if (!s.active) continue
+      if (!oldest || s.born < oldest.born) oldest = s
+    }
+    if (oldest) {
+      oldest.active = false
+      oldest.agentId = null
+      oldest.el.style.display = 'none'
+    }
+  }
+
+  const spawnZzz = (agentId: string, now: number) => {
+    let slot = zzzPool.find((s) => !s.active)
+    if (!slot) {
+      freeOldestZzz()
+      slot = zzzPool.find((s) => !s.active)
+    }
+    if (!slot) return
+    slot.active = true
+    slot.agentId = agentId
+    slot.born = now
+    slot.el.style.display = 'block'
+    slot.el.style.opacity = '1'
+  }
+
+  const pushHearts = (agentIdA: string, agentIdB: string, now: number) => {
+    let slot: HeartSlot | undefined = heartPool.find((s) => !s.active)
+    if (!slot) {
+      // recycle oldest
+      let oldest: HeartSlot | undefined
+      for (const s of heartPool) {
+        if (!oldest || s.born < oldest.born) oldest = s
+      }
+      slot = oldest
+    }
+    if (!slot) return
+    slot.active = true
+    slot.agentIdA = agentIdA
+    slot.agentIdB = agentIdB
+    slot.born = now
+    slot.el.style.display = 'block'
+    slot.el.style.opacity = '1'
   }
 
   const interpPos = (
@@ -705,6 +829,92 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - lift}px)`
     }
 
+    // Sleeping Zzz — emit every ~2s while sleeping
+    for (const agent of agents) {
+      if (!isPerformingSleep(agent)) {
+        lastZzzByAgent.delete(agent.id)
+        continue
+      }
+      const last = lastZzzByAgent.get(agent.id) ?? 0
+      if (now - last >= 2000) {
+        lastZzzByAgent.set(agent.id, now)
+        spawnZzz(agent.id, now)
+      }
+    }
+    for (const slot of zzzPool) {
+      if (!slot.active || !slot.agentId) continue
+      const age = now - slot.born
+      if (age >= ZZZ_TTL_MS) {
+        slot.active = false
+        slot.agentId = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      const agent = byId.get(slot.agentId)
+      if (!agent) {
+        slot.active = false
+        slot.agentId = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      const pos = interpPos(agent, prev, alpha)
+      const lift = (age / ZZZ_TTL_MS) * 42
+      const drift = (age / ZZZ_TTL_MS) * 18
+      const screen = project(
+        pos.x,
+        HEAD_Y + 0.35,
+        pos.z,
+        camera,
+        width,
+        height,
+        proj,
+      )
+      if (screen.behind) {
+        slot.el.style.opacity = '0'
+        continue
+      }
+      const fade = age > ZZZ_TTL_MS - 500 ? 1 - (age - (ZZZ_TTL_MS - 500)) / 500 : 1
+      const size = 12 + (age / ZZZ_TTL_MS) * 6
+      slot.el.style.display = 'block'
+      slot.el.style.opacity = String(Math.max(0, fade * 0.9))
+      slot.el.style.fontSize = `${size}px`
+      slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x + drift}px, ${screen.y - lift}px)`
+    }
+
+    // Twin hearts float over midpoint of pair
+    for (const slot of heartPool) {
+      if (!slot.active || !slot.agentIdA || !slot.agentIdB) continue
+      const age = now - slot.born
+      if (age >= HEART_TTL_MS) {
+        slot.active = false
+        slot.agentIdA = null
+        slot.agentIdB = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      const aA = byId.get(slot.agentIdA)
+      const aB = byId.get(slot.agentIdB)
+      if (!aA || !aB) {
+        slot.active = false
+        slot.el.style.display = 'none'
+        continue
+      }
+      const pA = interpPos(aA, prev, alpha)
+      const pB = interpPos(aB, prev, alpha)
+      const mx = (pA.x + pB.x) / 2
+      const mz = (pA.z + pB.z) / 2
+      const lift = (age / HEART_TTL_MS) * 40
+      const screen = project(mx, HEAD_Y + 0.5, mz, camera, width, height, proj)
+      if (screen.behind) {
+        slot.el.style.opacity = '0'
+        continue
+      }
+      const fade = age > HEART_TTL_MS - 400 ? 1 - (age - (HEART_TTL_MS - 400)) / 400 : 1
+      slot.el.style.display = 'block'
+      slot.el.style.opacity = String(Math.max(0, fade))
+      slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - lift}px)`
+    }
+
     // Reset indicators then rebuild
     for (const ind of indicators) {
       ind.active = false
@@ -815,5 +1025,5 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     if (tooltipEl.parentElement) tooltipEl.parentElement.removeChild(tooltipEl)
   }
 
-  return { updateFrame, pushCritical, pushToast, setTooltip, dispose }
+  return { updateFrame, pushCritical, pushToast, pushHearts, setTooltip, dispose }
 }

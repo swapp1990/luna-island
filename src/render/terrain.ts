@@ -17,13 +17,45 @@ export interface TerrainHandle {
   root: THREE.Group
   /** Show N berry dots on each bush from place inventory stock (0–6). */
   updateBushStock: (places: Place[]) => void
-  /** Scale farm crops by growth; show stall/storehouse crates; sync dynamic sites. */
-  updateEconomyVisuals: (places: Place[]) => void
+  /** Discrete farm crop stages; stall/storehouse crates; sync dynamic sites. */
+  updateEconomyVisuals: (places: Place[], now?: number) => void
+  /** Tree world positions (for forestry tool facing / shake). */
+  getTreePositions: () => Array<{ x: number; z: number }>
+  /** Shake nearest tree at (x,z) for ~200 ms. */
+  shakeTreeAt: (x: number, z: number, now: number) => void
+  /** Celebrate a new/completed home with overshoot scale pop. */
+  popHome: (placeId: string, now: number) => void
+  /** Celebrate construction complete / harvest position lookup. */
+  getPlaceWorldPos: (placeId: string) => { x: number; y: number; z: number } | null
   /** Invisible hit volumes for building selection. */
   getPlacePickables: () => THREE.Object3D[]
   /** Resolve raycast hit to place id. */
   placeIdFromObject: (obj: THREE.Object3D) => string | null
   dispose: () => void
+}
+
+/** Farm crop stage visuals: bare / sprouts / leafy / ripe. */
+interface FarmCropPlot {
+  placeId: string
+  sprouts: THREE.Mesh[]
+  leafy: THREE.Mesh[]
+  ripe: THREE.Mesh[]
+  stage: number
+  popBorn: number
+}
+
+interface TreeInstance {
+  x: number
+  z: number
+  /** Index into trunk instanced mesh. */
+  trunkIndex: number
+  /** Foliage group 0=A 1=B and index within that group. */
+  foliageGroup: 0 | 1
+  foliageIndex: number
+  baseScale: number
+  baseYawTrunk: number
+  baseYawFoliage: number
+  shakeUntil: number
 }
 
 /** Materials pile + frame stages for a construction site (render-only). */
@@ -312,6 +344,10 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   }
 
   // Trees on ~45% of forest tiles (deterministic), scale 0.7–1.3, two foliage greens
+  const treeRecords: TreeInstance[] = []
+  let trunkInstRef: THREE.InstancedMesh | null = null
+  let foliageAInst: THREE.InstancedMesh | null = null
+  let foliageBInst: THREE.InstancedMesh | null = null
   {
     const forests = byKind.forest
     const treeTiles = forests.filter((t) => tileHash01(t.x, t.y, 42) < 0.45)
@@ -320,9 +356,9 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
       const trunkMat = track(new THREE.MeshStandardMaterial({ color: 0x8a5a38, roughness: 0.9 }))
       const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, treeTiles.length)
       trunkInst.castShadow = true
+      trunkInstRef = trunkInst
 
       const coneGeo = track(new THREE.ConeGeometry(0.35, 0.7, 7))
-      // Two foliage materials via two instanced meshes split by hash
       const foliageA: typeof treeTiles = []
       const foliageB: typeof treeTiles = []
       for (const t of treeTiles) {
@@ -337,18 +373,37 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         const scale = 0.7 + rnd() * 0.6 // 0.7–1.3
         const yaw = (rnd() - 0.5) * 0.6 // tiny random yaw
         const baseY = HEIGHTS.forest
+        const isA = tileHash01(t.x, t.y, 43) < 0.5
+        const foliageIndex = isA
+          ? foliageA.findIndex((f) => f.x === t.x && f.y === t.y)
+          : foliageB.findIndex((f) => f.x === t.x && f.y === t.y)
 
         dummy.position.set(t.x, baseY + 0.175 * scale, t.y)
         dummy.rotation.set(0, yaw, 0)
         dummy.scale.set(scale, scale, scale)
         dummy.updateMatrix()
         trunkInst.setMatrixAt(i, dummy.matrix)
+
+        treeRecords.push({
+          x: t.x,
+          z: t.y,
+          trunkIndex: i,
+          foliageGroup: isA ? 0 : 1,
+          foliageIndex: Math.max(0, foliageIndex),
+          baseScale: scale,
+          baseYawTrunk: yaw,
+          baseYawFoliage: yaw + 0.3,
+          shakeUntil: 0,
+        })
       }
       trunkInst.instanceMatrix.needsUpdate = true
       root.add(trunkInst)
 
-      const placeFoliage = (list: typeof treeTiles, color: number) => {
-        if (list.length === 0) return
+      const placeFoliage = (
+        list: typeof treeTiles,
+        color: number,
+      ): THREE.InstancedMesh | null => {
+        if (list.length === 0) return null
         const mat = track(new THREE.MeshStandardMaterial({ color, roughness: 0.85 }))
         const inst = new THREE.InstancedMesh(coneGeo, mat, list.length)
         inst.castShadow = true
@@ -366,9 +421,65 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         }
         inst.instanceMatrix.needsUpdate = true
         root.add(inst)
+        return inst
       }
-      placeFoliage(foliageA, FOLIAGE_A)
-      placeFoliage(foliageB, FOLIAGE_B)
+      foliageAInst = placeFoliage(foliageA, FOLIAGE_A)
+      foliageBInst = placeFoliage(foliageB, FOLIAGE_B)
+    }
+  }
+
+  const applyTreeMatrix = (rec: TreeInstance, now: number) => {
+    const dummy = new THREE.Object3D()
+    const baseY = HEIGHTS.forest
+    const shaking = now < rec.shakeUntil
+    const jitter = shaking ? ((Math.sin(now * 0.08) * Math.PI) / 180) * 3 : 0
+    const scale = rec.baseScale
+    // Trunk
+    if (trunkInstRef) {
+      dummy.position.set(rec.x, baseY + 0.175 * scale, rec.z)
+      dummy.rotation.set(jitter, rec.baseYawTrunk + jitter * 0.5, jitter * 0.3)
+      dummy.scale.set(scale, scale, scale)
+      dummy.updateMatrix()
+      trunkInstRef.setMatrixAt(rec.trunkIndex, dummy.matrix)
+      trunkInstRef.instanceMatrix.needsUpdate = true
+    }
+    const folInst = rec.foliageGroup === 0 ? foliageAInst : foliageBInst
+    if (folInst) {
+      dummy.position.set(rec.x, baseY + 0.35 * scale + 0.25 * scale, rec.z)
+      dummy.rotation.set(jitter * 0.8, rec.baseYawFoliage + jitter, jitter * 0.2)
+      dummy.scale.set(scale, scale, scale)
+      dummy.updateMatrix()
+      folInst.setMatrixAt(rec.foliageIndex, dummy.matrix)
+      folInst.instanceMatrix.needsUpdate = true
+    }
+  }
+
+  const shakeTreeAt = (x: number, z: number, now: number) => {
+    let best: TreeInstance | null = null
+    let bestD = 2.1 * 2.1
+    for (const t of treeRecords) {
+      const dx = t.x - x
+      const dz = t.z - z
+      const d2 = dx * dx + dz * dz
+      if (d2 < bestD) {
+        bestD = d2
+        best = t
+      }
+    }
+    if (!best) return
+    best.shakeUntil = now + 200
+    applyTreeMatrix(best, now)
+  }
+
+  const getTreePositions = () => treeRecords.map((t) => ({ x: t.x, z: t.z }))
+
+  // Tick active tree shakes each economy update frame
+  const updateTreeShakes = (now: number) => {
+    for (const t of treeRecords) {
+      if (t.shakeUntil > 0 && now <= t.shakeUntil + 16) {
+        applyTreeMatrix(t, now)
+        if (now > t.shakeUntil) t.shakeUntil = 0
+      }
     }
   }
 
@@ -419,11 +530,13 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
 
   // Places — berry meshes keyed by place id for stock-driven visibility
   const bushBerries = new Map<string, THREE.Mesh[]>()
-  const farmCrops = new Map<string, THREE.Object3D[]>()
+  const farmCrops = new Map<string, FarmCropPlot>()
   const stallCrates = new Map<string, THREE.Mesh[]>()
   const storeCrates = new Map<string, THREE.Mesh[]>()
   const siteVisuals = new Map<string, SiteVisual>()
   const dynamicHomes = new Map<string, THREE.Group>()
+  /** Home pop-in: placeId → born ms (300 ms overshoot scale). */
+  const homePops = new Map<string, number>()
   /** Invisible selection volumes keyed by place id. */
   const placePicks = new Map<string, THREE.Mesh>()
   const pickObjectToId = new Map<THREE.Object3D, string>()
@@ -527,28 +640,86 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
           const g = buildHomeMesh(place, track, plaza)
           root.add(g)
           dynamicHomes.set(place.id, g)
+          // Auto pop if not already scheduled
+          if (!homePops.has(place.id)) {
+            homePops.set(place.id, performance.now())
+            g.scale.set(0.2, 0.2, 0.2)
+          }
         }
       }
     }
   }
 
-  const updateEconomyVisuals = (places: Place[]) => {
+  const growthStage = (g: number): number => {
+    if (g < 0.25) return 0 // bare tilled rows
+    if (g < 0.6) return 1 // sprouts
+    if (g < 0.9) return 2 // leafy
+    return 3 // golden-ripe
+  }
+
+  const popScale = (born: number, now: number): number => {
+    const age = now - born
+    if (age >= 200) return 1
+    const u = age / 200
+    // ease out with slight overshoot
+    return 0.35 + u * 0.75 + Math.sin(u * Math.PI) * 0.12
+  }
+
+  const updateEconomyVisuals = (places: Place[], now = performance.now()) => {
     updateBushStock(places)
     syncDynamicPlaces(places)
+    updateTreeShakes(now)
+
+    // Home pop-in scale
+    for (const [id, born] of homePops) {
+      const g = dynamicHomes.get(id)
+      if (!g) {
+        homePops.delete(id)
+        continue
+      }
+      const age = now - born
+      if (age >= 300) {
+        g.scale.set(1, 1, 1)
+        homePops.delete(id)
+        continue
+      }
+      const u = age / 300
+      // 300 ms overshoot: rise past 1 then settle
+      const s = u < 0.55 ? u / 0.55 * 1.18 : 1.18 - ((u - 0.55) / 0.45) * 0.18
+      g.scale.set(s, s, s)
+    }
+
     for (const place of places) {
       if (place.kind === 'farm') {
-        const crops = farmCrops.get(place.id)
-        if (!crops) continue
+        const plot = farmCrops.get(place.id)
+        if (!plot) continue
         const g = Math.max(0, Math.min(1, place.growth ?? 0))
-        // Scale crops with growth; keep a tiny minimum so empty plots still read
-        const s = 0.15 + g * 0.85
-        for (const crop of crops) {
-          crop.scale.set(s, s, s)
-          crop.visible = g > 0.02 || (place.inventory?.food ?? 0) > 0
-          if ((place.inventory?.food ?? 0) > 0 && g < 0.02) {
-            // Ready harvest piles: full size green even after growth reset
-            crop.scale.set(1, 1, 1)
-            crop.visible = true
+        // After harvest growth may reset but inventory holds food — show ripe if stocked
+        let stage = growthStage(g)
+        if ((place.inventory?.food ?? 0) > 0 && g < 0.25) stage = 3
+        if (stage !== plot.stage) {
+          plot.stage = stage
+          plot.popBorn = now
+        }
+        const s = popScale(plot.popBorn, now)
+        const showS = stage === 1
+        const showL = stage === 2
+        const showR = stage === 3
+        for (const m of plot.sprouts) {
+          m.visible = showS
+          if (showS) m.scale.set(s, s, s)
+        }
+        for (const m of plot.leafy) {
+          m.visible = showL
+          if (showL) m.scale.set(s, s, s)
+        }
+        for (const m of plot.ripe) {
+          m.visible = showR
+          if (showR) {
+            // slight sway when ripe
+            const sway = Math.sin(now / 400 + place.x) * 0.06
+            m.scale.set(s, s, s)
+            m.rotation.z = sway
           }
         }
       }
@@ -556,7 +727,6 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         const crates = stallCrates.get(place.id)
         if (!crates) continue
         const stock = Math.max(0, Math.floor(place.inventory?.food ?? 0))
-        // Show up to 8 crates proportional to stock
         const n = Math.min(crates.length, Math.ceil(stock / 2))
         for (let i = 0; i < crates.length; i++) {
           crates[i]!.visible = i < n
@@ -574,6 +744,27 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         }
       }
     }
+  }
+
+  const popHome = (placeId: string, now: number) => {
+    homePops.set(placeId, now)
+    const g = dynamicHomes.get(placeId)
+    if (g) g.scale.set(0.2, 0.2, 0.2)
+  }
+
+  const getPlaceWorldPos = (placeId: string): { x: number; y: number; z: number } | null => {
+    const place = world.places.find((p) => p.id === placeId)
+    // world.places is static snapshot — caller should pass live places via pick map
+    const pick = placePicks.get(placeId)
+    if (pick) {
+      return { x: pick.position.x, y: 0.8, z: pick.position.z }
+    }
+    if (place) return { x: place.x, y: 0.8, z: place.y }
+    const home = dynamicHomes.get(placeId)
+    if (home) return { x: home.position.x, y: 0.8, z: home.position.z }
+    const site = siteVisuals.get(placeId)
+    if (site) return { x: site.group.position.x, y: 0.8, z: site.group.position.z }
+    return null
   }
 
   // Initial stock visibility
@@ -612,6 +803,10 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     root,
     updateBushStock,
     updateEconomyVisuals,
+    getTreePositions,
+    shakeTreeAt,
+    popHome,
+    getPlaceWorldPos,
     getPlacePickables,
     placeIdFromObject,
     dispose,
@@ -739,7 +934,7 @@ function addPlace(
   track: <T extends { dispose: () => void }>(obj: T) => T,
   plaza: Place | undefined,
   bushBerries: Map<string, THREE.Mesh[]>,
-  farmCrops: Map<string, THREE.Object3D[]>,
+  farmCrops: Map<string, FarmCropPlot>,
   stallCrates: Map<string, THREE.Mesh[]>,
   storeCrates: Map<string, THREE.Mesh[]>,
   siteVisuals: Map<string, SiteVisual>,
@@ -855,7 +1050,7 @@ function addPlace(
     }
     bushBerries.set(place.id, berries)
   } else if (place.kind === 'farm') {
-    // Tilled dark-soil tiles (3×3) + simple green crop cones scaled by growth
+    // Tilled dark-soil rows (3×3) + discrete crop stages (sprouts / leafy / ripe)
     const soilGeo = track(new THREE.BoxGeometry(0.92, 0.06, 0.92))
     const soilMat = track(
       new THREE.MeshStandardMaterial({ color: 0x4a3728, roughness: 0.95 }),
@@ -868,12 +1063,18 @@ function addPlace(
         root.add(soil)
       }
     }
-    const cropGeo = track(new THREE.ConeGeometry(0.12, 0.35, 5))
-    const cropMat = track(
-      new THREE.MeshStandardMaterial({ color: 0x5aaf4a, roughness: 0.8 }),
+    const sproutGeo = track(new THREE.ConeGeometry(0.06, 0.16, 5))
+    const sproutMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x6bc24a, roughness: 0.8 }),
     )
-    const crops: THREE.Object3D[] = []
-    // 5 crop positions in the plot
+    const leafyGeo = track(new THREE.SphereGeometry(0.14, 8, 6))
+    const leafyMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x3d9b3a, roughness: 0.78 }),
+    )
+    const ripeGeo = track(new THREE.SphereGeometry(0.15, 8, 6))
+    const ripeMat = track(
+      new THREE.MeshStandardMaterial({ color: 0xd4a84a, roughness: 0.75 }),
+    )
     const cropOffsets: Array<[number, number]> = [
       [0, 0],
       [0.55, 0.4],
@@ -881,15 +1082,39 @@ function addPlace(
       [0.45, -0.5],
       [-0.55, -0.4],
     ]
+    const sprouts: THREE.Mesh[] = []
+    const leafy: THREE.Mesh[] = []
+    const ripe: THREE.Mesh[] = []
     for (const [ox, oz] of cropOffsets) {
-      const crop = new THREE.Mesh(cropGeo, cropMat)
-      crop.position.set(place.x + ox, HEIGHTS.grass + 0.12, place.y + oz)
-      crop.castShadow = true
-      crop.visible = false
-      root.add(crop)
-      crops.push(crop)
+      const s = new THREE.Mesh(sproutGeo, sproutMat)
+      s.position.set(place.x + ox, HEIGHTS.grass + 0.08, place.y + oz)
+      s.castShadow = true
+      s.visible = false
+      root.add(s)
+      sprouts.push(s)
+      const l = new THREE.Mesh(leafyGeo, leafyMat)
+      l.position.set(place.x + ox, HEIGHTS.grass + 0.16, place.y + oz)
+      l.scale.set(1, 0.85, 1)
+      l.castShadow = true
+      l.visible = false
+      root.add(l)
+      leafy.push(l)
+      const r = new THREE.Mesh(ripeGeo, ripeMat)
+      r.position.set(place.x + ox, HEIGHTS.grass + 0.17, place.y + oz)
+      r.scale.set(1, 0.9, 1)
+      r.castShadow = true
+      r.visible = false
+      root.add(r)
+      ripe.push(r)
     }
-    farmCrops.set(place.id, crops)
+    farmCrops.set(place.id, {
+      placeId: place.id,
+      sprouts,
+      leafy,
+      ripe,
+      stage: 0,
+      popBorn: 0,
+    })
   } else if (place.kind === 'stall') {
     // Small canopy + crates (crate count reflects stock)
     const group = new THREE.Group()

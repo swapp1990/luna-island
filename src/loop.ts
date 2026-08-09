@@ -54,6 +54,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let lastCriticalEventCount = 0
   /** Live-only toast scanner cursor (never backfills on replay enter). */
   let lastToastEventCount = 0
+  /** Live-only celebration FX scanner cursor. */
+  let lastCelebrateEventCount = 0
   /**
    * Calendar day scoped in the timeline. null = follow live head day.
    * Set when loadDay / scrub into a day; cleared on goLive.
@@ -184,6 +186,44 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastToastEventCount = events.length
   }
 
+  /** Celebrations — live path only, no ffwd/replay backfill. */
+  const scanCelebrations = (sim: Simulation, now: number, liveMode: boolean) => {
+    if (!liveMode) {
+      lastCelebrateEventCount = sim.getEventCount()
+      return
+    }
+    const events = sim.getEvents()
+    const start = lastCelebrateEventCount
+    if (start >= events.length) {
+      lastCelebrateEventCount = events.length
+      return
+    }
+    for (let i = start; i < events.length; i++) {
+      const ev = events[i]!
+      if (ev.type === 'construction:completed') {
+        const placeId = (ev.data?.placeId as string) ?? null
+        scene.celebrateConstruction(placeId, now)
+      } else if (ev.type === 'goods:produced') {
+        const placeId = (ev.data?.placeId as string) ?? null
+        const good = ev.data?.good as string | undefined
+        // Harvest mint at farms
+        if (good === 'food' || !good) {
+          const place = placeId
+            ? sim.state.places.find((p) => p.id === placeId)
+            : undefined
+          if (!placeId || place?.kind === 'farm') {
+            scene.celebrateHarvest(placeId, now)
+          }
+        }
+      } else if (ev.type === 'relationship:close') {
+        const a = (ev.data?.agentIdA as string) ?? ev.agentId
+        const b = ev.data?.agentIdB as string | undefined
+        if (a && b) scene.celebrateClose(a, b, now)
+      }
+    }
+    lastCelebrateEventCount = events.length
+  }
+
   const applyScene = (now: number) => {
     const sim = viewSim()
     const alpha = speed > 0 ? Math.min(1, accumulator) : 1
@@ -196,6 +236,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       selectedAgentId,
       selectedPlaceId,
       sim.state.places,
+      now,
     )
     if (follow && selectedAgentId) {
       scene.followAgent(sim.state.agents, prevPositions, alpha, selectedAgentId, 0.08)
@@ -209,7 +250,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       now,
       t,
     )
-    scene.updateEconomyVisuals(sim.state.places)
+    scene.updateEconomyVisuals(sim.state.places, now)
   }
 
   const setSpeed = (n: number) => {
@@ -229,6 +270,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     prevPositions = capturePositions(live)
     lastCriticalEventCount = live.getEventCount()
     lastToastEventCount = live.getEventCount()
+    lastCelebrateEventCount = live.getEventCount()
     applyScene(performance.now())
   }
 
@@ -246,8 +288,9 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     accumulator = 0
     prevPositions = capturePositions(fork)
     lastCriticalEventCount = fork.getEventCount()
-    // Do not backfill toasts when entering replay
+    // Do not backfill toasts / celebrations when entering replay
     lastToastEventCount = fork.getEventCount()
+    lastCelebrateEventCount = fork.getEventCount()
     applyScene(performance.now())
   }
 
@@ -297,8 +340,9 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     if (mode === 'live') {
       prevPositions = capturePositions(live)
       lastCriticalEventCount = live.getEventCount()
-      // Skip toast spam from large ffwd batches — advance cursor only
+      // Skip toast/celebration spam from large ffwd batches — advance cursor only
       lastToastEventCount = live.getEventCount()
+      lastCelebrateEventCount = live.getEventCount()
       applyScene(performance.now())
     } else if (fork) {
       // Live advanced underneath; keep replay fork as-is
@@ -374,6 +418,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     const sim = viewSim()
     scanCriticals(sim, ts)
     scanToasts(sim, ts, mode === 'live')
+    scanCelebrations(sim, ts, mode === 'live')
     applyScene(ts)
     scene.render()
     refreshBridge(getState())
@@ -388,6 +433,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     prevPositions = capturePositions(viewSim())
     lastCriticalEventCount = viewSim().getEventCount()
     lastToastEventCount = viewSim().getEventCount()
+    lastCelebrateEventCount = viewSim().getEventCount()
     applyScene(performance.now())
     refreshBridge(getState())
     rafId = requestAnimationFrame(frame)

@@ -11,6 +11,7 @@ import { BuildingPanel } from './ui/BuildingPanel'
 import { ResourceBar, resourcesFromWorld, type ResourceSnapshot } from './ui/ResourceBar'
 import { Ticker } from './ui/Ticker'
 import { Charts } from './ui/Charts'
+import { PortraitDock } from './ui/PortraitDock'
 import type { AgentState, EconomyStat, Place, SimEvent } from './sim/types'
 
 const SEED = 42
@@ -57,6 +58,7 @@ export function App() {
     storeWood: 0,
     storeStone: 0,
   })
+  const [dockOpen, setDockOpen] = useState(true)
 
   const viewDayStart = useMemo(() => dayStartTick(hud.viewDay), [hud.viewDay])
 
@@ -207,6 +209,8 @@ export function App() {
     setHud(loop.getState())
     setLiveHeadTick(live.state.tick)
     setAllEvents(live.getEvents())
+    setAllAgents(live.state.agents.map(cloneAgent))
+    setPlaces(live.state.places.map(clonePlace))
     setResources(resourcesFromWorld(live.state))
     const b0 = loop.getDayBounds()
     setScrubMin(b0.startTick)
@@ -245,10 +249,31 @@ export function App() {
           if (loopRef.current) setHud(loopRef.current.getState())
         }}
       />
+      <PortraitDock
+        agents={allAgents}
+        places={places}
+        selectedAgentId={hud.selectedAgentId}
+        onOpenChange={setDockOpen}
+        onSelectAndFollow={(id) => {
+          const loop = loopRef.current
+          if (!loop) return
+          loop.selectAgent(id)
+          loop.setFollow(true)
+          const sim = loop.getViewSim()
+          const agent = sim.state.agents.find((a) => a.id === id) ?? null
+          setSelectedAgent(agent ? cloneAgent(agent) : null)
+          setSelectedPlace(null)
+          setAgentEvents(sim.getEvents())
+          setHud(loop.getState())
+          setFollowing(true)
+        }}
+      />
       <Ticker
         events={allEvents}
         replayTick={hud.tick}
         dayStartTick={viewDayStart}
+        // Lift ticker above portrait dock when dock is open (room for 2×12 chips)
+        bottomOffset={dockOpen ? 200 : 72}
         onSelectAgent={(id) => {
           const loop = loopRef.current
           if (!loop) return

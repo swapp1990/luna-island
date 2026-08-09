@@ -189,10 +189,16 @@ export function Ticker(props: {
   /** Inclusive lower bound for ticker (loaded day's start). */
   dayStartTick?: number
   onSelectAgent: (id: string) => void
+  /** Force collapsed (e.g. when portrait dock is open). */
+  collapsed?: boolean
+  /** Bottom offset in px (default 72 above timeline). */
+  bottomOffset?: number
 }) {
   const { events, replayTick, onSelectAgent } = props
   const dayStart = props.dayStartTick ?? 0
-  const [collapsed, setCollapsed] = useState(false)
+  const [userCollapsed, setUserCollapsed] = useState(false)
+  const collapsed = props.collapsed === true ? true : userCollapsed
+  const bottom = props.bottomOffset ?? 72
   const rows = useMemo(
     () => buildTickerRows(events, replayTick, dayStart),
     [events, replayTick, dayStart],
@@ -204,7 +210,7 @@ export function Ticker(props: {
       data-testid="ticker"
       style={{
         position: 'absolute',
-        bottom: 72,
+        bottom,
         left: 16,
         width: 280,
         zIndex: 11,
@@ -221,7 +227,7 @@ export function Ticker(props: {
     >
       <button
         type="button"
-        onClick={() => setCollapsed((c) => !c)}
+        onClick={() => setUserCollapsed((c) => !c)}
         style={{
           width: '100%',
           display: 'flex',
