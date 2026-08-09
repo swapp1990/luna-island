@@ -145,6 +145,9 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       pathIndex: 0,
       criticalFired: { hunger: false, energy: false, social: false },
       actionStartNeeds: { ...needs },
+      inventory: { food: 2 },
+      wallet: 20,
+      collapsed: false,
     })
   }
   world.agents = agents

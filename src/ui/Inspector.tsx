@@ -18,6 +18,8 @@ function actionVerb(kind: string): string {
       return 'Sleeping'
     case 'eat':
       return 'Eating'
+    case 'forage':
+      return 'Picking berries'
     case 'drink':
       return 'Drinking'
     case 'socialize':
@@ -217,6 +219,25 @@ export function Inspector(props: {
         <NeedBar label="Hunger" value={agent.needs.hunger} testId="need-hunger" />
         <NeedBar label="Energy" value={agent.needs.energy} testId="need-energy" />
         <NeedBar label="Social" value={agent.needs.social} testId="need-social" />
+      </div>
+
+      {/* Inventory & wallet */}
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+          marginBottom: 12,
+          fontSize: 12,
+          opacity: 0.92,
+        }}
+      >
+        <div data-testid="inv-row">
+          🎒 {agent.inventory?.food ?? 0} food
+        </div>
+        <div data-testid="wallet-row">
+          🪙 {agent.wallet ?? 0} coins
+        </div>
       </div>
 
       {/* Activity log */}

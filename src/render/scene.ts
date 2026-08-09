@@ -42,6 +42,8 @@ export interface SceneHandle {
     places: WorldState['places'],
     now: number,
   ) => void
+  /** Sync bush berry-dot visibility to place inventory stock. */
+  updateBushStock: (places: WorldState['places']) => void
   resize: (w: number, h: number) => void
   dispose: () => void
   render: () => void
@@ -161,6 +163,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     })
   }
 
+  const updateBushStock = (places: WorldState['places']) => {
+    terrain.updateBushStock(places)
+  }
+
   const publishCameraTarget = () => {
     window.__cameraTarget = {
       x: controls.target.x,
@@ -251,6 +257,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     bindSelection,
     followAgent,
     updateOverlays,
+    updateBushStock,
     resize,
     dispose,
     render,

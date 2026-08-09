@@ -9,8 +9,11 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   home: 1.0,
 }
 
-/** Actions that restore a need while using a place. */
-const RESTORE_KINDS = new Set(['sleep', 'eat', 'drink', 'socialize'])
+/**
+ * Actions that occupy a place slot (restore or forage).
+ * Eat no longer uses places — food is consumed from inventory anywhere.
+ */
+const PLACE_SLOT_KINDS = new Set(['sleep', 'drink', 'socialize', 'forage'])
 
 const NEIGHBOR8: Array<[number, number]> = [
   [0, 0],
@@ -134,7 +137,7 @@ export function countPlaceUsers(
   let n = 0
   for (const a of world.agents) {
     if (excludeAgentId && a.id === excludeAgentId) continue
-    if (!RESTORE_KINDS.has(a.action.kind)) continue
+    if (!PLACE_SLOT_KINDS.has(a.action.kind)) continue
     if (a.action.targetPlaceId === placeId) n++
   }
   return n
@@ -342,7 +345,7 @@ export function canRestoreThisTick(
   const restorers: number[] = []
   for (let i = 0; i < world.agents.length; i++) {
     const a = world.agents[i]!
-    if (!RESTORE_KINDS.has(a.action.kind)) continue
+    if (!PLACE_SLOT_KINDS.has(a.action.kind)) continue
     if (a.action.targetPlaceId !== place.id) continue
     if (!isStanding(a)) continue
     if (!isSlotTile(world, place, a.x, a.y)) continue

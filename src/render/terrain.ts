@@ -3,6 +3,8 @@ import type { Place, TerrainKind, WorldState } from '../sim/types'
 
 export interface TerrainHandle {
   root: THREE.Group
+  /** Show N berry dots on each bush from place inventory stock (0–6). */
+  updateBushStock: (places: Place[]) => void
   dispose: () => void
 }
 
@@ -388,11 +390,26 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     }
   }
 
-  // Places
+  // Places — berry meshes keyed by place id for stock-driven visibility
+  const bushBerries = new Map<string, THREE.Mesh[]>()
   const plaza = world.places.find((p) => p.kind === 'plaza')
   for (const place of world.places) {
-    addPlace(root, place, track, plaza)
+    addPlace(root, place, track, plaza, bushBerries)
   }
+
+  const updateBushStock = (places: Place[]) => {
+    for (const place of places) {
+      if (place.kind !== 'berry-bush') continue
+      const berries = bushBerries.get(place.id)
+      if (!berries) continue
+      const stock = Math.max(0, Math.min(6, Math.floor(place.inventory?.food ?? 0)))
+      for (let i = 0; i < berries.length; i++) {
+        berries[i]!.visible = i < stock
+      }
+    }
+  }
+  // Initial stock visibility
+  updateBushStock(world.places)
 
   const dispose = () => {
     scene.remove(root)
@@ -400,9 +417,10 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
       // geometries/materials tracked
     })
     for (const d of disposables) d.dispose()
+    bushBerries.clear()
   }
 
-  return { root, dispose }
+  return { root, updateBushStock, dispose }
 }
 
 function addPlace(
@@ -410,6 +428,7 @@ function addPlace(
   place: Place,
   track: <T extends { dispose: () => void }>(obj: T) => T,
   plaza: Place | undefined,
+  bushBerries: Map<string, THREE.Mesh[]>,
 ): void {
   const baseY = 0.22
   if (place.kind === 'home') {
@@ -511,7 +530,7 @@ function addPlace(
       root.add(slab)
     }
   } else if (place.kind === 'berry-bush') {
-    // Cluster of 3 overlapping low spheres + 6–10 tiny red berries
+    // Cluster of 3 overlapping low spheres + up to 6 berry dots (stock-driven)
     const bushMat = track(new THREE.MeshStandardMaterial({ color: BUSH_GREEN, roughness: 0.75 }))
     const offsets: Array<[number, number, number]> = [
       [0, 0, 1],
@@ -530,7 +549,8 @@ function addPlace(
     const berryGeo = track(new THREE.SphereGeometry(0.045, 6, 5))
     const berryMat = track(new THREE.MeshStandardMaterial({ color: BERRY_RED, roughness: 0.55 }))
     const rnd = tileRng(place.x, place.y, 77)
-    const berryCount = 6 + Math.floor(rnd() * 5) // 6–10
+    const berryCount = 6 // full stock = 6 dots; visibility driven by inventory
+    const berries: THREE.Mesh[] = []
     for (let i = 0; i < berryCount; i++) {
       const a = (i / berryCount) * Math.PI * 2 + rnd() * 0.4
       const elev = 0.15 + rnd() * 0.25
@@ -542,6 +562,8 @@ function addPlace(
         place.y + Math.sin(a) * r,
       )
       root.add(berry)
+      berries.push(berry)
     }
+    bushBerries.set(place.id, berries)
   }
 }

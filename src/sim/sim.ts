@@ -25,8 +25,11 @@ import {
 } from './utilityBrain'
 import type {
   AgentState,
+  Good,
   Intent,
+  Inventory,
   Needs,
+  OwnerId,
   Rng,
   SimEvent,
   Tick,
@@ -36,9 +39,28 @@ import type {
 const SNAPSHOT_INTERVAL = 180
 const REDECIDE_INTERVAL = 30
 const HYSTERESIS = 0.15
-const EAT_DURATION = 15
+/** Ticks per food unit consumed while eating. */
+const EAT_TICKS_PER_UNIT = 10
+const EAT_HUNGER_PER_UNIT = 0.45
+const EAT_MAX_UNITS = 2
+/** Ticks per food unit foraged from a bush. */
+const FORAGE_TICKS_PER_UNIT = 5
+const FORAGE_CARRY_CAP = 3
+const BUSH_STOCK_MAX = 6
+const BUSH_REGROW_INTERVAL = 240
 const DRINK_DURATION = 5
 const MOVE_SPEED = 1.0 // tiles per tick
+const COLLAPSE_MOVE_FACTOR = 0.4
+const COLLAPSE_ENTER = 0.02
+const COLLAPSE_CLEAR = 0.25
+
+/** Coin party: agent id or the village treasury. */
+export type CoinParty = string | 'treasury'
+
+/** Goods holder: agent or place inventory. */
+export type GoodsParty =
+  | { kind: 'agent'; id: string }
+  | { kind: 'place'; id: string }
 
 export interface SimSnapshot {
   state: WorldState
@@ -59,6 +81,10 @@ function cloneNeeds(n: Needs): Needs {
   return { hunger: n.hunger, energy: n.energy, social: n.social }
 }
 
+function cloneInventory(inv: Inventory): Inventory {
+  return { food: inv.food ?? 0 }
+}
+
 function deepCloneAgent(a: AgentState): AgentState {
   return {
     ...a,
@@ -66,6 +92,7 @@ function deepCloneAgent(a: AgentState): AgentState {
     needJitter: cloneNeeds(a.needJitter),
     criticalFired: { ...a.criticalFired },
     actionStartNeeds: cloneNeeds(a.actionStartNeeds),
+    inventory: cloneInventory(a.inventory),
     action: {
       ...a.action,
       path: a.action.path ? a.action.path.map((p) => [p[0], p[1]] as [number, number]) : undefined,
@@ -80,8 +107,13 @@ function deepCloneWorld(state: WorldState): WorldState {
     width: state.width,
     height: state.height,
     tiles: state.tiles.map((t) => ({ ...t })),
-    places: state.places.map((p) => ({ ...p })),
+    places: state.places.map((p) => ({
+      ...p,
+      inventory: cloneInventory(p.inventory ?? { food: 0 }),
+    })),
     agents: state.agents.map(deepCloneAgent),
+    treasury: state.treasury,
+    owners: { ...state.owners },
   }
 }
 
@@ -231,6 +263,157 @@ export class Simulation {
     return this.rng
   }
 
+  /**
+   * Coin conservation law: the ONLY way money moves.
+   * `from`/`to` are agent ids or `'treasury'`. Never creates or destroys coins.
+   */
+  transferCoins(
+    from: CoinParty,
+    to: CoinParty,
+    amount: number,
+    reason: string,
+  ): boolean {
+    if (amount <= 0 || from === to) return false
+    const fromBal = this.coinBalance(from)
+    if (fromBal < amount) return false
+    this.setCoinBalance(from, fromBal - amount)
+    this.setCoinBalance(to, this.coinBalance(to) + amount)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'coins:transfer',
+      data: { from, to, amount },
+      reason,
+    })
+    return true
+  }
+
+  /**
+   * Goods conservation for moves: the ONLY way goods change hands.
+   * Creation uses `regrowGoods`; destruction uses `consumeGoods`.
+   */
+  transferGoods(
+    from: GoodsParty,
+    to: GoodsParty,
+    good: Good,
+    amount: number,
+    reason: string,
+  ): boolean {
+    if (amount <= 0) return false
+    const fromInv = this.goodsInventory(from)
+    const toInv = this.goodsInventory(to)
+    if (!fromInv || !toInv) return false
+    if ((fromInv[good] ?? 0) < amount) return false
+    fromInv[good] = (fromInv[good] ?? 0) - amount
+    toInv[good] = (toInv[good] ?? 0) + amount
+    this.events.append({
+      tick: this.state.tick,
+      type: 'goods:transfer',
+      agentId: to.kind === 'agent' ? to.id : from.kind === 'agent' ? from.id : undefined,
+      data: {
+        good,
+        amount,
+        fromKind: from.kind,
+        fromId: from.id,
+        toKind: to.kind,
+        toId: to.id,
+      },
+      reason,
+    })
+    return true
+  }
+
+  /** Destroy goods from a holder (eating). Emits `goods:consume`. */
+  consumeGoods(
+    holder: GoodsParty,
+    good: Good,
+    amount: number,
+    reason: string,
+  ): boolean {
+    if (amount <= 0) return false
+    const inv = this.goodsInventory(holder)
+    if (!inv) return false
+    if ((inv[good] ?? 0) < amount) return false
+    inv[good] = (inv[good] ?? 0) - amount
+    this.events.append({
+      tick: this.state.tick,
+      type: 'goods:consume',
+      agentId: holder.kind === 'agent' ? holder.id : undefined,
+      data: {
+        good,
+        amount,
+        holderKind: holder.kind,
+        holderId: holder.id,
+      },
+      reason,
+    })
+    return true
+  }
+
+  /** World process: create goods at a place (bush regrowth). Emits `goods:regrow`. */
+  regrowGoods(
+    placeId: string,
+    good: Good,
+    amount: number,
+    reason: string,
+  ): boolean {
+    if (amount <= 0) return false
+    const place = this.state.places.find((p) => p.id === placeId)
+    if (!place) return false
+    place.inventory[good] = (place.inventory[good] ?? 0) + amount
+    this.events.append({
+      tick: this.state.tick,
+      type: 'goods:regrow',
+      data: { good, amount, placeId, placeKind: place.kind },
+      reason,
+    })
+    return true
+  }
+
+  /** Ownership registry transfer. Emits `ownership:transfer`. */
+  transferOwnership(
+    placeId: string,
+    newOwner: OwnerId,
+    reason: string,
+  ): boolean {
+    if (!(placeId in this.state.owners) && !this.state.places.some((p) => p.id === placeId)) {
+      return false
+    }
+    const prev = this.state.owners[placeId] ?? 'commons'
+    if (prev === newOwner) return false
+    this.state.owners[placeId] = newOwner
+    this.events.append({
+      tick: this.state.tick,
+      type: 'ownership:transfer',
+      data: { placeId, from: prev, to: newOwner },
+      reason,
+    })
+    return true
+  }
+
+  private coinBalance(party: CoinParty): number {
+    if (party === 'treasury') return this.state.treasury
+    const agent = this.state.agents.find((a) => a.id === party)
+    return agent?.wallet ?? 0
+  }
+
+  private setCoinBalance(party: CoinParty, value: number): void {
+    if (party === 'treasury') {
+      this.state.treasury = value
+      return
+    }
+    const agent = this.state.agents.find((a) => a.id === party)
+    if (agent) agent.wallet = value
+  }
+
+  private goodsInventory(party: GoodsParty): Inventory | null {
+    if (party.kind === 'agent') {
+      const agent = this.state.agents.find((a) => a.id === party.id)
+      return agent?.inventory ?? null
+    }
+    const place = this.state.places.find((p) => p.id === party.id)
+    return place?.inventory ?? null
+  }
+
   /** Completed day archives (oldest first). Events are never pruned. */
   archives(): readonly DayArchiveMeta[] {
     return this.dayArchives
@@ -279,6 +462,8 @@ export class Simulation {
       !!place &&
       this.isPerforming(agent) &&
       canRestoreThisTick(this.state, agent, place)
+    // Collapse blocks restores except eat/sleep (eat is inventory-based, not place restore)
+    const restoreAllowed = !agent.collapsed
     const sleeping = agent.action.kind === 'sleep' && canRestore
 
     // Hunger decay always
@@ -292,6 +477,7 @@ export class Simulation {
     }
 
     // World rule 2: social regenerates only with another agent within 1.5 tiles
+    // Collapse blocks social restore (active + passive proximity gain)
     let nearOther = false
     for (const p of positions) {
       if (p.id === agent.id) continue
@@ -300,7 +486,7 @@ export class Simulation {
         break
       }
     }
-    if (nearOther) {
+    if (nearOther && restoreAllowed) {
       // Active socialize on a plaza slot gets the full rate; otherwise passive proximity
       const socializing = agent.action.kind === 'socialize' && canRestore
       if (socializing) {
@@ -308,13 +494,45 @@ export class Simulation {
       } else {
         agent.needs.social = clamp01(agent.needs.social + (1 / 2880) * j.social)
       }
+    } else if (!nearOther) {
+      agent.needs.social = clamp01(agent.needs.social - (1 / 720) * j.social)
     } else {
+      // Collapsed + near other: social still decays (no restore while collapsed)
       agent.needs.social = clamp01(agent.needs.social - (1 / 720) * j.social)
     }
 
     this.checkCritical(agent, 'hunger', agent.needs.hunger)
     this.checkCritical(agent, 'energy', agent.needs.energy)
     this.checkCritical(agent, 'social', agent.needs.social)
+    this.checkCollapse(agent)
+  }
+
+  private checkCollapse(agent: AgentState): void {
+    if (!agent.collapsed && agent.needs.hunger <= COLLAPSE_ENTER) {
+      agent.collapsed = true
+      this.events.append({
+        tick: this.state.tick,
+        type: 'agent:collapsed',
+        agentId: agent.id,
+        data: {
+          agentName: agent.name,
+          hunger: agent.needs.hunger,
+        },
+        reason: `${agent.name} collapsed from hunger (${pct(agent.needs.hunger)}%) — needs food`,
+      })
+    } else if (agent.collapsed && agent.needs.hunger >= COLLAPSE_CLEAR) {
+      agent.collapsed = false
+      this.events.append({
+        tick: this.state.tick,
+        type: 'agent:recovered',
+        agentId: agent.id,
+        data: {
+          agentName: agent.name,
+          hunger: agent.needs.hunger,
+        },
+        reason: `${agent.name} recovered (hunger ${pct(agent.needs.hunger)}%) — back on their feet`,
+      })
+    }
   }
 
   private checkCritical(
@@ -372,10 +590,10 @@ export class Simulation {
       }
     }
 
-    // Move along path
+    // Move along path (collapsed agents crawl at ×0.4)
     if (agent.action.path && agent.pathIndex < agent.action.path.length) {
-      // Move MOVE_SPEED tiles toward next waypoint (adjacent tiles → 1 tile/tick)
-      let remaining = MOVE_SPEED
+      const speed = MOVE_SPEED * (agent.collapsed ? COLLAPSE_MOVE_FACTOR : 1)
+      let remaining = speed
       while (remaining > 0 && agent.pathIndex < agent.action.path.length) {
         const [nx, ny] = agent.action.path[agent.pathIndex]!
         const dx = nx - agent.x
@@ -419,26 +637,94 @@ export class Simulation {
     const place = agent.action.targetPlaceId
       ? this.state.places.find((p) => p.id === agent.action.targetPlaceId)
       : undefined
-    const restoring = !!place && canRestoreThisTick(this.state, agent, place)
+    const onSlot = !!place && canRestoreThisTick(this.state, agent, place)
 
+    // Eat anywhere: consume carried food over 10 ticks/unit, max 2 units/meal
     if (kind === 'eat') {
-      if (restoring) {
-        agent.needs.hunger = clamp01(agent.needs.hunger + 1 / 15)
-      }
-      if (agent.actionTicks >= EAT_DURATION) {
-        this.endAction(
-          agent,
-          `ate berries, hunger ${pct(agent.actionStartNeeds.hunger)}%→${pct(agent.needs.hunger)}%`,
+      if (
+        agent.actionTicks > 0 &&
+        agent.actionTicks % EAT_TICKS_PER_UNIT === 0
+      ) {
+        const unitsDone = agent.actionTicks / EAT_TICKS_PER_UNIT
+        const ok = this.consumeGoods(
+          { kind: 'agent', id: agent.id },
+          'food',
+          1,
+          `${agent.name} ate carried food`,
         )
-        agent.action = { kind: 'idle', reason: 'Full and content' }
+        if (ok) {
+          agent.needs.hunger = clamp01(
+            agent.needs.hunger + EAT_HUNGER_PER_UNIT,
+          )
+        }
+        const moreFood = (agent.inventory.food ?? 0) >= 1
+        if (!ok || unitsDone >= EAT_MAX_UNITS || !moreFood) {
+          this.endAction(
+            agent,
+            `ate a meal, hunger ${pct(agent.actionStartNeeds.hunger)}%→${pct(agent.needs.hunger)}%`,
+          )
+          agent.action = {
+            kind: 'idle',
+            reason: ok ? 'Finished eating' : 'No food left to eat',
+          }
+          agent.actionTicks = 0
+          agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+        }
+      } else if ((agent.inventory.food ?? 0) < 1 && agent.actionTicks === 1) {
+        // Started eat with no food — abort immediately
+        this.endAction(agent, 'had nothing to eat')
+        agent.action = { kind: 'idle', reason: 'No food to eat' }
         agent.actionTicks = 0
         agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       }
       return
     }
 
+    // Forage at bush slot: every 5 ticks, bush→agent 1 food until carry 3 or empty
+    if (kind === 'forage') {
+      if (onSlot && place) {
+        if (
+          agent.actionTicks > 0 &&
+          agent.actionTicks % FORAGE_TICKS_PER_UNIT === 0
+        ) {
+          const bushStock = place.inventory.food ?? 0
+          const carry = agent.inventory.food ?? 0
+          if (bushStock > 0 && carry < FORAGE_CARRY_CAP) {
+            this.transferGoods(
+              { kind: 'place', id: place.id },
+              { kind: 'agent', id: agent.id },
+              'food',
+              1,
+              `${agent.name} picked berries at ${place.id}`,
+            )
+          }
+        }
+        const carry = agent.inventory.food ?? 0
+        const bushStock = place.inventory.food ?? 0
+        if (carry >= FORAGE_CARRY_CAP || bushStock <= 0) {
+          this.endAction(
+            agent,
+            carry >= FORAGE_CARRY_CAP
+              ? `foraged a full load (${carry} food)`
+              : `bush empty, carrying ${carry} food`,
+          )
+          agent.action = {
+            kind: 'idle',
+            reason:
+              carry >= FORAGE_CARRY_CAP
+                ? 'Arms full of berries'
+                : 'Bush picked clean',
+          }
+          agent.actionTicks = 0
+          agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+        }
+      }
+      return
+    }
+
     if (kind === 'drink') {
-      if (restoring) {
+      // Collapse blocks drink restore
+      if (onSlot && !agent.collapsed) {
         agent.needs.energy = clamp01(agent.needs.energy + 0.02)
       }
       if (agent.actionTicks >= DRINK_DURATION) {
@@ -472,7 +758,7 @@ export class Simulation {
     }
 
     if (kind === 'socialize') {
-      // social regen gated by proximity + slot in stepNeeds — no milling
+      // social regen gated by proximity + slot + collapse in stepNeeds — no milling
       return
     }
 
@@ -503,24 +789,28 @@ export class Simulation {
     // Urgent only for a *different* need than the one this action is serving
     const urgent = idle ? anyNeedCritical(agent) : urgentDifferentNeed(agent)
 
-    // Keep sleeping unless urgent interrupt (natural wake is handled in performAtTarget)
+    // Sleep is committed while resting on a bed slot: natural wake only
+    // (energy ≥ 0.95 or 07:00). Prevents scarcity thrash of sleep↔forage/social.
+    // Walking home to sleep can still be redecided.
     if (
       agent.action.kind === 'sleep' &&
       this.isPerforming(agent) &&
-      shouldKeepSleeping(agent, hour) &&
-      !urgent
+      shouldKeepSleeping(agent, hour)
     ) {
       return
     }
 
-    // Minimum action duration: once started, no re-decide for 30 ticks unless urgent
-    if (!idle && !urgent && tick - agent.lastDecideTick < REDECIDE_INTERVAL) {
+    // Minimum action duration: once started, no re-decide for 30 ticks
+    // (urgent included — interval is the max interrupt rate).
+    if (!idle && tick - agent.lastDecideTick < REDECIDE_INTERVAL) {
       return
     }
 
-    // Don't interrupt eat/drink mid-meal unless urgent (duration-gated above also covers this)
+    // Don't interrupt eat/drink/forage mid-meal for non-urgent redecide
     if (
-      (agent.action.kind === 'eat' || agent.action.kind === 'drink') &&
+      (agent.action.kind === 'eat' ||
+        agent.action.kind === 'drink' ||
+        agent.action.kind === 'forage') &&
       this.isPerforming(agent) &&
       agent.actionTicks > 0 &&
       !urgent
@@ -528,8 +818,8 @@ export class Simulation {
       return
     }
 
-    // Re-decide when idle (action just finished), on interval, or urgent interrupt
-    if (!urgent && !idle && !due) return
+    // Re-decide when idle (action just finished) or on interval
+    if (!idle && !due) return
 
     this.redecide(agent)
   }
@@ -551,9 +841,8 @@ export class Simulation {
       return // already doing it
     }
 
-    // Hysteresis: keep current unless competitor beats by ≥ 0.15, except urgent
-    const urgent = urgentDifferentNeed(agent)
-    if (!urgent && currentKind !== 'idle' && currentKind !== 'wander') {
+    // Hysteresis: keep current unless competitor beats by ≥ 0.15.
+    if (currentKind !== 'idle' && currentKind !== 'wander') {
       // wander can be freely replaced; idle always takes new intent
       const currentScore = scoreCurrentAction(obs, currentKind)
       const newObsScore = this.scoreIntent(obs, intent)
@@ -563,12 +852,11 @@ export class Simulation {
       }
     }
 
-    // Special: while sleeping and should keep sleeping, ignore non-urgent switches
+    // Special: while sleeping and should keep sleeping, ignore all switches
     if (
       currentKind === 'sleep' &&
       this.isPerforming(agent) &&
-      shouldKeepSleeping(agent) &&
-      !urgent
+      shouldKeepSleeping(agent)
     ) {
       this.resolveCoStanding(agent)
       return
@@ -725,6 +1013,7 @@ export class Simulation {
     }
 
     this.stepAgents()
+    this.stepBushRegrowth()
 
     if (this.state.tick % SNAPSHOT_INTERVAL === 0) {
       this.snapshots.add(this.makeSnapshot())
@@ -739,6 +1028,23 @@ export class Simulation {
    * Record a finished calendar day, pin its start snapshot, drop fine-grained
    * snapshots inside the day (reconstruct via start snap + events).
    */
+  /** World process: +1 food per bush every 240 ticks, capped at 6. */
+  private stepBushRegrowth(): void {
+    if (this.state.tick <= 0) return
+    if (this.state.tick % BUSH_REGROW_INTERVAL !== 0) return
+    for (const place of this.state.places) {
+      if (place.kind !== 'berry-bush') continue
+      const stock = place.inventory.food ?? 0
+      if (stock >= BUSH_STOCK_MAX) continue
+      this.regrowGoods(
+        place.id,
+        'food',
+        1,
+        `Berry bush ${place.id} regrew (stock ${stock + 1})`,
+      )
+    }
+  }
+
   private archiveCompletedDay(day: number, endTick: Tick): void {
     const startTick = dayStartTick(day)
     if (this.dayArchives.some((a) => a.day === day)) return

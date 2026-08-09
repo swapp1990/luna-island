@@ -1,4 +1,4 @@
-import { pickPlaceForAgent, pickSocialSlot } from './spots'
+import { pickPlaceForAgent, pickSocialSlot, placeHasCapacity } from './spots'
 import { toSimTime } from './time'
 import type {
   ActionKind,
@@ -82,14 +82,51 @@ export function sleepScore(energy: number, hour: number): number {
   return (1 - energy) * nightBias + (energy < 0.2 ? 1.0 : 0)
 }
 
-function eatReason(hunger: number, crowded: boolean): string {
+function eatReason(hunger: number): string {
+  if (hunger < 0.25) {
+    return `Starving (${pct(hunger)}%) — eating carried food`
+  }
+  return `Hungry (${pct(hunger)}%) — eating what they carry`
+}
+
+function forageReason(hunger: number, crowded: boolean): string {
   if (crowded) {
-    return `Hungry (${pct(hunger)}%) — the near bushes are crowded, walking to the far ones`
+    return `Hungry (${pct(hunger)}%) — near bushes crowded, walking to farther ones`
   }
   if (hunger < 0.25) {
-    return `Starving (${pct(hunger)}%) — rushing to the berry bushes`
+    return `Starving (${pct(hunger)}%) — rushing to pick berries`
   }
-  return `Hungry (${pct(hunger)}%) — heading to the berry bushes`
+  return `Need food (${pct(hunger)}%) — heading to the berry bushes`
+}
+
+function foodCount(agent: AgentState): number {
+  return agent.inventory?.food ?? 0
+}
+
+/** Nearest berry-bush with stock > 0 and free slot (generic next-nearest when full). */
+function pickStockedBush(
+  world: WorldState,
+  agent: AgentState,
+): { place: Place | null; crowded: boolean } {
+  const list = world.places.filter(
+    (p) => p.kind === 'berry-bush' && (p.inventory?.food ?? 0) > 0,
+  )
+  if (list.length === 0) return { place: null, crowded: false }
+
+  const sorted = list.slice().sort((a, b) => {
+    const da = (a.x - agent.x) ** 2 + (a.y - agent.y) ** 2
+    const db = (b.x - agent.x) ** 2 + (b.y - agent.y) ** 2
+    if (da !== db) return da - db
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+
+  const nearest = sorted[0]!
+  for (const place of sorted) {
+    if (placeHasCapacity(world, place, agent.id)) {
+      return { place, crowded: place.id !== nearest.id }
+    }
+  }
+  return { place: null, crowded: false }
 }
 
 function drinkReason(energy: number): string {
@@ -122,7 +159,7 @@ function makeWanderIntent(
 }
 
 /**
- * Utility-based brain: scores sleep / eat / drink / socialize / wander,
+ * Utility-based brain: scores sleep / eat / forage / drink / socialize / wander,
  * returns the max-scoring intent with product-copy reason strings.
  * Place-full → next-nearest of same kind, else wander (no waiting).
  */
@@ -131,6 +168,7 @@ export class UtilityBrain implements Brain {
     const { self, time, world } = obs
     const hour = time.hour
     const night = isNight(hour)
+    const carried = foodCount(self)
 
     const candidates: Scored[] = []
 
@@ -150,20 +188,35 @@ export class UtilityBrain implements Brain {
       })
     }
 
-    // eat → nearest berry-bush with free capacity; else skip (wander competes)
-    {
-      const { place: bush, crowded } = pickPlaceForAgent(world, self, 'berry-bush')
+    // eat → anywhere, requires carried food
+    if (carried > 0) {
+      let score = (1 - self.needs.hunger) * 1.3
+      if (self.needs.hunger < 0.25) score += 0.5
+      candidates.push({
+        score,
+        intent: {
+          kind: 'eat',
+          targetX: Math.round(self.x),
+          targetY: Math.round(self.y),
+          reason: eatReason(self.needs.hunger),
+        },
+      })
+    }
+
+    // forage → nearest stocked bush with free slot; only when carrying 0 food
+    if (carried === 0) {
+      const { place: bush, crowded } = pickStockedBush(world, self)
       if (bush) {
-        let score = (1 - self.needs.hunger) * 1.3
+        let score = (1 - self.needs.hunger) * 1.2
         if (self.needs.hunger < 0.25) score += 0.5
         candidates.push({
           score,
           intent: {
-            kind: 'eat',
+            kind: 'forage',
             targetPlaceId: bush.id,
             targetX: bush.x,
             targetY: bush.y,
-            reason: eatReason(self.needs.hunger, crowded),
+            reason: forageReason(self.needs.hunger, crowded),
           },
         })
       }
@@ -228,13 +281,21 @@ export class UtilityBrain implements Brain {
 export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
   const { self, time } = obs
   const hour = time.hour
+  const carried = foodCount(self)
 
   switch (kind) {
     case 'sleep':
       if (self.needs.energy >= 0.85) return 0
       return sleepScore(self.needs.energy, hour)
     case 'eat': {
+      if (carried <= 0) return 0
       let s = (1 - self.needs.hunger) * 1.3
+      if (self.needs.hunger < 0.25) s += 0.5
+      return s
+    }
+    case 'forage': {
+      if (carried > 0) return 0
+      let s = (1 - self.needs.hunger) * 1.2
       if (self.needs.hunger < 0.25) s += 0.5
       return s
     }
@@ -276,11 +337,17 @@ export function anyNeedCritical(agent: AgentState): boolean {
 export function urgentDifferentNeed(agent: AgentState): boolean {
   const { hunger, energy, social } = agent.needs
   const kind = agent.action.kind
+  const carried = foodCount(agent)
   switch (kind) {
     case 'sleep':
+      // Hunger only interrupts sleep when food is already carried (eat works
+      // anywhere, including bed). Waking to forage is decided on the normal
+      // interval / natural wake — avoids sleep↔forage thrash under scarcity.
+      return (hunger < 0.15 && carried > 0) || social < 0.15
     case 'drink':
       return hunger < 0.15 || social < 0.15
     case 'eat':
+    case 'forage':
       return energy < 0.15 || social < 0.15
     case 'socialize':
       return hunger < 0.15 || energy < 0.15

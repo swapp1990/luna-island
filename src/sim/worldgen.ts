@@ -226,6 +226,8 @@ export function generateWorld(seed: number): WorldState {
       tiles,
       places,
       agents: [],
+      treasury: 200,
+      owners: {},
     }
   }
 
@@ -254,7 +256,14 @@ export function generateWorld(seed: number): WorldState {
     }
   }
 
-  places.push({ id: 'plaza-0', kind: 'plaza', x: plazaX, y: plazaY, slots: 12 })
+  places.push({
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: plazaX,
+    y: plazaY,
+    slots: 12,
+    inventory: { food: 0 },
+  })
 
   // Clear 2-tile radius around plaza (force grass walkable, keep non-water)
   for (let dy = -2; dy <= 2; dy++) {
@@ -285,13 +294,27 @@ export function generateWorld(seed: number): WorldState {
     const wx = plazaX + ox
     const wy = plazaY + oy
     if (isWalkableGrass(tiles, wx, wy)) {
-      places.push({ id: 'well-0', kind: 'well', x: wx, y: wy, slots: 2 })
+      places.push({
+        id: 'well-0',
+        kind: 'well',
+        x: wx,
+        y: wy,
+        slots: 2,
+        inventory: { food: 0 },
+      })
       wellPlaced = true
       break
     }
   }
   if (!wellPlaced) {
-    places.push({ id: 'well-0', kind: 'well', x: plazaX, y: plazaY, slots: 2 })
+    places.push({
+      id: 'well-0',
+      kind: 'well',
+      x: plazaX,
+      y: plazaY,
+      slots: 2,
+      inventory: { food: 0 },
+    })
   }
 
   // 10 homes on a ring radius 4–7 (expand outer radius if needed), Chebyshev spacing ≥ 2
@@ -342,7 +365,14 @@ export function generateWorld(seed: number): WorldState {
       seenHomes.add(key)
       if (homeTooClose(hx, hy)) continue
       // slots = residents; finalized in spawnAgents once agents are assigned
-      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy, slots: 3 })
+      places.push({
+        id: `home-${homeCount}`,
+        kind: 'home',
+        x: hx,
+        y: hy,
+        slots: 3,
+        inventory: { food: 0 },
+      })
       occupied.add(key)
       homeCount++
     }
@@ -365,7 +395,14 @@ export function generateWorld(seed: number): WorldState {
       if (homeTooClose(hx, hy)) continue
       const dist = Math.sqrt((hx - plazaX) ** 2 + (hy - plazaY) ** 2)
       if (dist < 4 || dist > 14) continue
-      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy, slots: 3 })
+      places.push({
+        id: `home-${homeCount}`,
+        kind: 'home',
+        x: hx,
+        y: hy,
+        slots: 3,
+        inventory: { food: 0 },
+      })
       occupied.add(key)
       homeCount++
     }
@@ -406,9 +443,21 @@ export function generateWorld(seed: number): WorldState {
       }
     }
     if (tooClose) continue
-    places.push({ id: `bush-${bushCount}`, kind: 'berry-bush', x: bx, y: by, slots: 2 })
+    places.push({
+      id: `bush-${bushCount}`,
+      kind: 'berry-bush',
+      x: bx,
+      y: by,
+      slots: 2,
+      inventory: { food: 6 },
+    })
     occupied.add(`${bx},${by}`)
     bushCount++
+  }
+
+  const owners: Record<string, 'commons'> = {}
+  for (const p of places) {
+    owners[p.id] = 'commons'
   }
 
   return {
@@ -419,5 +468,7 @@ export function generateWorld(seed: number): WorldState {
     tiles,
     places,
     agents: [],
+    treasury: 200,
+    owners,
   }
 }

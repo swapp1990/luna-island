@@ -52,6 +52,32 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'agent:collapsed') {
+      const name =
+        (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `collapse-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · ${name} collapsed — needs food`,
+      })
+      continue
+    }
+
+    if (ev.type === 'agent:recovered') {
+      const name =
+        (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `recover-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · ${name} recovered`,
+      })
+      continue
+    }
+
     if (ev.type === 'action:start') {
       const agentId = ev.agentId
       if (!agentId) continue

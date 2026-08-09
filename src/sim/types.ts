@@ -16,6 +16,14 @@ export interface Tile {
 
 export type PlaceKind = 'home' | 'berry-bush' | 'well' | 'plaza'
 
+/** Extensible goods union — Phase 2 starts with food only. */
+export type Good = 'food'
+
+export type Inventory = Record<Good, number>
+
+/** Place owner: a villager id or the village commons. */
+export type OwnerId = string | 'commons'
+
 export interface Place {
   id: string
   kind: PlaceKind
@@ -23,13 +31,22 @@ export interface Place {
   y: number
   /** Concurrent restore capacity (agents using this place). */
   slots: number
-  ownerId?: string
+  /** Goods held at this place (bushes stock food here). */
+  inventory: Inventory
 }
 
 /** All needs 0..1, where 1 = fully satisfied. */
 export interface Needs { hunger: number; energy: number; social: number }
 
-export type ActionKind = 'idle' | 'walk' | 'sleep' | 'eat' | 'drink' | 'socialize' | 'wander'
+export type ActionKind =
+  | 'idle'
+  | 'walk'
+  | 'sleep'
+  | 'eat'
+  | 'drink'
+  | 'socialize'
+  | 'wander'
+  | 'forage'
 
 export interface AgentAction {
   kind: ActionKind
@@ -63,6 +80,12 @@ export interface AgentState {
   criticalFired: { hunger: boolean; energy: boolean; social: boolean }
   /** Needs snapshot when the current action began (for action:end copy). */
   actionStartNeeds: Needs
+  /** Carried goods. */
+  inventory: Inventory
+  /** Personal coins. */
+  wallet: number
+  /** Starvation collapse (world rule): slow move, limited restores. */
+  collapsed: boolean
 }
 
 export interface WorldState {
@@ -73,6 +96,10 @@ export interface WorldState {
   tiles: Tile[] // row-major, length = width*height
   places: Place[]
   agents: AgentState[]
+  /** Village commons wallet. */
+  treasury: number
+  /** Ownership registry: every place → agent id or 'commons'. */
+  owners: Record<string, OwnerId>
 }
 
 export interface SimEvent {

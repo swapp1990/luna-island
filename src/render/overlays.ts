@@ -92,10 +92,17 @@ export function formatStatusBubble(
     : undefined
   const placeKind = place?.kind
 
+  // Collapse overrides other status copy
+  if (agent.collapsed) {
+    return '😵 Collapsed — needs food'
+  }
+
   if (walking) {
     switch (a.kind) {
-      case 'eat':
+      case 'forage':
         return '🚶 → berry bushes'
+      case 'eat':
+        return '🍽️ Eating'
       case 'drink':
         return '🚶 → the well'
       case 'sleep':
@@ -116,8 +123,10 @@ export function formatStatusBubble(
   }
 
   switch (a.kind) {
+    case 'forage':
+      return '🫐 Picking berries'
     case 'eat':
-      return '🫐 Foraging'
+      return '🍽️ Eating'
     case 'drink':
       return '💧 At the well'
     case 'sleep':
