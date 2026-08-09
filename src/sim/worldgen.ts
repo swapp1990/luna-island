@@ -229,6 +229,8 @@ export function generateWorld(seed: number): WorldState {
       treasury: 200,
       owners: {},
       stats: [],
+      sympathyStreak: {},
+      sympathyMet: {},
     }
   }
 
@@ -785,5 +787,7 @@ export function generateWorld(seed: number): WorldState {
     treasury: 200,
     owners,
     stats: [],
+    sympathyStreak: {},
+    sympathyMet: {},
   }
 }

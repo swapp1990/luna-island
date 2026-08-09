@@ -156,6 +156,7 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       haulGood: null,
       haulSourceId: null,
       haulDropoffId: null,
+      sympathy: {},
     })
   }
   world.agents = agents

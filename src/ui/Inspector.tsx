@@ -1,5 +1,8 @@
+import { useEffect, useState } from 'react'
 import type { AgentState, Place, SimEvent } from '../sim/types'
 import { toSimTime } from '../sim/time'
+
+type TabId = 'status' | 'life' | 'people' | 'work'
 
 function pad2s(n: number): string {
   return n.toString().padStart(2, '0')
@@ -10,6 +13,18 @@ function needColor(v: number): string {
   if (v >= 0.55) return '#6fbf7a'
   if (v >= 0.3) return '#e0b44a'
   return '#e05a5a'
+}
+
+function sympathyColor(v: number): string {
+  if (v >= 0.6) return '#e8a0c8'
+  if (v >= 0.3) return '#c98bb9'
+  return '#8a90a0'
+}
+
+function sympathyLabel(v: number): string {
+  if (v >= 0.6) return 'close friend'
+  if (v >= 0.3) return 'friend'
+  return 'acquaintance'
 }
 
 function actionVerb(kind: string, workPhase?: string | null): string {
@@ -131,6 +146,39 @@ function NeedBar(props: { label: string; value: number; testId: string }) {
   )
 }
 
+function SympathyBar(props: { value: number }) {
+  const pct = Math.round(Math.max(0, Math.min(1, props.value)) * 100)
+  const color = sympathyColor(props.value)
+  return (
+    <div
+      style={{
+        height: 6,
+        borderRadius: 3,
+        background: 'rgba(255,255,255,0.08)',
+        overflow: 'hidden',
+        flex: 1,
+        minWidth: 48,
+      }}
+    >
+      <div
+        style={{
+          width: `${pct}%`,
+          height: '100%',
+          background: color,
+          borderRadius: 3,
+        }}
+      />
+    </div>
+  )
+}
+
+const TABS: Array<{ id: TabId; label: string; testId: string }> = [
+  { id: 'status', label: 'Status', testId: 'tab-status' },
+  { id: 'life', label: 'Life', testId: 'tab-life' },
+  { id: 'people', label: 'People', testId: 'tab-people' },
+  { id: 'work', label: 'Work', testId: 'tab-work' },
+]
+
 export function Inspector(props: {
   agent: AgentState | null
   events: readonly SimEvent[]
@@ -139,12 +187,21 @@ export function Inspector(props: {
   dayStartTick?: number
   places?: Place[]
   owners?: Record<string, string>
+  /** All agents (for People tab name/color lookup). */
+  agents?: readonly AgentState[]
   following: boolean
   onToggleFollow: () => void
   onClose: () => void
 }) {
   const { agent, events, replayTick, following, onToggleFollow, onClose } = props
   const dayStart = props.dayStartTick ?? 0
+  const [tab, setTab] = useState<TabId>('status')
+
+  // Reset to Status when selecting a different villager
+  useEffect(() => {
+    setTab('status')
+  }, [agent?.id])
+
   if (!agent) return null
   const owns = ownsLabel(agent, props.places, props.owners)
 
@@ -159,6 +216,20 @@ export function Inspector(props: {
     .slice()
     .reverse()
     .slice(0, 50)
+
+  const people = Object.entries(agent.sympathy ?? {})
+    .filter(([, v]) => v > 0)
+    .map(([otherId, value]) => {
+      const other = props.agents?.find((a) => a.id === otherId)
+      return {
+        id: otherId,
+        name: other?.name ?? otherId,
+        color: other?.color ?? '#888',
+        value,
+        label: sympathyLabel(value),
+      }
+    })
+    .sort((a, b) => b.value - a.value || a.name.localeCompare(b.name))
 
   const verb = actionVerb(agent.action.kind, agent.workPhase)
 
@@ -191,7 +262,7 @@ export function Inspector(props: {
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          marginBottom: 12,
+          marginBottom: 10,
         }}
       >
         <span
@@ -247,97 +318,199 @@ export function Inspector(props: {
         </button>
       </div>
 
-      {/* Current action */}
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{verb}</div>
-        <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.4 }}>{agent.action.reason}</div>
-      </div>
-
-      {/* Needs */}
-      <div style={{ marginBottom: 12 }}>
-        <NeedBar label="Hunger" value={agent.needs.hunger} testId="need-hunger" />
-        <NeedBar label="Energy" value={agent.needs.energy} testId="need-energy" />
-        <NeedBar label="Social" value={agent.needs.social} testId="need-social" />
-      </div>
-
-      {/* Inventory, wallet, job */}
+      {/* Tabs */}
       <div
+        role="tablist"
         style={{
           display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
+          gap: 2,
           marginBottom: 12,
-          fontSize: 12,
-          opacity: 0.92,
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
+          paddingBottom: 0,
         }}
       >
-        <div data-testid="inv-row">
-          🎒 {agent.inventory?.food ?? 0} food
-          {(agent.inventory?.wood ?? 0) > 0 || (agent.inventory?.stone ?? 0) > 0
-            ? ` · ${agent.inventory?.wood ?? 0} wood · ${agent.inventory?.stone ?? 0} stone`
-            : ''}
-        </div>
-        <div data-testid="wallet-row">
-          🪙 {agent.wallet ?? 0} coins
-        </div>
-        <div data-testid="job-row">
-          💼 {jobLabel(agent, props.places)}
-        </div>
-        {owns ? (
-          <div data-testid="owns-row">🏠 Owns: {owns}</div>
-        ) : null}
+        {TABS.map((t) => {
+          const active = tab === t.id
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              data-testid={t.testId}
+              onClick={() => setTab(t.id)}
+              style={{
+                flex: 1,
+                padding: '6px 2px',
+                background: 'transparent',
+                border: 'none',
+                borderBottom: active
+                  ? '2px solid rgba(255,200,120,0.75)'
+                  : '2px solid transparent',
+                color: active ? '#ffe7c2' : '#9aa3b5',
+                cursor: 'pointer',
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 0.2,
+              }}
+            >
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      {/* Activity log */}
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: 0.6,
-          textTransform: 'uppercase',
-          opacity: 0.55,
-          marginBottom: 6,
-        }}
-      >
-        Activity log
-      </div>
-      <div
-        data-testid="activity-log"
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          minHeight: 80,
-          maxHeight: 280,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 6,
-        }}
-      >
-        {logEvents.length === 0 ? (
-          <div style={{ opacity: 0.5, fontSize: 12 }}>No activity yet</div>
-        ) : (
-          logEvents.map((ev) => {
-            const row = formatLogRow(ev)
-            return (
+      {/* Status */}
+      {tab === 'status' && (
+        <div style={{ overflowY: 'auto' }}>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{verb}</div>
+            <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.4 }}>{agent.action.reason}</div>
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <NeedBar label="Hunger" value={agent.needs.hunger} testId="need-hunger" />
+            <NeedBar label="Energy" value={agent.needs.energy} testId="need-energy" />
+            <NeedBar label="Social" value={agent.needs.social} testId="need-social" />
+          </div>
+        </div>
+      )}
+
+      {/* Life — activity log */}
+      {tab === 'life' && (
+        <>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: 0.6,
+              textTransform: 'uppercase',
+              opacity: 0.55,
+              marginBottom: 6,
+            }}
+          >
+            Activity log
+          </div>
+          <div
+            data-testid="activity-log"
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              minHeight: 80,
+              maxHeight: 320,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            {logEvents.length === 0 ? (
+              <div style={{ opacity: 0.5, fontSize: 12 }}>No activity yet</div>
+            ) : (
+              logEvents.map((ev) => {
+                const row = formatLogRow(ev)
+                return (
+                  <div
+                    key={ev.seq}
+                    data-tick={row.tick}
+                    style={{
+                      fontSize: 11,
+                      lineHeight: 1.35,
+                      opacity: 0.88,
+                      padding: '5px 7px',
+                      borderRadius: 6,
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid rgba(255,255,255,0.05)',
+                    }}
+                  >
+                    {row.text}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {/* People — relationships */}
+      {tab === 'people' && (
+        <div
+          data-testid="people-list"
+          style={{
+            flex: 1,
+            overflowY: 'auto',
+            minHeight: 80,
+            maxHeight: 340,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          {people.length === 0 ? (
+            <div style={{ opacity: 0.5, fontSize: 12 }}>No close ties yet.</div>
+          ) : (
+            people.map((p) => (
               <div
-                key={ev.seq}
-                data-tick={row.tick}
+                key={p.id}
+                data-testid="people-row"
                 style={{
-                  fontSize: 11,
-                  lineHeight: 1.35,
-                  opacity: 0.88,
-                  padding: '5px 7px',
-                  borderRadius: 6,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '6px 8px',
+                  borderRadius: 8,
                   background: 'rgba(255,255,255,0.04)',
                   border: '1px solid rgba(255,255,255,0.05)',
                 }}
               >
-                {row.text}
+                <span
+                  style={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: 3,
+                    background: p.color,
+                    flexShrink: 0,
+                  }}
+                />
+                <span style={{ fontWeight: 600, fontSize: 12, minWidth: 48 }}>{p.name}</span>
+                <SympathyBar value={p.value} />
+                <span
+                  style={{
+                    fontSize: 10,
+                    opacity: 0.75,
+                    whiteSpace: 'nowrap',
+                    minWidth: 72,
+                    textAlign: 'right',
+                  }}
+                >
+                  {p.label}
+                </span>
               </div>
-            )
-          })
-        )}
-      </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Work — job, owns, wallet, inventory */}
+      {tab === 'work' && (
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            fontSize: 12,
+            opacity: 0.92,
+          }}
+        >
+          <div data-testid="job-row">💼 {jobLabel(agent, props.places)}</div>
+          {owns ? <div data-testid="owns-row">🏠 Owns: {owns}</div> : null}
+          <div data-testid="wallet-row">🪙 {agent.wallet ?? 0} coins</div>
+          <div data-testid="inv-row">
+            🎒 {agent.inventory?.food ?? 0} food
+            {(agent.inventory?.wood ?? 0) > 0 || (agent.inventory?.stone ?? 0) > 0
+              ? ` · ${agent.inventory?.wood ?? 0} wood · ${agent.inventory?.stone ?? 0} stone`
+              : ''}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

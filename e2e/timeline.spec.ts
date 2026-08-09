@@ -84,6 +84,9 @@ test.describe.serial('day-paged timeline', () => {
       ;(window as any).__simControl.selectAgent(ids[0])
     })
 
+    // Life tab holds the activity log
+    await page.getByTestId('tab-life').click()
+
     const logTicks = await page.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('[data-testid="activity-log"] [data-tick]'))
       return rows.map((el) => Number((el as HTMLElement).dataset.tick))

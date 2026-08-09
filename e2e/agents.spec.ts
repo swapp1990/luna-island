@@ -80,10 +80,13 @@ test.describe.serial('agents', () => {
     await expect(inspector).toBeVisible()
     // First agent is Mira
     await expect(inspector.getByText('Mira')).toBeVisible()
+    // Status tab (default) holds needs
     await expect(page.getByTestId('need-hunger')).toBeVisible()
     await expect(page.getByTestId('need-energy')).toBeVisible()
     await expect(page.getByTestId('need-social')).toBeVisible()
 
+    // Life tab holds the activity log
+    await page.getByTestId('tab-life').click()
     const log = page.getByTestId('activity-log')
     await expect(log).toBeVisible()
     await expect
@@ -120,6 +123,7 @@ test.describe.serial('agents', () => {
     const inspector = page.getByTestId('inspector')
     await expect(inspector).toBeVisible()
 
+    await page.getByTestId('tab-life').click()
     await expect
       .poll(async () => {
         const ticks = await page.locator('[data-testid="activity-log"] [data-tick]').evaluateAll(
@@ -347,7 +351,7 @@ test.describe.serial('agents', () => {
 
     await page.evaluate(() => (window as any).__simControl.pause())
 
-    // Find an employed agent via job-row
+    // Find an employed agent via job-row (Work tab)
     const ids = await page.evaluate(() => (window as any).__simState.agentIds as string[])
     let foundEmployed = false
     for (const id of ids) {
@@ -355,6 +359,7 @@ test.describe.serial('agents', () => {
         ;(window as any).__simControl.selectAgent(agentId)
       }, id)
       await page.waitForTimeout(30)
+      await page.getByTestId('tab-work').click()
       const jobText = await page.getByTestId('job-row').innerText().catch(() => '')
       if (jobText && !/Unemployed/i.test(jobText) && /coins\/day|Farm|Stall/i.test(jobText)) {
         foundEmployed = true
@@ -425,6 +430,8 @@ test.describe.serial('agents', () => {
     const inspector = page.getByTestId('inspector')
     await expect(inspector).toBeVisible()
 
+    // Work tab holds inv/wallet rows
+    await page.getByTestId('tab-work').click()
     const inv = page.getByTestId('inv-row')
     const wallet = page.getByTestId('wallet-row')
     await expect(inv).toBeVisible()
@@ -516,5 +523,99 @@ test.describe.serial('agents', () => {
     const shotPath = path.join(artifactsDir, 'watchability.png')
     await page.screenshot({ path: shotPath, fullPage: true })
     expect(fs.statSync(shotPath).size).toBeGreaterThan(20 * 1024)
+  })
+
+  test('biography tabs + town charts + people relationships', async ({ page }) => {
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    const artifactsDir = path.join(process.cwd(), 'artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+
+    // 2 sim-days of life for sympathy + stats series
+    await page.evaluate(() => {
+      ;(window as any).__simControl.ffwd(2880)
+    })
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
+        timeout: 120000,
+      })
+      .toBeGreaterThanOrEqual(2880)
+
+    await page.evaluate(() => (window as any).__simControl.pause())
+
+    const ids = await page.evaluate(() => (window as any).__simState.agentIds as string[])
+    expect(ids.length).toBeGreaterThan(0)
+
+    // Select first agent — tabs switch and expose their rows
+    await page.evaluate((id) => {
+      ;(window as any).__simControl.selectAgent(id)
+    }, ids[0])
+
+    const inspector = page.getByTestId('inspector')
+    await expect(inspector).toBeVisible()
+
+    // Status (default)
+    await page.getByTestId('tab-status').click()
+    await expect(page.getByTestId('need-hunger')).toBeVisible()
+
+    // Life
+    await page.getByTestId('tab-life').click()
+    await expect(page.getByTestId('activity-log')).toBeVisible()
+
+    // Work
+    await page.getByTestId('tab-work').click()
+    await expect(page.getByTestId('job-row')).toBeVisible()
+    await expect(page.getByTestId('wallet-row')).toBeVisible()
+    await expect(page.getByTestId('inv-row')).toBeVisible()
+
+    // People: find an agent with ≥1 relationship after 2 days
+    let foundPeople = false
+    for (const id of ids) {
+      await page.evaluate((agentId) => {
+        ;(window as any).__simControl.selectAgent(agentId)
+      }, id)
+      await page.waitForTimeout(40)
+      await page.getByTestId('tab-people').click()
+      const list = page.getByTestId('people-list')
+      await expect(list).toBeVisible()
+      const rows = list.locator('[data-testid="people-row"]')
+      const n = await rows.count()
+      if (n >= 1) {
+        foundPeople = true
+        break
+      }
+    }
+    expect(foundPeople, 'after 2 sim-days some People tab should have ≥1 relationship').toBe(
+      true,
+    )
+
+    // Charts panel: open, require ≥2 polylines each with >10 points
+    await page.getByTestId('charts-toggle').click()
+    const charts = page.getByTestId('charts')
+    await expect(charts).toBeVisible()
+
+    const lineInfo = await page.evaluate(() => {
+      const lines = Array.from(document.querySelectorAll('[data-testid="charts"] polyline'))
+      return lines.map((el) => {
+        const pts = (el.getAttribute('points') ?? '').trim().split(/\s+/).filter(Boolean)
+        return { points: pts.length, testId: el.getAttribute('data-testid') }
+      })
+    })
+    expect(lineInfo.length, 'expected multiple chart polylines').toBeGreaterThanOrEqual(2)
+    for (const line of lineInfo) {
+      expect(line.points, `polyline ${line.testId} point count`).toBeGreaterThan(10)
+    }
+
+    // People tab still open for screenshot
+    await page.getByTestId('tab-people').click()
+    await page.waitForTimeout(400)
+
+    const shotPath = path.join(artifactsDir, 'biography-charts.png')
+    await page.screenshot({ path: shotPath, fullPage: true })
+    const size = fs.statSync(shotPath).size
+    expect(size).toBeGreaterThan(20 * 1024)
   })
 })

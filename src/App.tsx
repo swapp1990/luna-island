@@ -8,7 +8,8 @@ import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
 import { Inspector } from './ui/Inspector'
 import { Ticker } from './ui/Ticker'
-import type { AgentState, Place, SimEvent } from './sim/types'
+import { Charts } from './ui/Charts'
+import type { AgentState, EconomyStat, Place, SimEvent } from './sim/types'
 
 const SEED = 42
 const HUD_HZ = 4
@@ -40,6 +41,8 @@ export function App() {
   const [allEvents, setAllEvents] = useState<readonly SimEvent[]>([])
   const [places, setPlaces] = useState<Place[]>([])
   const [owners, setOwners] = useState<Record<string, string>>({})
+  const [allAgents, setAllAgents] = useState<AgentState[]>([])
+  const [stats, setStats] = useState<EconomyStat[]>([])
   const [following, setFollowing] = useState(false)
   const [scrubMin, setScrubMin] = useState(0)
   const [scrubMax, setScrubMax] = useState(0)
@@ -60,6 +63,16 @@ export function App() {
     setAllEvents(events)
     setPlaces(sim.state.places.map((p) => ({ ...p, inventory: { ...p.inventory } })))
     setOwners({ ...sim.state.owners })
+    setAllAgents(
+      sim.state.agents.map((a) => ({
+        ...a,
+        needs: { ...a.needs },
+        sympathy: { ...(a.sympathy ?? {}) },
+        inventory: { ...a.inventory },
+        action: { ...a.action, path: a.action.path?.slice() },
+      })),
+    )
+    setStats(sim.state.stats.map((st) => ({ ...st })))
     setFollowing(loop.getFollow())
     const id = s.selectedAgentId
     if (id) {
@@ -69,6 +82,7 @@ export function App() {
           ? {
               ...agent,
               needs: { ...agent.needs },
+              sympathy: { ...(agent.sympathy ?? {}) },
               action: { ...agent.action, path: agent.action.path?.slice() },
             }
           : null,
@@ -193,6 +207,7 @@ export function App() {
               ? {
                   ...agent,
                   needs: { ...agent.needs },
+                  sympathy: { ...(agent.sympathy ?? {}) },
                   action: { ...agent.action },
                 }
               : null,
@@ -200,6 +215,11 @@ export function App() {
           setAgentEvents(sim.getEvents())
           setHud(loop.getState())
         }}
+      />
+      <Charts
+        stats={stats}
+        replayTick={hud.tick}
+        inspectorOpen={selectedAgent !== null}
       />
       <Timeline
         state={hud}
@@ -226,6 +246,7 @@ export function App() {
         dayStartTick={viewDayStart}
         places={places}
         owners={owners}
+        agents={allAgents}
         following={following}
         onToggleFollow={() => {
           const loop = loopRef.current

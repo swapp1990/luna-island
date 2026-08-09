@@ -79,7 +79,7 @@ export interface Place {
   construction?: ConstructionSpec
 }
 
-/** Hourly economy sample (Dispatch L UI; collected now). */
+/** Hourly economy sample (Dispatch L UI). */
 export interface EconomyStat {
   tick: Tick
   price: number
@@ -89,6 +89,8 @@ export interface EconomyStat {
   meanWallet: number
   minWallet: number
   maxWallet: number
+  /** Agents currently collapsed (hunger). */
+  collapsed: number
 }
 
 /** All needs 0..1, where 1 = fully satisfied. */
@@ -164,6 +166,11 @@ export interface AgentState {
   haulSourceId: string | null
   /** Place id cargo is delivered to while hauling. */
   haulDropoffId: string | null
+  /**
+   * Sparse sympathy ledger: other agent id → [0,1].
+   * Only non-zero entries; observed world fact, never read by UtilityBrain.
+   */
+  sympathy: Record<string, number>
 }
 
 export interface WorldState {
@@ -180,6 +187,16 @@ export interface WorldState {
   owners: Record<string, OwnerId>
   /** Per-sim-hour economy samples. */
   stats: EconomyStat[]
+  /**
+   * Consecutive stationary-proximity ticks for ordered pair keys `"idA|idB"`
+   * (ids sorted). Sparse — only active streaks.
+   */
+  sympathyStreak: Record<string, number>
+  /**
+   * Pair keys that shared stationary proximity at least once on the current
+   * calendar day (for end-of-day decay). Sparse boolean map.
+   */
+  sympathyMet: Record<string, true>
 }
 
 export interface SimEvent {

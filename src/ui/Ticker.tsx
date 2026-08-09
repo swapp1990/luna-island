@@ -143,6 +143,22 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'relationship:friends' || ev.type === 'relationship:close') {
+      const nameA = (ev.data?.nameA as string) ?? 'Someone'
+      const nameB = (ev.data?.nameB as string) ?? 'Someone'
+      const close = ev.type === 'relationship:close'
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `rel-${ev.seq}`,
+        tick: ev.tick,
+        agentId: (ev.data?.agentIdA as string) ?? ev.agentId ?? null,
+        text: close
+          ? `${pad2(t.hour)}:${pad2(t.minute)} · 💛 ${nameA} and ${nameB} are now close friends`
+          : `${pad2(t.hour)}:${pad2(t.minute)} · 💛 ${nameA} and ${nameB} are now friends`,
+      })
+      continue
+    }
+
     if (ev.type === 'action:start') {
       const agentId = ev.agentId
       if (!agentId) continue

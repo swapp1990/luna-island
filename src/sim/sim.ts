@@ -109,6 +109,16 @@ function cloneInventory(inv: Inventory): Inventory {
   }
 }
 
+function cloneSympathy(s: Record<string, number> | undefined): Record<string, number> {
+  if (!s) return {}
+  const out: Record<string, number> = {}
+  for (const k of Object.keys(s)) {
+    const v = s[k]
+    if (v !== undefined && v !== 0) out[k] = v
+  }
+  return out
+}
+
 function deepCloneAgent(a: AgentState): AgentState {
   return {
     ...a,
@@ -129,6 +139,7 @@ function deepCloneAgent(a: AgentState): AgentState {
     haulGood: a.haulGood,
     haulSourceId: a.haulSourceId,
     haulDropoffId: a.haulDropoffId,
+    sympathy: cloneSympathy(a.sympathy),
   }
 }
 
@@ -163,8 +174,21 @@ function deepCloneWorld(state: WorldState): WorldState {
     treasury: state.treasury,
     owners: { ...state.owners },
     stats: state.stats.map((s) => ({ ...s })),
+    sympathyStreak: { ...(state.sympathyStreak ?? {}) },
+    sympathyMet: { ...(state.sympathyMet ?? {}) },
   }
 }
+
+/** Ordered pair key for sympathy streak / met maps. */
+function sympathyPairKey(idA: string, idB: string): string {
+  return idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`
+}
+
+const SYMPATHY_ACCRUE = 0.01
+const SYMPATHY_STREAK_TICKS = 10
+const SYMPATHY_DECAY = 0.02
+const SYMPATHY_FRIEND = 0.3
+const SYMPATHY_CLOSE = 0.6
 
 /** Posted stall food price from stock (world fact). */
 export function marketPriceFromStock(stock: number): number {
@@ -1694,6 +1718,9 @@ export class Simulation {
     const prev = toSimTime(prevTick)
     const next = toSimTime(this.state.tick)
     if (next.day !== prev.day) {
+      // Decay pairs that never met on the day that just ended
+      this.stepSympathyDecay()
+      this.state.sympathyMet = {}
       this.archiveCompletedDay(prev.day, prevTick)
       this.events.append({
         tick: this.state.tick,
@@ -1714,6 +1741,7 @@ export class Simulation {
     }
 
     this.stepAgents()
+    this.stepSympathy()
     this.stepBushRegrowth()
     this.stepProduction()
 
@@ -1990,17 +2018,19 @@ export class Simulation {
     }
   }
 
-  /** Append hourly economy sample to world.stats (Dispatch L UI later). */
+  /** Append hourly economy sample to world.stats. */
   private stepEconomyStats(): void {
     const stall = this.state.places.find((p) => p.kind === 'stall')
     const stock = stall?.inventory.food ?? 0
     const price = stall?.price?.food ?? marketPriceFromStock(stock)
     let employed = 0
+    let collapsed = 0
     let sumW = 0
     let minW = Infinity
     let maxW = -Infinity
     for (const a of this.state.agents) {
       if (a.employedAt) employed++
+      if (a.collapsed) collapsed++
       sumW += a.wallet
       if (a.wallet < minW) minW = a.wallet
       if (a.wallet > maxW) maxW = a.wallet
@@ -2015,8 +2045,142 @@ export class Simulation {
       meanWallet: n > 0 ? sumW / n : 0,
       minWallet: n > 0 ? minW : 0,
       maxWallet: n > 0 ? maxW : 0,
+      collapsed,
     }
     this.state.stats.push(sample)
+  }
+
+  /**
+   * World fact: sympathy accrues when two agents stand still near each other.
+   * Deliberately influences nothing — UtilityBrain never reads these numbers.
+   */
+  private stepSympathy(): void {
+    if (!this.state.sympathyStreak) this.state.sympathyStreak = {}
+    if (!this.state.sympathyMet) this.state.sympathyMet = {}
+
+    const agents = this.state.agents
+    const byId = new Map<string, AgentState>()
+    for (const a of agents) {
+      if (!a.sympathy) a.sympathy = {}
+      byId.set(a.id, a)
+    }
+
+    // Pairwise stationary proximity (O(n²) — n=24)
+    const nearKeys = new Set<string>()
+    for (let i = 0; i < agents.length; i++) {
+      const a = agents[i]!
+      if (!isStanding(a)) continue
+      for (let j = i + 1; j < agents.length; j++) {
+        const b = agents[j]!
+        if (!isStanding(b)) continue
+        if (dist2(a.x, a.y, b.x, b.y) > SOCIAL_PROXIMITY_SQ) continue
+        nearKeys.add(sympathyPairKey(a.id, b.id))
+      }
+    }
+
+    const nextStreak: Record<string, number> = {}
+    for (const key of nearKeys) {
+      const streak = (this.state.sympathyStreak[key] ?? 0) + 1
+      nextStreak[key] = streak
+      this.state.sympathyMet[key] = true
+
+      if (streak % SYMPATHY_STREAK_TICKS === 0) {
+        const pipe = key.indexOf('|')
+        const idA = key.slice(0, pipe)
+        const idB = key.slice(pipe + 1)
+        const a = byId.get(idA)
+        const b = byId.get(idB)
+        if (a && b) this.accrueSympathyPair(a, b, SYMPATHY_ACCRUE)
+      }
+    }
+    this.state.sympathyStreak = nextStreak
+  }
+
+  /** End-of-day decay for pairs that never shared proximity that day. */
+  private stepSympathyDecay(): void {
+    if (!this.state.sympathyMet) this.state.sympathyMet = {}
+    const met = this.state.sympathyMet
+    const byId = new Map(this.state.agents.map((a) => [a.id, a] as const))
+
+    // Collect unique pairs that currently have sympathy
+    const pairs = new Set<string>()
+    for (const a of this.state.agents) {
+      if (!a.sympathy) a.sympathy = {}
+      for (const otherId of Object.keys(a.sympathy)) {
+        pairs.add(sympathyPairKey(a.id, otherId))
+      }
+    }
+
+    for (const key of pairs) {
+      if (met[key]) continue
+      const pipe = key.indexOf('|')
+      const idA = key.slice(0, pipe)
+      const idB = key.slice(pipe + 1)
+      const a = byId.get(idA)
+      const b = byId.get(idB)
+      if (!a || !b) continue
+      const old = a.sympathy[b.id] ?? b.sympathy[a.id] ?? 0
+      if (old <= 0) continue
+      const neu = Math.max(0, old - SYMPATHY_DECAY)
+      this.setSympathyPair(a, b, neu)
+    }
+  }
+
+  private accrueSympathyPair(a: AgentState, b: AgentState, delta: number): void {
+    const old = a.sympathy[b.id] ?? b.sympathy[a.id] ?? 0
+    const neu = clamp01(old + delta)
+    this.setSympathyPair(a, b, neu)
+    this.emitRelationshipMilestones(a, b, old, neu)
+  }
+
+  private setSympathyPair(a: AgentState, b: AgentState, value: number): void {
+    if (!a.sympathy) a.sympathy = {}
+    if (!b.sympathy) b.sympathy = {}
+    if (value <= 0) {
+      delete a.sympathy[b.id]
+      delete b.sympathy[a.id]
+    } else {
+      a.sympathy[b.id] = value
+      b.sympathy[a.id] = value
+    }
+  }
+
+  private emitRelationshipMilestones(
+    a: AgentState,
+    b: AgentState,
+    old: number,
+    neu: number,
+  ): void {
+    if (old < SYMPATHY_FRIEND && neu >= SYMPATHY_FRIEND) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'relationship:friends',
+        agentId: a.id,
+        data: {
+          agentIdA: a.id,
+          agentIdB: b.id,
+          nameA: a.name,
+          nameB: b.name,
+          sympathy: neu,
+        },
+        reason: 'grown close from time spent together',
+      })
+    }
+    if (old < SYMPATHY_CLOSE && neu >= SYMPATHY_CLOSE) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'relationship:close',
+        agentId: a.id,
+        data: {
+          agentIdA: a.id,
+          agentIdB: b.id,
+          nameA: a.name,
+          nameB: b.name,
+          sympathy: neu,
+        },
+        reason: 'grown close from time spent together',
+      })
+    }
   }
 
   /**
