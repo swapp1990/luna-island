@@ -46,13 +46,13 @@ describe('economy: coins, goods, ownership, collapse', () => {
     let produced = 0
     let eaten = 0
     for (const ev of sim.getEvents()) {
-      if (ev.type === 'goods:regrow') {
+      if (ev.type === 'goods:regrow' && ev.data?.good === 'food') {
         regrown += (ev.data?.amount as number) ?? 0
       }
-      if (ev.type === 'goods:produced') {
+      if (ev.type === 'goods:produced' && ev.data?.good === 'food') {
         produced += (ev.data?.amount as number) ?? 0
       }
-      if (ev.type === 'goods:consume') {
+      if (ev.type === 'goods:consume' && ev.data?.good === 'food') {
         eaten += (ev.data?.amount as number) ?? 0
       }
     }
@@ -121,29 +121,35 @@ describe('economy: coins, goods, ownership, collapse', () => {
     expect(collapseEv).toBeTruthy()
     expect(collapseEv!.reason && collapseEv!.reason.length > 0).toBe(true)
 
-    // Movement slowed: collapsed agent walks less far than a healthy one over N ticks
+    // Movement slowed: collapsed agent walks at COLLAPSE_MOVE_FACTOR (0.4).
+    // Give a straight multi-step path so pathfinding noise can't invert the race.
     const slow = collapsedAgent!
-    // Park both agents on walkable paths with clear targets
-    const healthy = sim.state.agents.find((a) => a.id !== slow.id && !a.collapsed)!
-    // Force walk intent via direct action (world movement rule, not brain)
-    const destX = Math.min(sim.state.width - 2, Math.round(slow.x) + 8)
-    const destY = Math.round(slow.y)
+    const healthy = sim.state.agents.find((a) => a.id !== slow.id)!
+    const sx = 10
+    const sy = 10
+    const path: Array<[number, number]> = [
+      [11, 10],
+      [12, 10],
+      [13, 10],
+      [14, 10],
+      [15, 10],
+    ]
     for (const a of [slow, healthy]) {
+      a.x = sx
+      a.y = sy
       a.action = {
         kind: 'wander',
-        targetX: destX,
-        targetY: destY,
-        path: undefined,
+        targetX: 15,
+        targetY: 10,
+        path: path.map((p) => [p[0], p[1]] as [number, number]),
         reason: 'test walk',
       }
       a.pathIndex = 0
       a.actionTicks = 0
     }
-    // Ensure healthy is not collapsed and has same start-ish for comparison
-    healthy.x = slow.x
-    healthy.y = slow.y
-    healthy.needs.hunger = 0.6 // stay above collapse threshold
+    healthy.needs.hunger = 0.6
     healthy.collapsed = false
+    expect(slow.collapsed).toBe(true)
 
     const slowStart = { x: slow.x, y: slow.y }
     const healthyStart = { x: healthy.x, y: healthy.y }
@@ -152,10 +158,8 @@ describe('economy: coins, goods, ownership, collapse', () => {
       Math.abs(slow.x - slowStart.x) + Math.abs(slow.y - slowStart.y)
     const healthyDist =
       Math.abs(healthy.x - healthyStart.x) + Math.abs(healthy.y - healthyStart.y)
-    // Collapsed moves at ×0.4 — should cover less ground if both are walking
-    if (healthyDist > 0.1) {
-      expect(slowDist).toBeLessThan(healthyDist)
-    }
+    expect(healthyDist).toBeGreaterThan(0.5)
+    expect(slowDist).toBeLessThan(healthyDist)
 
     // Feed: inject 2 food; advance until hunger ≥ 0.25 and recovered
     slow.inventory.food = 2
@@ -198,10 +202,7 @@ describe('economy: coins, goods, ownership, collapse', () => {
 
     // Inventories / wallets / owners participate in the hash
     expect(Object.keys(a.state.owners).length).toBe(a.state.places.length)
-    for (const id of Object.keys(a.state.owners)) {
-      expect(a.state.owners[id]).toBe('commons')
-    }
-    // Coins move via wages/buys but stay conserved
+    // Coins move via wages/buys/commissions but stay conserved
     expect(totalCoins(a)).toBe(24 * 20 + 200)
 
     const sought = a.stateAt(2000)
@@ -252,9 +253,15 @@ describe('economy: farms, jobs, wages, market (Dispatch J)', () => {
     let produced = 0
     let eaten = 0
     for (const ev of sim.getEvents()) {
-      if (ev.type === 'goods:regrow') regrown += (ev.data?.amount as number) ?? 0
-      if (ev.type === 'goods:produced') produced += (ev.data?.amount as number) ?? 0
-      if (ev.type === 'goods:consume') eaten += (ev.data?.amount as number) ?? 0
+      if (ev.type === 'goods:regrow' && ev.data?.good === 'food') {
+        regrown += (ev.data?.amount as number) ?? 0
+      }
+      if (ev.type === 'goods:produced' && ev.data?.good === 'food') {
+        produced += (ev.data?.amount as number) ?? 0
+      }
+      if (ev.type === 'goods:consume' && ev.data?.good === 'food') {
+        eaten += (ev.data?.amount as number) ?? 0
+      }
     }
 
     // Total includes agents + bushes + farms + stall
@@ -422,6 +429,7 @@ describe('economy: farms, jobs, wages, market (Dispatch J)', () => {
       expect(f.wage).toBe(6)
       expect(f.slots).toBe(2)
       expect(f.growth).toBe(0)
+      expect(f.production?.good).toBe('food')
       expect(sim.state.owners[f.id]).toBe('commons')
     }
     const stall = sim.state.places.find((p) => p.kind === 'stall')!
@@ -429,4 +437,189 @@ describe('economy: farms, jobs, wages, market (Dispatch J)', () => {
     expect(stall.wage).toBe(5)
     expect(stall.price?.food).toBe(11)
   })
+})
+
+describe('economy: resources + construction (Dispatch K)', () => {
+  function totalGood(sim: Simulation, good: 'food' | 'wood' | 'stone'): number {
+    let sum = 0
+    for (const a of sim.state.agents) sum += a.inventory[good] ?? 0
+    for (const p of sim.state.places) sum += p.inventory[good] ?? 0
+    return sum
+  }
+
+  it('worldgen has forestry, quarry, storehouse with production posts', () => {
+    const sim = new Simulation(SEED)
+    const forestry = sim.state.places.find((p) => p.kind === 'forestry')
+    const quarry = sim.state.places.find((p) => p.kind === 'quarry')
+    const store = sim.state.places.find((p) => p.kind === 'storehouse')
+    expect(forestry, 'forestry camp').toBeTruthy()
+    expect(quarry, 'quarry').toBeTruthy()
+    expect(store, 'storehouse').toBeTruthy()
+    expect(forestry!.jobSlots).toBe(2)
+    expect(forestry!.wage).toBe(6)
+    expect(forestry!.production).toEqual({
+      good: 'wood',
+      cycleWorkedTicks: 960,
+      yield: 6,
+    })
+    expect(quarry!.jobSlots).toBe(2)
+    expect(quarry!.wage).toBe(6)
+    expect(quarry!.production).toEqual({
+      good: 'stone',
+      cycleWorkedTicks: 1200,
+      yield: 6,
+    })
+    expect(store!.slots).toBe(2)
+    expect(sim.state.owners[forestry!.id]).toBe('commons')
+    expect(sim.state.owners[quarry!.id]).toBe('commons')
+    expect(sim.state.owners[store!.id]).toBe('commons')
+  })
+
+  it('production is one path: farm/forestry/quarry all mint by day 4', () => {
+    const sim = new Simulation(SEED)
+    sim.advanceTicks(4 * DAY)
+    const produced = sim.getEvents().filter((e) => e.type === 'goods:produced')
+    const kinds = new Set(
+      produced.map((e) => e.data?.placeKind as string).filter(Boolean),
+    )
+    const goods = new Set(
+      produced.map((e) => e.data?.good as string).filter(Boolean),
+    )
+    expect(kinds.has('farm'), 'farm produced').toBe(true)
+    expect(kinds.has('forestry'), 'forestry produced').toBe(true)
+    expect(kinds.has('quarry'), 'quarry produced').toBe(true)
+    expect(goods.has('food')).toBe(true)
+    expect(goods.has('wood')).toBe(true)
+    expect(goods.has('stone')).toBe(true)
+    // Same event type for all — one mint path
+    for (const e of produced) {
+      expect(e.type).toBe('goods:produced')
+      expect(typeof e.data?.placeId).toBe('string')
+      expect(typeof e.data?.amount).toBe('number')
+    }
+  })
+
+  it('materials ledger: wood/stone minted − consumed === stocks', () => {
+    const sim = new Simulation(SEED)
+    const initWood = totalGood(sim, 'wood')
+    const initStone = totalGood(sim, 'stone')
+    expect(initWood).toBe(0)
+    expect(initStone).toBe(0)
+    sim.advanceTicks(8 * DAY)
+
+    let woodMint = 0
+    let stoneMint = 0
+    let woodEat = 0
+    let stoneEat = 0
+    for (const ev of sim.getEvents()) {
+      if (ev.type === 'goods:produced') {
+        if (ev.data?.good === 'wood') woodMint += (ev.data?.amount as number) ?? 0
+        if (ev.data?.good === 'stone') stoneMint += (ev.data?.amount as number) ?? 0
+      }
+      if (ev.type === 'goods:consume') {
+        if (ev.data?.good === 'wood') woodEat += (ev.data?.amount as number) ?? 0
+        if (ev.data?.good === 'stone') stoneEat += (ev.data?.amount as number) ?? 0
+      }
+    }
+    expect(totalGood(sim, 'wood')).toBe(initWood + woodMint - woodEat)
+    expect(totalGood(sim, 'stone')).toBe(initStone + stoneMint - stoneEat)
+  })
+
+  it('coin conservation across 8 sim-days including commission + site wages', () => {
+    const sim = new Simulation(SEED)
+    const t0 = totalCoins(sim)
+    expect(t0).toBe(680)
+    sim.advanceTicks(8 * DAY)
+    expect(totalCoins(sim)).toBe(t0)
+
+    const commissions = sim
+      .getEvents()
+      .filter(
+        (e) =>
+          e.type === 'construction:commissioned' ||
+          (e.type === 'coins:transfer' && e.data?.kind === 'commission'),
+      )
+    expect(commissions.length, '≥1 commission').toBeGreaterThanOrEqual(1)
+
+    const wages = sim
+      .getEvents()
+      .filter((e) => e.type === 'coins:transfer' && e.data?.kind === 'wage')
+    expect(wages.length).toBeGreaterThan(0)
+  })
+
+  it('construction integration: commission → materials → progress → private home', () => {
+    const sim = new Simulation(SEED)
+    sim.advanceTicks(8 * DAY)
+
+    const commissioned = sim
+      .getEvents()
+      .filter((e) => e.type === 'construction:commissioned')
+    expect(commissioned.length, 'someone commissions within 8 days').toBeGreaterThanOrEqual(1)
+
+    const consumed = sim.getEvents().filter(
+      (e) =>
+        e.type === 'goods:consume' &&
+        (e.data?.good === 'wood' || e.data?.good === 'stone') &&
+        e.data?.holderKind === 'place',
+    )
+    expect(consumed.length, 'site consumed materials').toBeGreaterThanOrEqual(1)
+
+    const completed = sim
+      .getEvents()
+      .filter((e) => e.type === 'construction:completed')
+    expect(completed.length, 'house finished').toBeGreaterThanOrEqual(1)
+
+    const ownership = sim
+      .getEvents()
+      .filter(
+        (e) =>
+          e.type === 'ownership:transfer' &&
+          (e.reason === 'built and paid for it' ||
+            (e.data?.to && e.data.to !== 'commons')),
+      )
+    expect(ownership.length, 'ownership transferred to commissioner').toBeGreaterThanOrEqual(1)
+
+    // A privately-owned home exists in worldstate
+    const privateHomes = sim.state.places.filter(
+      (p) => p.kind === 'home' && sim.state.owners[p.id] !== 'commons',
+    )
+    expect(privateHomes.length, 'private home in worldstate').toBeGreaterThanOrEqual(1)
+    const ownerId = sim.state.owners[privateHomes[0]!.id]!
+    expect(ownerId).not.toBe('commons')
+    const owner = sim.state.agents.find((a) => a.id === ownerId)
+    expect(owner).toBeTruthy()
+  })
+
+  it('collapse guard: ≤10 collapse events over 8 days', () => {
+    const sim = new Simulation(SEED)
+    sim.advanceTicks(8 * DAY)
+    const collapses = sim.getEvents().filter((e) => e.type === 'agent:collapsed')
+    expect(collapses.length).toBeLessThanOrEqual(10)
+  })
+
+  it(
+    'determinism double-run + snapshot/seek (sites/production/storehouse)',
+    () => {
+      const a = new Simulation(SEED)
+      const b = new Simulation(SEED)
+      a.advanceTicks(8 * DAY)
+      b.advanceTicks(8 * DAY)
+      expect(a.hash()).toBe(b.hash())
+      expect(a.getEventCount()).toBe(b.getEventCount())
+
+      expect(a.state.places.some((p) => p.kind === 'storehouse')).toBe(true)
+      expect(a.state.places.some((p) => p.production?.good === 'wood')).toBe(true)
+      expect(a.state.places.some((p) => p.production?.good === 'stone')).toBe(true)
+
+      const sought = a.stateAt(5000)
+      const fresh = new Simulation(SEED)
+      fresh.advanceTicks(5000)
+      expect(sought.hash()).toBe(fresh.hash())
+
+      const snap = a.snapshot()
+      const restored = Simulation.fromSnapshot(snap)
+      expect(restored.hash()).toBe(a.hash())
+    },
+    30000,
+  )
 })

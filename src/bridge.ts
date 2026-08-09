@@ -17,6 +17,8 @@ export interface SimStateBridge {
   archivedDayCount: number
   /** Calendar day currently scoped in the timeline (live head day when live). */
   viewDay: number
+  /** Additive: counts of place kinds in the view sim (construction e2e). */
+  placeCounts?: Record<string, number>
 }
 
 export interface SimControlBridge {

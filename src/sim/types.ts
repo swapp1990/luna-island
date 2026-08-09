@@ -14,12 +14,41 @@ export interface Tile {
   path?: boolean
 }
 
-export type PlaceKind = 'home' | 'berry-bush' | 'well' | 'plaza' | 'farm' | 'stall'
+export type PlaceKind =
+  | 'home'
+  | 'berry-bush'
+  | 'well'
+  | 'plaza'
+  | 'farm'
+  | 'stall'
+  | 'forestry'
+  | 'quarry'
+  | 'storehouse'
+  | 'construction-site'
 
-/** Extensible goods union — Phase 2 starts with food only. */
-export type Good = 'food'
+/** Extensible goods union. */
+export type Good = 'food' | 'wood' | 'stone'
 
 export type Inventory = Record<Good, number>
+
+/** Workplace production rule: progress while worked; mint yield on cycle. */
+export interface ProductionSpec {
+  good: Good
+  /** Worked ticks to complete one cycle (progress += 1/cycleWorkedTicks). */
+  cycleWorkedTicks: number
+  /** Units minted into place inventory on completion. */
+  yield: number
+}
+
+/** Construction bill + progress for a construction-site. */
+export interface ConstructionSpec {
+  /** Remaining materials still to be consumed (and thus still to deliver). */
+  needs: Partial<Record<Good, number>>
+  /** Build progress 0..1. */
+  progress: number
+  /** Worked ticks accrued toward the next 1-unit material consume. */
+  consumeTicks: number
+}
 
 /** Place owner: a villager id or the village commons. */
 export type OwnerId = string | 'commons'
@@ -31,9 +60,12 @@ export interface Place {
   y: number
   /** Concurrent restore / interaction capacity (agents using this place). */
   slots: number
-  /** Goods held at this place (bushes, farms, stall stock food here). */
+  /** Goods held at this place. */
   inventory: Inventory
-  /** Farm crop progress 0..1 (only on farms). */
+  /**
+   * Production/construction visual progress 0..1.
+   * For workplaces with `production`, advances while tended.
+   */
   growth?: number
   /** Open employment seats (workplaces only). */
   jobSlots?: number
@@ -41,6 +73,10 @@ export interface Place {
   wage?: number
   /** Posted unit prices (stall only). */
   price?: Partial<Record<Good, number>>
+  /** Generic production rule (farm, forestry, quarry, …). */
+  production?: ProductionSpec
+  /** Present only on construction-site places. */
+  construction?: ConstructionSpec
 }
 
 /** Hourly economy sample (Dispatch L UI; collected now). */
@@ -69,8 +105,9 @@ export type ActionKind =
   | 'forage'
   | 'work'
   | 'buy'
+  | 'commission'
 
-/** Mid-work farm haul phases (mechanical, not a brain script). */
+/** Mid-work haul phases (mechanical, not a brain script). */
 export type WorkPhase = 'tend' | 'hauling' | 'returning'
 
 export interface AgentAction {
@@ -117,10 +154,16 @@ export interface AgentState {
   workedTicks: number
   /** Consecutive calendar days with zero work while employed. */
   daysIdleOnJob: number
-  /** Farm work sub-phase (haul mechanics). */
+  /** Work sub-phase (haul mechanics). */
   workPhase: WorkPhase | null
-  /** Food units currently hauling farm→stall (0 if none). */
+  /** Units currently hauling (0 if none / fetching empty-handed). */
   haulAmount: number
+  /** Good being hauled (null if none). */
+  haulGood: Good | null
+  /** Place id cargo returns to if haul is abandoned. */
+  haulSourceId: string | null
+  /** Place id cargo is delivered to while hauling. */
+  haulDropoffId: string | null
 }
 
 export interface WorldState {
@@ -168,4 +211,9 @@ export interface Rng {
   pick<T>(arr: T[]): T
   getState(): number
   setState(s: number): void
+}
+
+/** Zeroed inventory for all known goods. */
+export function emptyInventory(): Inventory {
+  return { food: 0, wood: 0, stone: 0 }
 }

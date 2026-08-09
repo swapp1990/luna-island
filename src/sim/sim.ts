@@ -39,6 +39,7 @@ import type {
   Tick,
   WorldState,
 } from './types'
+import { emptyInventory } from './types'
 
 const SNAPSHOT_INTERVAL = 180
 const REDECIDE_INTERVAL = 30
@@ -51,7 +52,8 @@ const EAT_MAX_UNITS = 2
 const FORAGE_TICKS_PER_UNIT = 5
 const FORAGE_CARRY_CAP = 3
 const BUSH_STOCK_MAX = 6
-const BUSH_REGROW_INTERVAL = 240
+/** Bush regrowth interval (was 240; K food-balance). */
+const BUSH_REGROW_INTERVAL = 100
 const DRINK_DURATION = 5
 const MOVE_SPEED = 1.0 // tiles per tick
 const COLLAPSE_MOVE_FACTOR = 0.4
@@ -59,13 +61,18 @@ const COLLAPSE_ENTER = 0.02
 const COLLAPSE_CLEAR = 0.25
 /** Full daily wage requires this many work ticks (08:00–17:00). */
 const FULL_WAGE_TICKS = 300
-/** Farm harvest haul size. */
+/** Standard haul batch size (production out / construction in). */
 const HAUL_SIZE = 5
 /** Max food units per market visit. */
 const BUY_MAX_UNITS = 2
-/** Farm growth per tick while tended. */
-const FARM_GROWTH_PER_TICK = 1 / 1440
-const FARM_PRODUCE_AMOUNT = 10
+/** Commission cost (agent → treasury) for a private home. */
+const COMMISSION_COST = 30
+/** Worked ticks to complete a house (progress += 1/N per tick). */
+const CONSTRUCTION_TICKS = 900
+/** Worked ticks between each 1-unit material consume on a site. */
+const CONSTRUCTION_CONSUME_EVERY = 50
+/** Default construction bill for a home. */
+const HOME_BILL: Partial<Record<Good, number>> = { wood: 12, stone: 6 }
 
 /** Coin party: agent id or the village treasury. */
 export type CoinParty = string | 'treasury'
@@ -95,7 +102,11 @@ function cloneNeeds(n: Needs): Needs {
 }
 
 function cloneInventory(inv: Inventory): Inventory {
-  return { food: inv.food ?? 0 }
+  return {
+    food: inv.food ?? 0,
+    wood: inv.wood ?? 0,
+    stone: inv.stone ?? 0,
+  }
 }
 
 function deepCloneAgent(a: AgentState): AgentState {
@@ -115,17 +126,28 @@ function deepCloneAgent(a: AgentState): AgentState {
     daysIdleOnJob: a.daysIdleOnJob,
     workPhase: a.workPhase,
     haulAmount: a.haulAmount,
+    haulGood: a.haulGood,
+    haulSourceId: a.haulSourceId,
+    haulDropoffId: a.haulDropoffId,
   }
 }
 
 function deepClonePlace(p: Place): Place {
   return {
     ...p,
-    inventory: cloneInventory(p.inventory ?? { food: 0 }),
+    inventory: cloneInventory(p.inventory ?? emptyInventory()),
     growth: p.growth,
     jobSlots: p.jobSlots,
     wage: p.wage,
     price: p.price ? { ...p.price } : undefined,
+    production: p.production ? { ...p.production } : undefined,
+    construction: p.construction
+      ? {
+          needs: { ...p.construction.needs },
+          progress: p.construction.progress,
+          consumeTicks: p.construction.consumeTicks,
+        }
+      : undefined,
   }
 }
 
@@ -856,13 +878,31 @@ export class Simulation {
     }
   }
 
-  /** Work at workplace: accrue ticks; farms tend/haul; stall is passive. */
+  /** Haul dropoff for a produced good (food→stall, wood/stone→storehouse). */
+  private haulDropoffForGood(good: Good): Place | undefined {
+    if (good === 'food') return this.state.places.find((p) => p.kind === 'stall')
+    if (good === 'wood' || good === 'stone') {
+      return this.state.places.find((p) => p.kind === 'storehouse')
+    }
+    return undefined
+  }
+
+  private clearHaul(agent: AgentState): void {
+    agent.haulAmount = 0
+    agent.haulGood = null
+    agent.haulSourceId = null
+    agent.haulDropoffId = null
+  }
+
+  /**
+   * Work at workplace: accrue ticks; production sites tend/haul;
+   * construction sites fetch materials then build; stall is passive.
+   */
   private performWork(
     agent: AgentState,
     place: Place | undefined,
     onSlot: boolean,
   ): void {
-    // During haul/return the target place is stall or farm — resolve by phase
     const workplace = agent.employedAt
       ? this.state.places.find((p) => p.id === agent.employedAt)
       : undefined
@@ -889,52 +929,17 @@ export class Simulation {
       agent.workedTicks++
     }
 
-    // Stall work: just stand and accrue
-    if (workplace.kind === 'stall') {
+    // Passive workplaces (no production, no construction): just stand
+    if (!workplace.production && !workplace.construction) {
       agent.workPhase = 'tend'
       return
     }
 
-    // Farm work: tend / haul phases
-    if (workplace.kind !== 'farm') return
-
     if (agent.workPhase === null) agent.workPhase = 'tend'
 
-    // Hauling to stall
+    // --- Hauling cargo to dropoff, or fetching empty-handed from source ---
     if (agent.workPhase === 'hauling') {
-      const stall = this.state.places.find((p) => p.kind === 'stall')
-      if (!stall) {
-        this.returnHaulCargo(agent)
-        agent.workPhase = 'tend'
-        return
-      }
-      const atStall =
-        isStanding(agent) && isSlotTile(this.state, stall, agent.x, agent.y)
-      if (atStall && agent.haulAmount > 0) {
-        const amt = Math.min(agent.haulAmount, agent.inventory.food ?? 0)
-        if (amt > 0) {
-          this.transferGoods(
-            { kind: 'agent', id: agent.id },
-            { kind: 'place', id: stall.id },
-            'food',
-            amt,
-            `${agent.name} stocked the market stall with ${amt} food`,
-          )
-        }
-        agent.haulAmount = 0
-        agent.workPhase = 'returning'
-        this.retargetToPlace(agent, workplace, 'Returning to the farm after hauling')
-      } else if (
-        // Ensure path keeps targeting the stall
-        agent.action.targetPlaceId !== stall.id &&
-        agent.haulAmount > 0
-      ) {
-        this.retargetToPlace(
-          agent,
-          stall,
-          `Hauling ${agent.haulAmount} food to the market stall`,
-        )
-      }
+      this.performHaulLeg(agent, workplace)
       return
     }
 
@@ -942,41 +947,300 @@ export class Simulation {
       if (onWorkplaceSlot) {
         agent.workPhase = 'tend'
         agent.action.targetPlaceId = workplace.id
-        agent.action.reason = `Working the farm at ${workplace.id}`
+        agent.action.reason = `Working at ${workplace.id}`
       } else if (agent.action.targetPlaceId !== workplace.id) {
-        this.retargetToPlace(agent, workplace, 'Returning to the farm after hauling')
+        this.retargetToPlace(agent, workplace, 'Returning to work after hauling')
       }
       return
     }
 
-    // Tend phase: when farm has ≥5 food, auto-start haul leg
+    // --- Tend phase ---
     if (agent.workPhase === 'tend' && onWorkplaceSlot) {
-      const farmFood = workplace.inventory.food ?? 0
-      if (farmFood >= HAUL_SIZE) {
-        const stall = this.state.places.find((p) => p.kind === 'stall')
-        if (stall) {
-          const amt = Math.min(HAUL_SIZE, farmFood)
-          const ok = this.transferGoods(
-            { kind: 'place', id: workplace.id },
-            { kind: 'agent', id: agent.id },
-            'food',
-            amt,
-            `${agent.name} picked up ${amt} food to haul to market`,
-          )
-          if (ok) {
-            agent.haulAmount = amt
-            agent.workPhase = 'hauling'
-            this.retargetToPlace(
-              agent,
-              stall,
-              `Hauling ${amt} food to the market stall`,
-            )
-          }
-        }
+      if (workplace.construction) {
+        this.performConstructionTend(agent, workplace)
+      } else if (workplace.production) {
+        this.performProductionTend(agent, workplace)
       }
     }
     void place
     void onSlot
+  }
+
+  /** Outbound production haul: workplace stock → dropoff by good. */
+  private performProductionTend(agent: AgentState, workplace: Place): void {
+    const prod = workplace.production
+    if (!prod) return
+    const good = prod.good
+    const stock = workplace.inventory[good] ?? 0
+    // Food batches to market at HAUL_SIZE (walking every unit starves production).
+    // Wood/stone haul any positive stock so residual units don't strand.
+    const minHaul = good === 'food' ? HAUL_SIZE : 1
+    if (stock < minHaul) return
+    const dropoff = this.haulDropoffForGood(good)
+    if (!dropoff) return
+    const amt = Math.min(HAUL_SIZE, stock)
+    const ok = this.transferGoods(
+      { kind: 'place', id: workplace.id },
+      { kind: 'agent', id: agent.id },
+      good,
+      amt,
+      `${agent.name} picked up ${amt} ${good} to haul`,
+    )
+    if (!ok) return
+    agent.haulAmount = amt
+    agent.haulGood = good
+    agent.haulSourceId = workplace.id
+    agent.haulDropoffId = dropoff.id
+    agent.workPhase = 'hauling'
+    this.retargetToPlace(
+      agent,
+      dropoff,
+      `Hauling ${amt} ${good} to the ${dropoff.kind}`,
+    )
+  }
+
+  /**
+   * Construction tend: fetch missing materials from storehouse when stocked,
+   * else advance build while site holds materials for the remaining bill
+   * (progressive: work with on-hand units; pause only when empty-handed mid-bill).
+   */
+  private performConstructionTend(agent: AgentState, workplace: Place): void {
+    const c = workplace.construction
+    if (!c) return
+
+    // Prefer hauling when storehouse can fill a shortfall
+    const shortGood = this.constructionShortfall(workplace)
+    if (shortGood) {
+      const store = this.state.places.find((p) => p.kind === 'storehouse')
+      const need = Math.max(
+        0,
+        (c.needs[shortGood] ?? 0) - (workplace.inventory[shortGood] ?? 0),
+      )
+      const available = store ? (store.inventory[shortGood] ?? 0) : 0
+      if (store && available > 0 && need > 0) {
+        agent.haulAmount = 0
+        agent.haulGood = shortGood
+        agent.haulSourceId = store.id
+        agent.haulDropoffId = workplace.id
+        agent.workPhase = 'hauling'
+        this.retargetToPlace(
+          agent,
+          store,
+          `Fetching ${shortGood} from the storehouse for the build`,
+        )
+        return
+      }
+    }
+
+    // Build while materials remain for the bill (or bill already exhausted).
+    // If neither haul nor build is possible, release the worker so they can
+    // forage/eat — standing on a dry site is not productive work.
+    if (!this.constructionCanBuild(workplace)) {
+      this.endAction(agent, 'waiting on materials at the build site')
+      agent.action = {
+        kind: 'idle',
+        reason: 'Build site idle — materials not ready',
+      }
+      agent.actionTicks = 0
+      agent.workPhase = 'tend'
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+
+    c.progress += 1 / CONSTRUCTION_TICKS
+    const totalNeed =
+      (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
+    if (totalNeed > 0) {
+      c.consumeTicks++
+      if (c.consumeTicks >= CONSTRUCTION_CONSUME_EVERY) {
+        c.consumeTicks = 0
+        const consumeGood = this.pickConstructionConsumeGood(workplace)
+        if (consumeGood) {
+          const ok = this.consumeGoods(
+            { kind: 'place', id: workplace.id },
+            consumeGood,
+            1,
+            `${agent.name} used 1 ${consumeGood} on the build at ${workplace.id}`,
+          )
+          if (ok) {
+            const left = (c.needs[consumeGood] ?? 0) - 1
+            if (left <= 0) delete c.needs[consumeGood]
+            else c.needs[consumeGood] = left
+          }
+        }
+      }
+    }
+
+    if (c.progress >= 1) {
+      this.completeConstruction(workplace)
+    }
+  }
+
+  /**
+   * True when the site can spend a build tick: bill exhausted, or at least one
+   * remaining bill unit is sitting in site inventory (material ration on hand).
+   */
+  private constructionCanBuild(site: Place): boolean {
+    const c = site.construction
+    if (!c) return false
+    const totalNeed =
+      (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
+    if (totalNeed <= 0) return true
+    return this.pickConstructionConsumeGood(site) !== null
+  }
+
+  /**
+   * First good the site still needs more of than it holds.
+   * Prefers a good the storehouse actually stocks so build work progresses
+   * when one material is abundant and another is scarce.
+   */
+  private constructionShortfall(site: Place): Good | null {
+    const c = site.construction
+    if (!c) return null
+    const shortfalls: Good[] = []
+    for (const g of ['wood', 'stone'] as Good[]) {
+      const need = c.needs[g] ?? 0
+      if (need <= 0) continue
+      if ((site.inventory[g] ?? 0) < need) shortfalls.push(g)
+    }
+    if (shortfalls.length === 0) return null
+    const store = this.state.places.find((p) => p.kind === 'storehouse')
+    if (store) {
+      for (const g of shortfalls) {
+        if ((store.inventory[g] ?? 0) > 0) return g
+      }
+    }
+    return shortfalls[0]!
+  }
+
+  private pickConstructionConsumeGood(site: Place): Good | null {
+    const c = site.construction
+    if (!c) return null
+    for (const g of ['wood', 'stone'] as Good[]) {
+      const need = c.needs[g] ?? 0
+      if (need <= 0) continue
+      if ((site.inventory[g] ?? 0) >= 1) return g
+    }
+    return null
+  }
+
+  /** Generic haul leg: fetch (amount 0) or deliver (amount > 0). */
+  private performHaulLeg(agent: AgentState, workplace: Place): void {
+    const good = agent.haulGood
+    const sourceId = agent.haulSourceId
+    const dropoffId = agent.haulDropoffId
+
+    // Fetching empty-handed from source
+    if (agent.haulAmount <= 0 && good && sourceId) {
+      const source = this.state.places.find((p) => p.id === sourceId)
+      if (!source) {
+        this.clearHaul(agent)
+        agent.workPhase = 'tend'
+        return
+      }
+      const atSource =
+        isStanding(agent) && isSlotTile(this.state, source, agent.x, agent.y)
+      if (atSource) {
+        let want = HAUL_SIZE
+        // Construction inbound: only as much as the site still lacks
+        if (workplace.construction && dropoffId === workplace.id) {
+          const need =
+            (workplace.construction.needs[good] ?? 0) -
+            (workplace.inventory[good] ?? 0)
+          want = Math.min(HAUL_SIZE, Math.max(0, need))
+        }
+        const stock = source.inventory[good] ?? 0
+        const amt = Math.min(want, stock)
+        if (amt <= 0) {
+          // Nothing to pick up — return to workplace
+          this.clearHaul(agent)
+          agent.workPhase = 'returning'
+          this.retargetToPlace(agent, workplace, 'Nothing to haul — returning')
+          return
+        }
+        const ok = this.transferGoods(
+          { kind: 'place', id: source.id },
+          { kind: 'agent', id: agent.id },
+          good,
+          amt,
+          `${agent.name} picked up ${amt} ${good}`,
+        )
+        if (ok) {
+          agent.haulAmount = amt
+          const drop =
+            (dropoffId && this.state.places.find((p) => p.id === dropoffId)) ||
+            this.haulDropoffForGood(good)
+          if (drop) {
+            agent.haulDropoffId = drop.id
+            this.retargetToPlace(
+              agent,
+              drop,
+              `Hauling ${amt} ${good} to the ${drop.kind}`,
+            )
+          }
+        }
+        return
+      }
+      if (agent.action.targetPlaceId !== source.id) {
+        this.retargetToPlace(
+          agent,
+          source,
+          `Fetching ${good} from the ${source.kind}`,
+        )
+      }
+      return
+    }
+
+    // Delivering cargo to dropoff
+    if (agent.haulAmount > 0 && good && dropoffId) {
+      const dropoff = this.state.places.find((p) => p.id === dropoffId)
+      if (!dropoff) {
+        this.returnHaulCargo(agent)
+        agent.workPhase = 'tend'
+        return
+      }
+      const atDrop =
+        isStanding(agent) && isSlotTile(this.state, dropoff, agent.x, agent.y)
+      if (atDrop) {
+        const amt = Math.min(agent.haulAmount, agent.inventory[good] ?? 0)
+        if (amt > 0) {
+          this.transferGoods(
+            { kind: 'agent', id: agent.id },
+            { kind: 'place', id: dropoff.id },
+            good,
+            amt,
+            `${agent.name} delivered ${amt} ${good} to the ${dropoff.kind}`,
+          )
+        }
+        this.clearHaul(agent)
+        // If dropoff is the workplace (construction inbound), resume tend
+        if (dropoff.id === workplace.id) {
+          agent.workPhase = 'tend'
+          agent.action.targetPlaceId = workplace.id
+          agent.action.reason = `Working at ${workplace.id}`
+        } else {
+          agent.workPhase = 'returning'
+          this.retargetToPlace(
+            agent,
+            workplace,
+            `Returning to ${workplace.kind} after hauling`,
+          )
+        }
+        return
+      }
+      if (agent.action.targetPlaceId !== dropoff.id) {
+        this.retargetToPlace(
+          agent,
+          dropoff,
+          `Hauling ${agent.haulAmount} ${good} to the ${dropoff.kind}`,
+        )
+      }
+      return
+    }
+
+    // Degenerate haul state
+    this.clearHaul(agent)
+    agent.workPhase = 'tend'
   }
 
   private performBuy(
@@ -1081,11 +1345,12 @@ export class Simulation {
     if (!agent.employedAt) return
     const placeId = agent.employedAt
     const place = this.state.places.find((p) => p.id === placeId)
+    if (agent.haulAmount > 0) this.returnHaulCargo(agent)
     agent.employedAt = null
     agent.workedTicks = 0
     agent.daysIdleOnJob = 0
     agent.workPhase = null
-    agent.haulAmount = 0
+    this.clearHaul(agent)
     this.events.append({
       tick: this.state.tick,
       type: 'job:vacated',
@@ -1211,30 +1476,30 @@ export class Simulation {
     this.startAction(agent, intent)
   }
 
-  /** Return undelivered haul food to the employing farm. */
+  /** Return undelivered haul cargo to its source place. */
   private returnHaulCargo(agent: AgentState): void {
-    if (agent.haulAmount <= 0) {
+    if (agent.haulAmount <= 0 || !agent.haulGood) {
       agent.workPhase = null
-      agent.haulAmount = 0
+      this.clearHaul(agent)
       return
     }
-    const farmId =
-      agent.employedAt &&
-      this.state.places.find((p) => p.id === agent.employedAt)?.kind === 'farm'
-        ? agent.employedAt
-        : this.state.places.find((p) => p.kind === 'farm')?.id
-    const amt = Math.min(agent.haulAmount, agent.inventory.food ?? 0)
-    if (farmId && amt > 0) {
+    const good = agent.haulGood
+    const sourceId =
+      agent.haulSourceId ??
+      agent.employedAt ??
+      this.state.places.find((p) => p.production?.good === good)?.id
+    const amt = Math.min(agent.haulAmount, agent.inventory[good] ?? 0)
+    if (sourceId && amt > 0) {
       this.transferGoods(
         { kind: 'agent', id: agent.id },
-        { kind: 'place', id: farmId },
-        'food',
+        { kind: 'place', id: sourceId },
+        good,
         amt,
-        `${agent.name} returned undelivered harvest to ${farmId}`,
+        `${agent.name} returned undelivered ${good} to ${sourceId}`,
       )
     }
     agent.workPhase = null
-    agent.haulAmount = 0
+    this.clearHaul(agent)
   }
 
   /**
@@ -1309,8 +1574,34 @@ export class Simulation {
         // Fresh tend shift — return any leftover haul first
         if (agent.haulAmount > 0) this.returnHaulCargo(agent)
         agent.workPhase = 'tend'
-        agent.haulAmount = 0
+        this.clearHaul(agent)
       }
+    }
+
+    // Instant commission: world rule, then idle
+    if (kind === 'commission') {
+      const ok = this.commission(agent.id, 'home')
+      this.events.append({
+        tick: this.state.tick,
+        type: 'action:start',
+        agentId: agent.id,
+        data: {
+          kind: 'commission',
+          target: 'home',
+          agentName: agent.name,
+          ok,
+        },
+        reason,
+      })
+      agent.action = {
+        kind: 'idle',
+        reason: ok ? 'Commissioned a house site' : 'Could not commission a house',
+      }
+      agent.actionTicks = 0
+      agent.pathIndex = 0
+      agent.actionStartNeeds = cloneNeeds(agent.needs)
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
     }
 
     // Bed slots: shared-home residents sleep on distinct deterministic tiles
@@ -1424,7 +1715,7 @@ export class Simulation {
 
     this.stepAgents()
     this.stepBushRegrowth()
-    this.stepFarmGrowth()
+    this.stepProduction()
 
     if (this.state.tick % SNAPSHOT_INTERVAL === 0) {
       this.snapshots.add(this.makeSnapshot())
@@ -1453,12 +1744,14 @@ export class Simulation {
   }
 
   /**
-   * World process: farm growth advances only while a worker is actively
-   * tending a farm slot; at growth ≥ 1, mint 10 food (`goods:produced`).
+   * World process: any place with `production` advances growth only while a
+   * worker is actively tending a slot; at growth ≥ 1, mint yield of good
+   * (`goods:produced`). One code path for farm / forestry / quarry.
    */
-  private stepFarmGrowth(): void {
+  private stepProduction(): void {
     for (const place of this.state.places) {
-      if (place.kind !== 'farm') continue
+      const prod = place.production
+      if (!prod) continue
       let tended = false
       for (const agent of this.state.agents) {
         if (agent.action.kind !== 'work') continue
@@ -1470,19 +1763,221 @@ export class Simulation {
         break
       }
       if (!tended) continue
-      const g = (place.growth ?? 0) + FARM_GROWTH_PER_TICK
+      const rate = 1 / prod.cycleWorkedTicks
+      const g = (place.growth ?? 0) + rate
       if (g >= 1) {
         place.growth = 0
         this.produceGoods(
           place.id,
-          'food',
-          FARM_PRODUCE_AMOUNT,
-          `Farm ${place.id} harvested (+${FARM_PRODUCE_AMOUNT} food)`,
+          prod.good,
+          prod.yield,
+          `${place.kind} ${place.id} produced +${prod.yield} ${prod.good}`,
         )
       } else {
         place.growth = g
       }
     }
+  }
+
+  /**
+   * Commission a private home: free village-ring plot + wallet ≥ cost →
+   * 30 coins agent→treasury, create construction-site owned by commissioner.
+   */
+  commission(agentId: string, kind: 'home'): boolean {
+    if (kind !== 'home') return false
+    const agent = this.state.agents.find((a) => a.id === agentId)
+    if (!agent) return false
+    if (agent.wallet < COMMISSION_COST) return false
+    // One commission per agent (already owns a private place)
+    if (this.agentOwnsAnyPlace(agentId)) return false
+    // One active site island-wide — materials + labor can't feed a build spree
+    if (this.state.places.some((p) => p.kind === 'construction-site')) return false
+    const plot = this.findFreeHomePlot()
+    if (!plot) return false
+
+    const paid = this.transferCoins(
+      agentId,
+      'treasury',
+      COMMISSION_COST,
+      `${agent.name} paid ${COMMISSION_COST} coins to commission a house`,
+      { kind: 'commission', good: 'home' },
+    )
+    if (!paid) return false
+
+    const siteId = `site-${agentId}-${this.state.tick}`
+    const site: Place = {
+      id: siteId,
+      kind: 'construction-site',
+      x: plot.x,
+      y: plot.y,
+      slots: 2,
+      jobSlots: 2,
+      wage: 7,
+      inventory: emptyInventory(),
+      construction: {
+        needs: { ...HOME_BILL },
+        progress: 0,
+        consumeTicks: 0,
+      },
+    }
+    // Clear 3×3 pad so the site is walkable
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const px = plot.x + dx
+        const py = plot.y + dy
+        if (px < 0 || py < 0 || px >= this.state.width || py >= this.state.height) {
+          continue
+        }
+        const t = this.state.tiles[py * this.state.width + px]!
+        if (t.kind === 'water') continue
+        t.kind = 'grass'
+        t.walkable = true
+      }
+    }
+    this.state.places.push(site)
+    this.state.owners[siteId] = agentId
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:commissioned',
+      agentId,
+      data: {
+        agentName: agent.name,
+        placeId: siteId,
+        kind: 'home',
+        cost: COMMISSION_COST,
+        x: plot.x,
+        y: plot.y,
+      },
+      reason: `${agent.name} commissioned a house`,
+    })
+    return true
+  }
+
+  private agentOwnsAnyPlace(agentId: string): boolean {
+    for (const owner of Object.values(this.state.owners)) {
+      if (owner === agentId) return true
+    }
+    return false
+  }
+
+  /**
+   * Free home plot on the village ring (radius 4–8, Chebyshev spacing ≥ 2
+   * from existing homes/sites).
+   */
+  private findFreeHomePlot(): { x: number; y: number } | null {
+    const plaza = this.state.places.find((p) => p.kind === 'plaza')
+    if (!plaza) return null
+    const chebyshev = (ax: number, ay: number, bx: number, by: number) =>
+      Math.max(Math.abs(ax - bx), Math.abs(ay - by))
+    const blocked = (hx: number, hy: number): boolean => {
+      for (const p of this.state.places) {
+        if (
+          p.kind === 'home' ||
+          p.kind === 'construction-site' ||
+          p.kind === 'farm' ||
+          p.kind === 'stall' ||
+          p.kind === 'storehouse' ||
+          p.kind === 'plaza' ||
+          p.kind === 'well'
+        ) {
+          if (chebyshev(p.x, p.y, hx, hy) < 2) return true
+        }
+      }
+      return false
+    }
+    const candidates: Array<[number, number]> = []
+    for (let maxR = 7; maxR <= 8; maxR++) {
+      for (let r = 4; r <= maxR; r++) {
+        for (let angle = 0; angle < 48; angle++) {
+          const rad = (angle / 48) * Math.PI * 2
+          const hx = Math.round(plaza.x + Math.cos(rad) * r)
+          const hy = Math.round(plaza.y + Math.sin(rad) * r)
+          if (hx < 1 || hy < 1 || hx >= this.state.width - 1 || hy >= this.state.height - 1) {
+            continue
+          }
+          const t = this.state.tiles[hy * this.state.width + hx]!
+          if (!t.walkable || t.kind === 'water' || t.kind === 'rock') continue
+          if (blocked(hx, hy)) continue
+          candidates.push([hx, hy])
+        }
+      }
+      if (candidates.length > 0) break
+    }
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => {
+      const da = (a[0] - plaza.x) ** 2 + (a[1] - plaza.y) ** 2
+      const db = (b[0] - plaza.x) ** 2 + (b[1] - plaza.y) ** 2
+      if (da !== db) return da - db
+      if (a[0] !== b[0]) return a[0] - b[0]
+      return a[1] - b[1]
+    })
+    return { x: candidates[0]![0], y: candidates[0]![1] }
+  }
+
+  /**
+   * Site complete: becomes a private home; jobs dissolve; ownership deed.
+   */
+  private completeConstruction(site: Place): void {
+    if (site.kind !== 'construction-site') return
+    const commissioner = this.state.owners[site.id] ?? 'commons'
+    const commissionerAgent =
+      commissioner !== 'commons'
+        ? this.state.agents.find((a) => a.id === commissioner)
+        : undefined
+
+    // Vacate all employees at this site
+    for (const a of this.state.agents) {
+      if (a.employedAt === site.id) {
+        this.vacateJob(a, `${a.name}'s construction job finished — house complete`)
+        if (a.action.kind === 'work' && a.action.targetPlaceId === site.id) {
+          a.action = { kind: 'idle', reason: 'House finished' }
+          a.actionTicks = 0
+          a.workPhase = null
+          this.clearHaul(a)
+        }
+      }
+    }
+
+    site.kind = 'home'
+    site.slots = 1
+    site.jobSlots = 0
+    site.wage = undefined
+    site.construction = undefined
+    site.growth = undefined
+    site.inventory = emptyInventory()
+
+    // Deed: ensure ownership event even if already commissioner
+    if (this.state.owners[site.id] !== commissioner) {
+      this.transferOwnership(site.id, commissioner, 'built and paid for it')
+    } else {
+      // Re-emit transfer for the private-property moment (commons → owner if needed)
+      const prev = this.state.owners[site.id]
+      this.events.append({
+        tick: this.state.tick,
+        type: 'ownership:transfer',
+        data: { placeId: site.id, from: prev, to: commissioner },
+        reason: 'built and paid for it',
+      })
+    }
+
+    if (commissionerAgent) {
+      commissionerAgent.homeId = site.id
+    }
+
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:completed',
+      agentId: commissioner !== 'commons' ? commissioner : undefined,
+      data: {
+        placeId: site.id,
+        agentName: commissionerAgent?.name,
+        kind: 'home',
+        firstPrivate: true,
+      },
+      reason: commissionerAgent
+        ? `${commissionerAgent.name}'s house is finished`
+        : `House ${site.id} is finished`,
+    })
   }
 
   /** Recompute stall posted price from stock each sim-hour. */

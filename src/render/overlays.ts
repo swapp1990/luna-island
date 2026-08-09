@@ -104,10 +104,18 @@ export function formatStatusBubble(
       case 'buy':
         return '🛒 → market stall'
       case 'work':
-        if (agent.workPhase === 'hauling') return '🧺 Hauling the harvest'
+        if (agent.workPhase === 'hauling' || agent.workPhase === 'returning') {
+          return '🧺 Hauling'
+        }
         if (placeKind === 'farm') return '🚶 → the farm'
         if (placeKind === 'stall') return '🚶 → the stall'
+        if (placeKind === 'forestry') return '🚶 → the forestry camp'
+        if (placeKind === 'quarry') return '🚶 → the quarry'
+        if (placeKind === 'construction-site') return '🚶 → the build site'
+        if (placeKind === 'storehouse') return '🚶 → the storehouse'
         return '🚶 → work'
+      case 'commission':
+        return '🏗️ Commissioning a house'
       case 'eat':
         return '🍽️ Eating'
       case 'drink':
@@ -137,10 +145,17 @@ export function formatStatusBubble(
     case 'buy':
       return '🛒 Buying food'
     case 'work':
-      if (agent.workPhase === 'hauling') return '🧺 Hauling the harvest'
+      if (agent.workPhase === 'hauling' || agent.workPhase === 'returning') {
+        return '🧺 Hauling'
+      }
       if (placeKind === 'stall') return '🏪 Working the stall'
       if (placeKind === 'farm') return '👨‍🌾 Working the farm'
+      if (placeKind === 'forestry') return '🪓 Chopping wood'
+      if (placeKind === 'quarry') return '⛏️ Quarrying stone'
+      if (placeKind === 'construction-site') return '🏗️ Building'
       return '👨‍🌾 Working'
+    case 'commission':
+      return '🏗️ Commissioning a house'
     case 'eat':
       return '🍽️ Eating'
     case 'drink':

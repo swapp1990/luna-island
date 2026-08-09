@@ -124,8 +124,35 @@ function buyReason(hunger: number, price: number): string {
 function workReason(place: Place): string {
   if (place.kind === 'farm') return `Working the farm — tending crops`
   if (place.kind === 'stall') return `Working the market stall`
+  if (place.kind === 'forestry') return `Working the forestry camp — chopping wood`
+  if (place.kind === 'quarry') return `Working the quarry — cutting stone`
+  if (place.kind === 'construction-site') return `Building a house`
   return `Working at the ${place.kind}`
 }
+
+/** ≥ 2 other agents share this home (crowded shared housing). */
+function homeMateCount(world: WorldState, agent: AgentState): number {
+  let n = 0
+  for (const a of world.agents) {
+    if (a.id === agent.id) continue
+    if (a.homeId === agent.homeId) n++
+  }
+  return n
+}
+
+function agentOwnsAnyPlace(world: WorldState, agentId: string): boolean {
+  for (const owner of Object.values(world.owners)) {
+    if (owner === agentId) return true
+  }
+  return false
+}
+
+/**
+ * Wallet threshold to commission a home. Cost is 30; brain wants a small
+ * buffer so the agent isn't broke after paying. Lowered to 30 if seed 42
+ * never commissions (see DEVIATIONS).
+ */
+export const COMMISSION_WALLET_THRESHOLD = 35
 
 function claimReason(place: Place): string {
   return `Taking a job at the ${place.kind} (${place.wage ?? 0} coins/day)`
@@ -331,6 +358,22 @@ export class UtilityBrain implements Brain {
       }
     }
 
+    // Crowded shared home + solvent → commission a private house (instant world rule)
+    if (
+      !self.collapsed &&
+      self.wallet >= COMMISSION_WALLET_THRESHOLD &&
+      homeMateCount(world, self) >= 2 &&
+      !agentOwnsAnyPlace(world, self.id)
+    ) {
+      candidates.push({
+        score: 0.72,
+        intent: {
+          kind: 'commission',
+          reason: `Crowded at home with ${homeMateCount(world, self)} others — commissioning a house (${self.wallet} coins)`,
+        },
+      })
+    }
+
     // Unemployed + daytime → claim nearest workplace with a free job seat
     // (work intent; hire is a world rule on startAction)
     if (!self.employedAt && isDaytime(hour) && !self.collapsed) {
@@ -423,6 +466,13 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
       if (!self.employedAt) return 0.55 // claiming
       if (!isWorkHours(hour) || urgentNeedy(self) || self.collapsed) return 0
       return 0.65
+    }
+    case 'commission': {
+      if (self.collapsed) return 0
+      if (self.wallet < COMMISSION_WALLET_THRESHOLD) return 0
+      if (homeMateCount(world, self) < 2) return 0
+      if (agentOwnsAnyPlace(world, self.id)) return 0
+      return 0.72
     }
     case 'drink':
       if (!isDaytime(hour)) return -1

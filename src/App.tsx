@@ -39,6 +39,7 @@ export function App() {
   const [agentEvents, setAgentEvents] = useState<readonly SimEvent[]>([])
   const [allEvents, setAllEvents] = useState<readonly SimEvent[]>([])
   const [places, setPlaces] = useState<Place[]>([])
+  const [owners, setOwners] = useState<Record<string, string>>({})
   const [following, setFollowing] = useState(false)
   const [scrubMin, setScrubMin] = useState(0)
   const [scrubMax, setScrubMax] = useState(0)
@@ -58,6 +59,7 @@ export function App() {
     const events = sim.getEvents()
     setAllEvents(events)
     setPlaces(sim.state.places.map((p) => ({ ...p, inventory: { ...p.inventory } })))
+    setOwners({ ...sim.state.owners })
     setFollowing(loop.getFollow())
     const id = s.selectedAgentId
     if (id) {
@@ -223,6 +225,7 @@ export function App() {
         replayTick={hud.tick}
         dayStartTick={viewDayStart}
         places={places}
+        owners={owners}
         following={following}
         onToggleFollow={() => {
           const loop = loopRef.current

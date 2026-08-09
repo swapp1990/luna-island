@@ -5,9 +5,18 @@ export interface TerrainHandle {
   root: THREE.Group
   /** Show N berry dots on each bush from place inventory stock (0–6). */
   updateBushStock: (places: Place[]) => void
-  /** Scale farm crops by growth; show stall crates by stock. */
+  /** Scale farm crops by growth; show stall/storehouse crates; sync dynamic sites. */
   updateEconomyVisuals: (places: Place[]) => void
   dispose: () => void
+}
+
+/** Materials pile + frame stages for a construction site (render-only). */
+interface SiteVisual {
+  group: THREE.Group
+  frameLow: THREE.Object3D
+  frameMid: THREE.Object3D
+  frameHigh: THREE.Object3D
+  pile: THREE.Object3D[]
 }
 
 const HEIGHTS: Record<Exclude<TerrainKind, 'water'>, number> = {
@@ -396,9 +405,13 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   const bushBerries = new Map<string, THREE.Mesh[]>()
   const farmCrops = new Map<string, THREE.Object3D[]>()
   const stallCrates = new Map<string, THREE.Mesh[]>()
+  const storeCrates = new Map<string, THREE.Mesh[]>()
+  const siteVisuals = new Map<string, SiteVisual>()
+  const dynamicHomes = new Map<string, THREE.Group>()
+  const staticIds = new Set(world.places.map((p) => p.id))
   const plaza = world.places.find((p) => p.kind === 'plaza')
   for (const place of world.places) {
-    addPlace(root, place, track, plaza, bushBerries, farmCrops, stallCrates)
+    addPlace(root, place, track, plaza, bushBerries, farmCrops, stallCrates, storeCrates, siteVisuals)
   }
 
   const updateBushStock = (places: Place[]) => {
@@ -413,8 +426,59 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     }
   }
 
+  const syncDynamicPlaces = (places: Place[]) => {
+    const liveIds = new Set(places.map((p) => p.id))
+    // Remove dynamic visuals for places that vanished
+    for (const id of [...siteVisuals.keys()]) {
+      if (!liveIds.has(id)) {
+        const v = siteVisuals.get(id)!
+        root.remove(v.group)
+        siteVisuals.delete(id)
+      }
+    }
+    for (const id of [...dynamicHomes.keys()]) {
+      if (!liveIds.has(id)) {
+        root.remove(dynamicHomes.get(id)!)
+        dynamicHomes.delete(id)
+      }
+    }
+    for (const place of places) {
+      if (place.kind === 'construction-site') {
+        if (!siteVisuals.has(place.id)) {
+          const vis = buildSiteVisual(place, track, plaza)
+          root.add(vis.group)
+          siteVisuals.set(place.id, vis)
+        }
+        const vis = siteVisuals.get(place.id)!
+        const prog = place.construction?.progress ?? 0
+        vis.frameLow.visible = prog < 1
+        vis.frameMid.visible = prog >= 1 / 3 && prog < 1
+        vis.frameHigh.visible = prog >= 2 / 3 && prog < 1
+        const remaining =
+          (place.construction?.needs?.wood ?? 0) +
+          (place.construction?.needs?.stone ?? 0)
+        const pileN = Math.min(vis.pile.length, Math.ceil(remaining / 3))
+        for (let i = 0; i < vis.pile.length; i++) {
+          vis.pile[i]!.visible = i < pileN
+        }
+      } else if (place.kind === 'home' && !staticIds.has(place.id)) {
+        // Completed private house: remove site visual, add home mesh once
+        if (siteVisuals.has(place.id)) {
+          root.remove(siteVisuals.get(place.id)!.group)
+          siteVisuals.delete(place.id)
+        }
+        if (!dynamicHomes.has(place.id)) {
+          const g = buildHomeMesh(place, track, plaza)
+          root.add(g)
+          dynamicHomes.set(place.id, g)
+        }
+      }
+    }
+  }
+
   const updateEconomyVisuals = (places: Place[]) => {
     updateBushStock(places)
+    syncDynamicPlaces(places)
     for (const place of places) {
       if (place.kind === 'farm') {
         const crops = farmCrops.get(place.id)
@@ -442,6 +506,17 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
           crates[i]!.visible = i < n
         }
       }
+      if (place.kind === 'storehouse') {
+        const crates = storeCrates.get(place.id)
+        if (!crates) continue
+        const stock =
+          Math.max(0, Math.floor(place.inventory?.wood ?? 0)) +
+          Math.max(0, Math.floor(place.inventory?.stone ?? 0))
+        const n = Math.min(crates.length, Math.ceil(stock / 2))
+        for (let i = 0; i < crates.length; i++) {
+          crates[i]!.visible = i < n
+        }
+      }
     }
   }
 
@@ -457,9 +532,127 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     bushBerries.clear()
     farmCrops.clear()
     stallCrates.clear()
+    storeCrates.clear()
+    siteVisuals.clear()
+    dynamicHomes.clear()
   }
 
   return { root, updateBushStock, updateEconomyVisuals, dispose }
+}
+
+function buildHomeMesh(
+  place: Place,
+  track: <T extends { dispose: () => void }>(obj: T) => T,
+  plaza: Place | undefined,
+  opts?: { wide?: boolean; chimney?: boolean },
+): THREE.Group {
+  const baseY = 0.22
+  const group = new THREE.Group()
+  group.position.set(place.x, 0, place.y)
+  if (plaza) {
+    const dx = plaza.x - place.x
+    const dz = plaza.y - place.y
+    group.rotation.y = Math.atan2(dx, dz)
+  }
+  const w = opts?.wide ? 1.0 : 0.7
+  const d = opts?.wide ? 0.85 : 0.7
+  const bodyGeo = track(new THREE.BoxGeometry(w, 0.45, d))
+  const bodyMat = track(new THREE.MeshStandardMaterial({ color: 0xc4a574, roughness: 0.85 }))
+  const body = new THREE.Mesh(bodyGeo, bodyMat)
+  body.position.y = baseY + 0.225
+  body.castShadow = true
+  body.receiveShadow = true
+  group.add(body)
+
+  const roofGeo = track(new THREE.ConeGeometry(opts?.wide ? 0.7 : 0.55, 0.35, 4))
+  const roofMat = track(new THREE.MeshStandardMaterial({ color: 0xb85c38, roughness: 0.8 }))
+  const roof = new THREE.Mesh(roofGeo, roofMat)
+  roof.position.y = baseY + 0.45 + 0.15
+  roof.rotation.y = Math.PI / 4
+  roof.castShadow = true
+  group.add(roof)
+
+  if (opts?.chimney !== false && !opts?.wide) {
+    const chimGeo = track(new THREE.BoxGeometry(0.12, 0.28, 0.12))
+    const chimMat = track(new THREE.MeshStandardMaterial({ color: 0x6a5a4a, roughness: 0.9 }))
+    const chim = new THREE.Mesh(chimGeo, chimMat)
+    chim.position.set(0.22, baseY + 0.55, -0.15)
+    chim.castShadow = true
+    group.add(chim)
+  }
+  return group
+}
+
+function buildSiteVisual(
+  place: Place,
+  track: <T extends { dispose: () => void }>(obj: T) => T,
+  plaza: Place | undefined,
+): SiteVisual {
+  const baseY = 0.22
+  const group = new THREE.Group()
+  group.position.set(place.x, 0, place.y)
+  if (plaza) {
+    const dx = plaza.x - place.x
+    const dz = plaza.y - place.y
+    group.rotation.y = Math.atan2(dx, dz)
+  }
+  const woodMat = track(new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.9 }))
+  const postGeo = track(new THREE.BoxGeometry(0.08, 0.55, 0.08))
+  // <⅓ timber frame outline
+  const frameLow = new THREE.Group()
+  for (const [ox, oz] of [
+    [-0.35, -0.35],
+    [0.35, -0.35],
+    [-0.35, 0.35],
+    [0.35, 0.35],
+  ] as Array<[number, number]>) {
+    const post = new THREE.Mesh(postGeo, woodMat)
+    post.position.set(ox, baseY + 0.28, oz)
+    post.castShadow = true
+    frameLow.add(post)
+  }
+  group.add(frameLow)
+  // <⅔ walls
+  const frameMid = new THREE.Group()
+  const wallGeo = track(new THREE.BoxGeometry(0.7, 0.35, 0.06))
+  const wallMat = track(new THREE.MeshStandardMaterial({ color: 0xb8956a, roughness: 0.88 }))
+  for (const [ox, oz, ry] of [
+    [0, -0.35, 0],
+    [0, 0.35, 0],
+    [-0.35, 0, Math.PI / 2],
+    [0.35, 0, Math.PI / 2],
+  ] as Array<[number, number, number]>) {
+    const wall = new THREE.Mesh(wallGeo, wallMat)
+    wall.position.set(ox, baseY + 0.2, oz)
+    wall.rotation.y = ry
+    wall.castShadow = true
+    frameMid.add(wall)
+  }
+  frameMid.visible = false
+  group.add(frameMid)
+  // roof stage
+  const frameHigh = new THREE.Group()
+  const roofGeo = track(new THREE.ConeGeometry(0.5, 0.28, 4))
+  const roofMat = track(new THREE.MeshStandardMaterial({ color: 0xb85c38, roughness: 0.8 }))
+  const roof = new THREE.Mesh(roofGeo, roofMat)
+  roof.position.y = baseY + 0.55
+  roof.rotation.y = Math.PI / 4
+  roof.castShadow = true
+  frameHigh.add(roof)
+  frameHigh.visible = false
+  group.add(frameHigh)
+
+  const pile: THREE.Object3D[] = []
+  const pileGeo = track(new THREE.BoxGeometry(0.18, 0.12, 0.18))
+  const pileMat = track(new THREE.MeshStandardMaterial({ color: 0x7a6a4a, roughness: 0.9 }))
+  for (let i = 0; i < 6; i++) {
+    const m = new THREE.Mesh(pileGeo, pileMat)
+    m.position.set(0.55 + (i % 3) * 0.2, baseY + 0.06, 0.4 + Math.floor(i / 3) * 0.2)
+    m.castShadow = true
+    group.add(m)
+    pile.push(m)
+  }
+  return { group, frameLow, frameMid, frameHigh, pile }
 }
 
 function addPlace(
@@ -470,35 +663,12 @@ function addPlace(
   bushBerries: Map<string, THREE.Mesh[]>,
   farmCrops: Map<string, THREE.Object3D[]>,
   stallCrates: Map<string, THREE.Mesh[]>,
+  storeCrates: Map<string, THREE.Mesh[]>,
+  siteVisuals: Map<string, SiteVisual>,
 ): void {
   const baseY = 0.22
   if (place.kind === 'home') {
-    const group = new THREE.Group()
-    group.position.set(place.x, 0, place.y)
-    // Face the plaza
-    if (plaza) {
-      const dx = plaza.x - place.x
-      const dz = plaza.y - place.y
-      group.rotation.y = Math.atan2(dx, dz)
-    }
-
-    const bodyGeo = track(new THREE.BoxGeometry(0.7, 0.45, 0.7))
-    const bodyMat = track(new THREE.MeshStandardMaterial({ color: 0xc4a574, roughness: 0.85 }))
-    const body = new THREE.Mesh(bodyGeo, bodyMat)
-    body.position.y = baseY + 0.225
-    body.castShadow = true
-    body.receiveShadow = true
-    group.add(body)
-
-    const roofGeo = track(new THREE.ConeGeometry(0.55, 0.35, 4))
-    const roofMat = track(new THREE.MeshStandardMaterial({ color: 0xb85c38, roughness: 0.8 }))
-    const roof = new THREE.Mesh(roofGeo, roofMat)
-    roof.position.y = baseY + 0.45 + 0.15
-    roof.rotation.y = Math.PI / 4
-    roof.castShadow = true
-    group.add(roof)
-
-    root.add(group)
+    root.add(buildHomeMesh(place, track, plaza))
   } else if (place.kind === 'well') {
     const group = new THREE.Group()
     group.position.set(place.x, 0, place.y)
@@ -715,5 +885,83 @@ function addPlace(
       crates.push(crate)
     }
     stallCrates.set(place.id, crates)
+  } else if (place.kind === 'forestry') {
+    // Log piles + stumps at forest edge
+    const logMat = track(new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.9 }))
+    const logGeo = track(new THREE.CylinderGeometry(0.1, 0.12, 0.7, 8))
+    const offsets: Array<[number, number, number]> = [
+      [0.25, 0.15, 0.4],
+      [-0.2, 0.25, -0.3],
+      [0.1, -0.3, 1.1],
+    ]
+    for (const [ox, oz, yaw] of offsets) {
+      const log = new THREE.Mesh(logGeo, logMat)
+      log.position.set(place.x + ox, baseY + 0.1, place.y + oz)
+      log.rotation.z = Math.PI / 2
+      log.rotation.y = yaw
+      log.castShadow = true
+      root.add(log)
+    }
+    const stumpGeo = track(new THREE.CylinderGeometry(0.14, 0.16, 0.18, 8))
+    const stumpMat = track(new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.92 }))
+    for (const [ox, oz] of [
+      [-0.4, -0.15],
+      [0.45, 0.3],
+    ] as Array<[number, number]>) {
+      const stump = new THREE.Mesh(stumpGeo, stumpMat)
+      stump.position.set(place.x + ox, baseY + 0.09, place.y + oz)
+      stump.castShadow = true
+      stump.receiveShadow = true
+      root.add(stump)
+    }
+  } else if (place.kind === 'quarry') {
+    // Chiseled stone blocks + rubble at rock base
+    const blockMat = track(new THREE.MeshStandardMaterial({ color: 0x8a8f98, roughness: 0.92 }))
+    const sizes: Array<[number, number, number, number, number]> = [
+      [0.35, 0.22, 0.28, 0.2, 0.15],
+      [0.28, 0.18, 0.3, -0.25, 0.2],
+      [0.22, 0.15, 0.22, 0.1, -0.3],
+      [0.18, 0.12, 0.2, -0.15, -0.2],
+    ]
+    for (const [sx, sy, sz, ox, oz] of sizes) {
+      const geo = track(new THREE.BoxGeometry(sx, sy, sz))
+      const block = new THREE.Mesh(geo, blockMat)
+      block.position.set(place.x + ox, baseY + sy / 2, place.y + oz)
+      block.castShadow = true
+      block.receiveShadow = true
+      root.add(block)
+    }
+  } else if (place.kind === 'storehouse') {
+    // Wider barn, no chimney; crate stacks for wood/stone stock
+    const barn = buildHomeMesh(place, track, plaza, { wide: true, chimney: false })
+    root.add(barn)
+    const crateGeo = track(new THREE.BoxGeometry(0.2, 0.16, 0.2))
+    const crateMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x7a5a2a, roughness: 0.88 }),
+    )
+    const crates: THREE.Mesh[] = []
+    const crateOffsets: Array<[number, number]> = [
+      [0.55, 0.35],
+      [0.8, 0.35],
+      [0.55, 0.55],
+      [0.8, 0.55],
+      [0.3, 0.45],
+      [1.05, 0.45],
+      [0.55, 0.75],
+      [0.8, 0.75],
+    ]
+    for (const [ox, oz] of crateOffsets) {
+      const crate = new THREE.Mesh(crateGeo, crateMat)
+      crate.position.set(place.x + ox - 0.5, baseY + 0.08, place.y + oz - 0.2)
+      crate.castShadow = true
+      crate.visible = false
+      root.add(crate)
+      crates.push(crate)
+    }
+    storeCrates.set(place.id, crates)
+  } else if (place.kind === 'construction-site') {
+    const vis = buildSiteVisual(place, track, plaza)
+    root.add(vis.group)
+    siteVisuals.set(place.id, vis)
   }
 }

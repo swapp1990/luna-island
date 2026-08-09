@@ -1,5 +1,5 @@
 import { createRng } from './rng'
-import type { Place, TerrainKind, Tile, WorldState } from './types'
+import { emptyInventory, type Place, type TerrainKind, type Tile, type WorldState } from './types'
 
 const WIDTH = 48
 const HEIGHT = 48
@@ -263,7 +263,7 @@ export function generateWorld(seed: number): WorldState {
     x: plazaX,
     y: plazaY,
     slots: 12,
-    inventory: { food: 0 },
+    inventory: emptyInventory(),
   })
 
   // Clear 2-tile radius around plaza (force grass walkable, keep non-water)
@@ -301,7 +301,7 @@ export function generateWorld(seed: number): WorldState {
         x: wx,
         y: wy,
         slots: 2,
-        inventory: { food: 0 },
+        inventory: emptyInventory(),
       })
       wellPlaced = true
       break
@@ -314,7 +314,7 @@ export function generateWorld(seed: number): WorldState {
       x: plazaX,
       y: plazaY,
       slots: 2,
-      inventory: { food: 0 },
+      inventory: emptyInventory(),
     })
   }
 
@@ -372,7 +372,7 @@ export function generateWorld(seed: number): WorldState {
         x: hx,
         y: hy,
         slots: 3,
-        inventory: { food: 0 },
+        inventory: emptyInventory(),
       })
       occupied.add(key)
       homeCount++
@@ -402,7 +402,7 @@ export function generateWorld(seed: number): WorldState {
         x: hx,
         y: hy,
         slots: 3,
-        inventory: { food: 0 },
+        inventory: emptyInventory(),
       })
       occupied.add(key)
       homeCount++
@@ -436,7 +436,7 @@ export function generateWorld(seed: number): WorldState {
         slots: 4,
         jobSlots: 1,
         wage: 5,
-        inventory: { food: 0 },
+        inventory: emptyInventory(),
         // price = clamp(round(4 × sqrt(8 / max(stock,1))), 2, 12) at stock 0
         price: { food: 11 },
       })
@@ -465,7 +465,7 @@ export function generateWorld(seed: number): WorldState {
         slots: 4,
         jobSlots: 1,
         wage: 5,
-        inventory: { food: 0 },
+        inventory: emptyInventory(),
         price: { food: 11 },
       })
     }
@@ -532,17 +532,189 @@ export function generateWorld(seed: number): WorldState {
         jobSlots: 2,
         wage: 6,
         growth: 0,
-        inventory: { food: 0 },
+        // Food-balance guard (Dispatch K): yield 14 (allowed 12; still ≫10 collapses).
+        production: { good: 'food', cycleWorkedTicks: 1440, yield: 14 },
+        inventory: emptyInventory(),
       })
       farmCount++
     }
   }
 
+  // Storehouse near plaza ring (commons materials depot)
+  {
+    const storeOffsets: Array<[number, number]> = [
+      [3, 1],
+      [3, -1],
+      [-3, 1],
+      [-3, -1],
+      [4, 0],
+      [-4, 0],
+      [0, 4],
+      [0, -4],
+      [2, 3],
+      [-2, 3],
+      [2, -3],
+      [-2, -3],
+    ]
+    let storePlaced = false
+    for (const [ox, oy] of storeOffsets) {
+      const sx = plazaX + ox
+      const sy = plazaY + oy
+      if (!isWalkableGrass(tiles, sx, sy)) continue
+      const key = `${sx},${sy}`
+      if (occupied.has(key)) continue
+      places.push({
+        id: 'storehouse-0',
+        kind: 'storehouse',
+        x: sx,
+        y: sy,
+        slots: 2,
+        inventory: emptyInventory(),
+      })
+      occupied.add(key)
+      storePlaced = true
+      break
+    }
+    if (!storePlaced) {
+      places.push({
+        id: 'storehouse-0',
+        kind: 'storehouse',
+        x: plazaX + 4,
+        y: plazaY,
+        slots: 2,
+        inventory: emptyInventory(),
+      })
+    }
+  }
+
+  // Forestry camp at forest edge (wood production)
+  {
+    const forestEdge: Array<[number, number]> = []
+    for (let y = 1; y < HEIGHT - 1; y++) {
+      for (let x = 1; x < WIDTH - 1; x++) {
+        const t = tiles[idx(x, y)]!
+        if (!t.walkable || (t.kind !== 'grass' && t.kind !== 'forest')) continue
+        if (occupied.has(`${x},${y}`)) continue
+        // Edge of forest: tile is forest or adjacent to forest
+        let nearForest = t.kind === 'forest'
+        if (!nearForest) {
+          for (const [dx, dy] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+          ] as Array<[number, number]>) {
+            if (tiles[idx(x + dx, y + dy)]!.kind === 'forest') {
+              nearForest = true
+              break
+            }
+          }
+        }
+        if (!nearForest) continue
+        const dist = Math.sqrt((x - plazaX) ** 2 + (y - plazaY) ** 2)
+        if (dist < 6 || dist > 18) continue
+        forestEdge.push([x, y])
+      }
+    }
+    forestEdge.sort((a, b) => {
+      const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
+      const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
+      if (da !== db) return da - db
+      if (a[0] !== b[0]) return a[0] - b[0]
+      return a[1] - b[1]
+    })
+    if (forestEdge.length > 0) {
+      const [fx, fy] = forestEdge[0]!
+      places.push({
+        id: 'forestry-0',
+        kind: 'forestry',
+        x: fx,
+        y: fy,
+        slots: 2,
+        jobSlots: 2,
+        wage: 6,
+        growth: 0,
+        production: { good: 'wood', cycleWorkedTicks: 960, yield: 6 },
+        inventory: emptyInventory(),
+      })
+      occupied.add(`${fx},${fy}`)
+    }
+  }
+
+  // Quarry at base of rock hill (stone production)
+  {
+    const rockBase: Array<[number, number]> = []
+    for (let y = 1; y < HEIGHT - 1; y++) {
+      for (let x = 1; x < WIDTH - 1; x++) {
+        const t = tiles[idx(x, y)]!
+        if (!t.walkable || t.kind === 'water') continue
+        if (occupied.has(`${x},${y}`)) continue
+        let nearRock = false
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+          [1, 1],
+          [-1, 1],
+          [1, -1],
+          [-1, -1],
+        ] as Array<[number, number]>) {
+          const n = tiles[idx(x + dx, y + dy)]
+          if (n && n.kind === 'rock') {
+            nearRock = true
+            break
+          }
+        }
+        if (!nearRock) continue
+        const dist = Math.sqrt((x - plazaX) ** 2 + (y - plazaY) ** 2)
+        if (dist < 4 || dist > 22) continue
+        rockBase.push([x, y])
+      }
+    }
+    rockBase.sort((a, b) => {
+      const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
+      const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
+      if (da !== db) return da - db
+      if (a[0] !== b[0]) return a[0] - b[0]
+      return a[1] - b[1]
+    })
+    if (rockBase.length > 0) {
+      const [qx, qy] = rockBase[0]!
+      // Ensure walkable pad
+      const t = tiles[idx(qx, qy)]!
+      if (t.kind !== 'water') {
+        t.kind = 'grass'
+        t.walkable = true
+      }
+      places.push({
+        id: 'quarry-0',
+        kind: 'quarry',
+        x: qx,
+        y: qy,
+        slots: 2,
+        jobSlots: 2,
+        wage: 6,
+        growth: 0,
+        // yield 6 (was 5) — one full home stone bill per cycle so a site can finish
+        production: { good: 'stone', cycleWorkedTicks: 1200, yield: 6 },
+        inventory: emptyInventory(),
+      })
+      occupied.add(`${qx},${qy}`)
+    }
+  }
+
   // Footpaths: BFS corridor home→plaza and plaza→well; mark tiles path:true
   markPathCorridor(tiles, plazaX, plazaY, places)
-  // Also path to farms and stall
+  // Also path to workplaces and depots
   for (const p of places) {
-    if (p.kind === 'farm' || p.kind === 'stall') {
+    if (
+      p.kind === 'farm' ||
+      p.kind === 'stall' ||
+      p.kind === 'forestry' ||
+      p.kind === 'quarry' ||
+      p.kind === 'storehouse'
+    ) {
       const path = bfsCorridor(tiles, plazaX, plazaY, p.x, p.y)
       if (path) {
         for (const [x, y] of path) {
@@ -553,7 +725,7 @@ export function generateWorld(seed: number): WorldState {
     }
   }
 
-  // 8 berry-bushes on grass/forest, 4–12 tiles from plaza
+  // 10 berry-bushes on grass/forest, 4–12 tiles from plaza (was 8; K food-balance)
   const bushCandidates: Array<[number, number]> = []
   for (let y = 0; y < HEIGHT; y++) {
     for (let x = 0; x < WIDTH; x++) {
@@ -575,7 +747,7 @@ export function generateWorld(seed: number): WorldState {
   }
   let bushCount = 0
   for (const [bx, by] of bushCandidates) {
-    if (bushCount >= 8) break
+    if (bushCount >= 10) break
     let tooClose = false
     for (const p of places) {
       if (p.kind !== 'berry-bush') continue
@@ -591,7 +763,7 @@ export function generateWorld(seed: number): WorldState {
       x: bx,
       y: by,
       slots: 2,
-      inventory: { food: 6 },
+      inventory: { ...emptyInventory(), food: 6 },
     })
     occupied.add(`${bx},${by}`)
     bushCount++

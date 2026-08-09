@@ -84,6 +84,10 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   const getState = (): SimStateBridge => {
     const sim = viewSim()
     const t = toSimTime(sim.state.tick)
+    const placeCounts: Record<string, number> = {}
+    for (const p of sim.state.places) {
+      placeCounts[p.kind] = (placeCounts[p.kind] ?? 0) + 1
+    }
     return {
       ready,
       mode,
@@ -98,6 +102,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       eventCount: mode === 'live' ? live.getEventCount() : sim.getEventCount(),
       archivedDayCount: live.archives().length,
       viewDay: resolvedViewDay(),
+      placeCounts,
     }
   }
 

@@ -1,5 +1,5 @@
 import { isWalkable } from './pathfind'
-import type { AgentState, Place, Rng, WorldState } from './types'
+import { emptyInventory, type AgentState, type Place, type Rng, type WorldState } from './types'
 
 /** Home tile + 8 neighbors — same order as bed slots in spots.ts. */
 const HOME_OFFSETS: Array<[number, number]> = [
@@ -145,7 +145,7 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       pathIndex: 0,
       criticalFired: { hunger: false, energy: false, social: false },
       actionStartNeeds: { ...needs },
-      inventory: { food: 2 },
+      inventory: { ...emptyInventory(), food: 4 },
       wallet: 20,
       collapsed: false,
       employedAt: null,
@@ -153,6 +153,9 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       daysIdleOnJob: 0,
       workPhase: null,
       haulAmount: 0,
+      haulGood: null,
+      haulSourceId: null,
+      haulDropoffId: null,
     })
   }
   world.agents = agents

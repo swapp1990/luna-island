@@ -93,6 +93,35 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'construction:commissioned') {
+      const name =
+        (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `commission-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · 🏗️ ${name} commissioned a house!`,
+      })
+      continue
+    }
+
+    if (ev.type === 'construction:completed') {
+      const name =
+        (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const t = toSimTime(ev.tick)
+      const first = ev.data?.firstPrivate === true
+      rows.push({
+        key: `built-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: first
+          ? `${pad2(t.hour)}:${pad2(t.minute)} · 🏠 ${name}'s house is finished — first private property!`
+          : `${pad2(t.hour)}:${pad2(t.minute)} · 🏠 ${name}'s house is finished`,
+      })
+      continue
+    }
+
     if (ev.type === 'coins:transfer') {
       const kind = ev.data?.kind as string | undefined
       if (kind === 'wage') {

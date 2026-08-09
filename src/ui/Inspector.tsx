@@ -23,8 +23,10 @@ function actionVerb(kind: string, workPhase?: string | null): string {
     case 'buy':
       return 'Buying food'
     case 'work':
-      if (workPhase === 'hauling') return 'Hauling the harvest'
+      if (workPhase === 'hauling' || workPhase === 'returning') return 'Hauling'
       return 'Working'
+    case 'commission':
+      return 'Commissioning a house'
     case 'drink':
       return 'Drinking'
     case 'socialize':
@@ -44,14 +46,29 @@ function jobLabel(agent: AgentState, places: Place[] | undefined): string {
   if (!agent.employedAt) return 'Unemployed'
   const place = places?.find((p) => p.id === agent.employedAt)
   if (!place) return 'Unemployed'
-  const kind =
-    place.kind === 'farm'
-      ? 'Farm'
-      : place.kind === 'stall'
-        ? 'Stall'
-        : place.kind
+  const kindLabel: Record<string, string> = {
+    farm: 'Farm',
+    stall: 'Stall',
+    forestry: 'Forestry',
+    quarry: 'Quarry',
+    'construction-site': 'Build site',
+  }
+  const kind = kindLabel[place.kind] ?? place.kind
   const wage = place.wage ?? 0
   return `${kind} · ${wage} coins/day`
+}
+
+function ownsLabel(agent: AgentState, places: Place[] | undefined, owners?: Record<string, string>): string {
+  if (!places || !owners) return ''
+  const owned = places.filter((p) => owners[p.id] === agent.id)
+  if (owned.length === 0) return ''
+  return owned
+    .map((p) => {
+      if (p.kind === 'home') return 'house'
+      if (p.kind === 'construction-site') return 'build site'
+      return p.kind
+    })
+    .join(', ')
 }
 
 function formatLogRow(ev: SimEvent): { tick: number; text: string } {
@@ -121,6 +138,7 @@ export function Inspector(props: {
   /** Inclusive lower bound for activity log (loaded day's start). */
   dayStartTick?: number
   places?: Place[]
+  owners?: Record<string, string>
   following: boolean
   onToggleFollow: () => void
   onClose: () => void
@@ -128,6 +146,7 @@ export function Inspector(props: {
   const { agent, events, replayTick, following, onToggleFollow, onClose } = props
   const dayStart = props.dayStartTick ?? 0
   if (!agent) return null
+  const owns = ownsLabel(agent, props.places, props.owners)
 
   const logEvents = events
     .filter(
@@ -254,6 +273,9 @@ export function Inspector(props: {
       >
         <div data-testid="inv-row">
           🎒 {agent.inventory?.food ?? 0} food
+          {(agent.inventory?.wood ?? 0) > 0 || (agent.inventory?.stone ?? 0) > 0
+            ? ` · ${agent.inventory?.wood ?? 0} wood · ${agent.inventory?.stone ?? 0} stone`
+            : ''}
         </div>
         <div data-testid="wallet-row">
           🪙 {agent.wallet ?? 0} coins
@@ -261,6 +283,9 @@ export function Inspector(props: {
         <div data-testid="job-row">
           💼 {jobLabel(agent, props.places)}
         </div>
+        {owns ? (
+          <div data-testid="owns-row">🏠 Owns: {owns}</div>
+        ) : null}
       </div>
 
       {/* Activity log */}

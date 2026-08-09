@@ -9,6 +9,10 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   home: 1.0,
   farm: 1.0,
   stall: 1.5,
+  forestry: 1.2,
+  quarry: 1.2,
+  storehouse: 1.5,
+  'construction-site': 1.0,
 }
 
 /**
@@ -67,8 +71,12 @@ export function slotTiles(
   place: Place,
 ): Array<[number, number]> {
   const out: Array<[number, number]> = []
-  // Home + farm use a discrete 3×3 footprint
-  if (place.kind === 'home' || place.kind === 'farm') {
+  // Home / farm / construction-site use a discrete 3×3 footprint
+  if (
+    place.kind === 'home' ||
+    place.kind === 'farm' ||
+    place.kind === 'construction-site'
+  ) {
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         const x = place.x + dx
@@ -102,7 +110,11 @@ export function isSlotTile(
 ): boolean {
   const tx = Math.round(x)
   const ty = Math.round(y)
-  if (place.kind === 'home' || place.kind === 'farm') {
+  if (
+    place.kind === 'home' ||
+    place.kind === 'farm' ||
+    place.kind === 'construction-site'
+  ) {
     return Math.max(Math.abs(tx - place.x), Math.abs(ty - place.y)) <= 1 &&
       isWalkable(world, tx, ty)
   }

@@ -443,6 +443,44 @@ test.describe.serial('agents', () => {
     expect(fs.statSync(shotPath).size).toBeGreaterThan(20 * 1024)
   })
 
+  test('construction: site or private house screenshot', async ({ page }) => {
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    const artifactsDir = path.join(process.cwd(), 'artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+
+    // ~6 sim-days
+    await page.evaluate(() => {
+      ;(window as any).__simControl.ffwd(6 * 1440)
+    })
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
+        timeout: 180000,
+      })
+      .toBeGreaterThanOrEqual(6 * 1440)
+
+    await page.evaluate(() => (window as any).__simControl.pause())
+
+    const counts = await page.evaluate(() => {
+      return (window as any).__simState.placeCounts as Record<string, number>
+    })
+    const sites = counts?.['construction-site'] ?? 0
+    const homes = counts?.home ?? 0
+    // Baseline is 10 commons homes; a site or an extra private home is success
+    expect(
+      sites > 0 || homes > 10,
+      `expected construction-site or extra home; placeCounts=${JSON.stringify(counts)}`,
+    ).toBe(true)
+
+    await page.waitForTimeout(500)
+    const shotPath = path.join(artifactsDir, 'construction.png')
+    await page.screenshot({ path: shotPath, fullPage: true })
+    expect(fs.statSync(shotPath).size).toBeGreaterThan(20 * 1024)
+  })
+
   test('watchability screenshot', async ({ page }) => {
     await page.goto('/')
     await expect
