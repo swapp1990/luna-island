@@ -1,3 +1,4 @@
+import { pickBushForAgent } from './spots'
 import { toSimTime } from './time'
 import type {
   ActionKind,
@@ -28,20 +29,6 @@ function placeById(world: WorldState, id: string): Place | undefined {
 
 function placesOf(world: WorldState, kind: Place['kind']): Place[] {
   return world.places.filter((p) => p.kind === kind)
-}
-
-function nearestPlace(agent: AgentState, places: Place[]): Place | null {
-  if (places.length === 0) return null
-  let best: Place | null = null
-  let bestD = Infinity
-  for (const p of places) {
-    const d = (p.x - agent.x) * (p.x - agent.x) + (p.y - agent.y) * (p.y - agent.y)
-    if (d < bestD) {
-      bestD = d
-      best = p
-    }
-  }
-  return best
 }
 
 function collectWalkableNear(
@@ -100,7 +87,10 @@ export function sleepScore(energy: number, hour: number): number {
   return (1 - energy) * nightBias + (energy < 0.2 ? 1.0 : 0)
 }
 
-function eatReason(hunger: number): string {
+function eatReason(hunger: number, crowded: boolean): string {
+  if (crowded) {
+    return `Hungry (${pct(hunger)}%) — the near bushes are crowded, walking to the far ones`
+  }
   if (hunger < 0.25) {
     return `Starving (${pct(hunger)}%) — rushing to the berry bushes`
   }
@@ -147,9 +137,9 @@ export class UtilityBrain implements Brain {
       })
     }
 
-    // eat → nearest berry-bush
+    // eat → nearest berry-bush with free capacity (max 2 eaters)
     {
-      const bush = nearestPlace(self, placesOf(world, 'berry-bush'))
+      const { bush, crowded } = pickBushForAgent(world, self)
       let score = (1 - self.needs.hunger) * 1.3
       if (self.needs.hunger < 0.25) score += 0.5
       candidates.push({
@@ -159,7 +149,7 @@ export class UtilityBrain implements Brain {
           targetPlaceId: bush?.id,
           targetX: bush?.x,
           targetY: bush?.y,
-          reason: eatReason(self.needs.hunger),
+          reason: eatReason(self.needs.hunger, crowded),
         },
       })
     }

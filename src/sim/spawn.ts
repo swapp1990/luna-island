@@ -1,4 +1,18 @@
+import { isWalkable } from './pathfind'
 import type { AgentState, Place, Rng, WorldState } from './types'
+
+/** Home tile + 8 neighbors — same order as bed slots in spots.ts. */
+const HOME_OFFSETS: Array<[number, number]> = [
+  [0, 0],
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+  [1, 1],
+  [1, -1],
+  [-1, 1],
+  [-1, -1],
+]
 
 export const AGENT_NAMES = [
   'Mira',
@@ -64,9 +78,30 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
     return
   }
 
+  // Resident index per home (spawn order) for distinct standing tiles
+  const homeResidentCount = new Map<string, number>()
+
   const agents: AgentState[] = []
   for (let i = 0; i < AGENT_NAMES.length; i++) {
     const home = homes[i % homes.length]!
+    const residentIdx = homeResidentCount.get(home.id) ?? 0
+    homeResidentCount.set(home.id, residentIdx + 1)
+
+    // Distinct bed/spawn slots so shared-home residents don't stack
+    let sx = home.x
+    let sy = home.y
+    const slots: Array<[number, number]> = []
+    for (const [dx, dy] of HOME_OFFSETS) {
+      const x = home.x + dx
+      const y = home.y + dy
+      if (isWalkable(world, x, y)) slots.push([x, y])
+    }
+    if (slots.length > 0) {
+      const slot = slots[residentIdx % slots.length]!
+      sx = slot[0]
+      sy = slot[1]
+    }
+
     const hunger = needInRange(rng)
     const energy = needInRange(rng)
     const social = needInRange(rng)
@@ -75,8 +110,8 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       id: `agent-${i}`,
       name: AGENT_NAMES[i]!,
       color: AGENT_COLORS[i % AGENT_COLORS.length]!,
-      x: home.x,
-      y: home.y,
+      x: sx,
+      y: sy,
       homeId: home.id,
       needs: { ...needs },
       action: { kind: 'idle', reason: 'Just woke up on the island' },

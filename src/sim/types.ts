@@ -26,12 +26,14 @@ export type ActionKind = 'idle' | 'walk' | 'sleep' | 'eat' | 'drink' | 'socializ
 export interface AgentAction {
   kind: ActionKind
   targetPlaceId?: string
-  /** Tile target for wander (and resolved destinations). */
+  /** Tile target for wander (and reserved destinations). */
   targetX?: number
   targetY?: number
   path?: Array<[number, number]>
   /** Human-readable "why" — required, shown in the inspector. */
   reason: string
+  /** Next tick to attempt social milling (snapshot-round-trips). */
+  millNextTick?: number
 }
 
 export interface AgentState {

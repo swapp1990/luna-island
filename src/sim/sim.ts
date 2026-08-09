@@ -6,6 +6,15 @@ import { fnv1aHex, stableStringify } from './stableStringify'
 import { spawnAgents } from './spawn'
 import { findPath, isWalkable, pathStillValid } from './pathfind'
 import {
+  bedSlotForAgent,
+  extendPathTo,
+  isStanding,
+  isWalking,
+  millCandidates,
+  nudgeCandidates,
+  reserveSpot,
+} from './spots'
+import {
   UtilityBrain,
   anyNeedCritical,
   makeObservation,
@@ -398,7 +407,8 @@ export class Simulation {
     }
 
     if (kind === 'socialize') {
-      // social regen in stepNeeds; continuous until redecide
+      // social regen in stepNeeds; mill to adjacent free plaza tiles
+      this.maybeMillSocial(agent)
       return
     }
 
@@ -474,6 +484,7 @@ export class Simulation {
         (agent.action.targetX === intent.targetX && agent.action.targetY === intent.targetY))
 
     if (sameTarget && currentKind !== 'idle') {
+      this.resolveCoStanding(agent)
       return // already doing it
     }
 
@@ -484,6 +495,7 @@ export class Simulation {
       const currentScore = scoreCurrentAction(obs, currentKind)
       const newObsScore = this.scoreIntent(obs, intent)
       if (newObsScore < currentScore + HYSTERESIS) {
+        this.resolveCoStanding(agent)
         return
       }
     }
@@ -495,6 +507,7 @@ export class Simulation {
       shouldKeepSleeping(agent) &&
       !urgent
     ) {
+      this.resolveCoStanding(agent)
       return
     }
 
@@ -504,6 +517,57 @@ export class Simulation {
     }
 
     this.startAction(agent, intent)
+  }
+
+  /**
+   * Later-indexed non-walking agent on a shared tile nudges to an adjacent free
+   * tile (extends path on current action — no events).
+   */
+  private resolveCoStanding(agent: AgentState): void {
+    if (isWalking(agent)) return
+    const ax = Math.round(agent.x)
+    const ay = Math.round(agent.y)
+    const agents = this.state.agents
+    const myIndex = agents.indexOf(agent)
+    if (myIndex < 0) return
+
+    let stacked = false
+    for (let i = 0; i < myIndex; i++) {
+      const other = agents[i]!
+      if (!isStanding(other)) continue
+      if (Math.round(other.x) === ax && Math.round(other.y) === ay) {
+        stacked = true
+        break
+      }
+    }
+    if (!stacked) return
+
+    const cands = nudgeCandidates(this.state, agent)
+    if (cands.length === 0) return
+    const pick = this.rng.pick(cands)
+    extendPathTo(this.state, agent, pick[0], pick[1])
+  }
+
+  /** After arriving at plaza: every 20–40 ticks, 30% chance to step adjacent. */
+  private maybeMillSocial(agent: AgentState): void {
+    const tick = this.state.tick
+    if (agent.action.millNextTick === undefined) {
+      agent.action.millNextTick = tick + 20 + this.rng.int(21) // 20..40
+    }
+    if (tick < agent.action.millNextTick) return
+
+    agent.action.millNextTick = tick + 20 + this.rng.int(21)
+    if (this.rng.next() >= 0.3) return
+
+    const placeId = agent.action.targetPlaceId
+    if (!placeId) return
+    const plaza = this.state.places.find((p) => p.id === placeId)
+    if (!plaza || plaza.kind !== 'plaza') return
+
+    const cands = millCandidates(this.state, agent, plaza)
+    if (cands.length === 0) return
+    const pick = this.rng.pick(cands)
+    extendPathTo(this.state, agent, pick[0], pick[1])
   }
 
   private scoreIntent(
@@ -517,13 +581,23 @@ export class Simulation {
     let tx = intent.targetX
     let ty = intent.targetY
 
-    // Resolve place coords if missing
-    if ((tx === undefined || ty === undefined) && intent.targetPlaceId) {
-      const place = this.state.places.find((p) => p.id === intent.targetPlaceId)
-      if (place) {
-        tx = place.x
-        ty = place.y
-      }
+    const place = intent.targetPlaceId
+      ? this.state.places.find((p) => p.id === intent.targetPlaceId)
+      : undefined
+
+    // Bed slots: shared-home residents sleep on distinct deterministic tiles
+    if (intent.kind === 'sleep' && place && place.kind === 'home') {
+      const bed = bedSlotForAgent(this.state, agent, place)
+      tx = bed.x
+      ty = bed.y
+    } else if (place && intent.kind !== 'wander') {
+      // Spot reservation: free tile within place radius (stored on action)
+      const spot = reserveSpot(this.state, place, agent, this.rng)
+      tx = spot.x
+      ty = spot.y
+    } else if ((tx === undefined || ty === undefined) && place) {
+      tx = place.x
+      ty = place.y
     }
 
     // Wander without coords
@@ -554,6 +628,10 @@ export class Simulation {
       targetY: ty,
       path: path ?? [],
       reason: intent.reason,
+      millNextTick:
+        intent.kind === 'socialize'
+          ? this.state.tick + 20 + this.rng.int(21)
+          : undefined,
     }
     agent.pathIndex = 0
     agent.actionTicks = 0

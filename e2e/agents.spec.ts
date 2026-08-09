@@ -185,4 +185,35 @@ test.describe.serial('agents', () => {
     await page.screenshot({ path: nightPath, fullPage: true })
     expect(fs.statSync(nightPath).size).toBeGreaterThan(20 * 1024)
   })
+
+  test('crowd plaza screenshot — spread socializers', async ({ page }) => {
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    const artifactsDir = path.join(process.cwd(), 'artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+
+    // Seed 42: tick 380 ≈ 12:20 with ≥6 standing socializers at the plaza
+    const CROWD_TICK = 380
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
+        timeout: 45000,
+      })
+      .toBeGreaterThanOrEqual(CROWD_TICK)
+
+    await page.evaluate((tick) => {
+      ;(window as any).__simControl.scrubTo(tick)
+    }, CROWD_TICK)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number))
+      .toBe(CROWD_TICK)
+    await page.waitForTimeout(500)
+
+    const crowdPath = path.join(artifactsDir, 'crowd-plaza.png')
+    await page.screenshot({ path: crowdPath, fullPage: true })
+    expect(fs.statSync(crowdPath).size).toBeGreaterThan(20 * 1024)
+  })
 })
