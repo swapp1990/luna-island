@@ -5,6 +5,9 @@ const BODY_H = 0.55
 const HEAD_R = 0.16
 const BODY_R = 0.14
 const GROUND_Y = 0.22
+const BOB_AMP = 0.04
+const BOB_FREQ = 14
+const LEAN = 0.12
 
 export interface AgentsHandle {
   root: THREE.Group
@@ -32,6 +35,12 @@ function lighten(hex: string, amount: number): THREE.Color {
   return c
 }
 
+function hashId(id: string): number {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
+
 interface AgentMesh {
   id: string
   group: THREE.Group
@@ -39,6 +48,31 @@ interface AgentMesh {
   headMat: THREE.MeshStandardMaterial
   baseBody: THREE.Color
   baseHead: THREE.Color
+  /** Accumulated distance for walk bob phase. */
+  walkDist: number
+  lastX: number
+  lastZ: number
+}
+
+function isOnPath(agent: AgentState): boolean {
+  const path = agent.action.path
+  return !!(path && path.length > 0 && agent.pathIndex < path.length)
+}
+
+function isPerformingSleep(agent: AgentState): boolean {
+  return (
+    agent.action.kind === 'sleep' &&
+    (agent.action.path === undefined ||
+      agent.pathIndex >= (agent.action.path?.length ?? 0))
+  )
+}
+
+function isPerformingSocial(agent: AgentState): boolean {
+  return (
+    agent.action.kind === 'socialize' &&
+    (agent.action.path === undefined ||
+      agent.pathIndex >= (agent.action.path?.length ?? 0))
+  )
 }
 
 export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHandle {
@@ -107,6 +141,9 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       headMat,
       baseBody,
       baseHead,
+      walkDist: 0,
+      lastX: agent.x,
+      lastZ: agent.y,
     })
   }
 
@@ -119,9 +156,13 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       opacity: 0.85,
       side: THREE.DoubleSide,
       depthWrite: false,
+      // RTS-style: ring must stay readable on the plaza disc, paths, and behind
+      // props — skip the depth test and draw late via renderOrder.
+      depthTest: false,
     }),
   )
   const ring = new THREE.Mesh(ringGeo, ringMat)
+  ring.renderOrder = 999
   ring.rotation.x = -Math.PI / 2
   ring.position.y = GROUND_Y + 0.04
   ring.visible = false
@@ -138,30 +179,94 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     pulseT += 0.05
     const a = Math.max(0, Math.min(1, alpha))
 
+    // Interpolated positions for social facing
+    const interp = new Map<string, { x: number; z: number; agent: AgentState }>()
     for (const agent of agentsIn) {
-      const m = meshes.get(agent.id)
-      if (!m) continue
-
       const px = prev.get(agent.id)?.x ?? agent.x
       const py = prev.get(agent.id)?.y ?? agent.y
       const x = px + (agent.x - px) * a
-      const y = py + (agent.y - py) * a
-      m.group.position.set(x, 0, y)
+      const z = py + (agent.y - py) * a
+      interp.set(agent.id, { x, z, agent })
+    }
 
-      // Flat + dim only when actually in bed (path finished), not while walking home
-      const isSleeping =
-        agent.action.kind === 'sleep' &&
-        (agent.action.path === undefined ||
-          agent.pathIndex >= (agent.action.path?.length ?? 0))
+    // Socializers currently standing (for face-nearest)
+    const socialStanding: Array<{ id: string; x: number; z: number }> = []
+    for (const [id, p] of interp) {
+      if (isPerformingSocial(p.agent)) socialStanding.push({ id, x: p.x, z: p.z })
+    }
 
-      if (isSleeping) {
+    for (const agent of agentsIn) {
+      const m = meshes.get(agent.id)
+      if (!m) continue
+      const p = interp.get(agent.id)!
+      const x = p.x
+      const z = p.z
+
+      const dx = x - m.lastX
+      const dz = z - m.lastZ
+      const moved = Math.hypot(dx, dz)
+      m.lastX = x
+      m.lastZ = z
+
+      const sleeping = isPerformingSleep(agent)
+      const socializing = isPerformingSocial(agent)
+      const walking = isOnPath(agent) && moved > 1e-5
+
+      if (sleeping) {
+        m.group.position.set(x, 0, z)
         m.group.scale.set(1, 0.5, 1)
+        m.group.rotation.set(0, m.group.rotation.y, 0)
         m.bodyMat.color.copy(m.baseBody).multiplyScalar(0.6)
         m.headMat.color.copy(m.baseHead).multiplyScalar(0.6)
-      } else {
+        continue
+      }
+
+      m.bodyMat.color.copy(m.baseBody)
+      m.headMat.color.copy(m.baseHead)
+
+      if (walking) {
+        m.walkDist += moved
+        const bob = Math.sin(m.walkDist * BOB_FREQ) * BOB_AMP
+        m.group.position.set(x, bob, z)
+        // Face + lean into walk direction (sim y → world z)
+        const yaw = Math.atan2(dx, dz)
+        m.group.rotation.y = yaw
+        m.group.rotation.x = LEAN * Math.min(1, moved * 8)
+        m.group.rotation.z = 0
         m.group.scale.set(1, 1, 1)
-        m.bodyMat.color.copy(m.baseBody)
-        m.headMat.color.copy(m.baseHead)
+      } else if (socializing) {
+        m.group.position.set(x, 0, z)
+        m.group.rotation.x = 0
+        m.group.rotation.z = 0
+        // Yaw toward nearest other socializer
+        let bestD = Infinity
+        let faceX = 0
+        let faceZ = 1
+        for (const o of socialStanding) {
+          if (o.id === agent.id) continue
+          const ddx = o.x - x
+          const ddz = o.z - z
+          const d2 = ddx * ddx + ddz * ddz
+          if (d2 < bestD && d2 > 1e-6) {
+            bestD = d2
+            faceX = ddx
+            faceZ = ddz
+          }
+        }
+        if (bestD < Infinity) {
+          m.group.rotation.y = Math.atan2(faceX, faceZ)
+        }
+        // Micro-bounce: sharp pulse every few seconds, phase-offset per agent
+        const offset = (hashId(agent.id) % 1000) / 1000
+        const t = pulseT * 0.35 + offset * Math.PI * 2
+        const pulse = Math.pow(Math.max(0, Math.sin(t)), 10)
+        const s = 1 + pulse * 0.03
+        m.group.scale.set(s, s, s)
+      } else {
+        m.group.position.set(x, 0, z)
+        m.group.rotation.x = 0
+        m.group.rotation.z = 0
+        m.group.scale.set(1, 1, 1)
       }
     }
 

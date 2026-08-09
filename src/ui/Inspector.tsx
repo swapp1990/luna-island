@@ -97,9 +97,11 @@ export function Inspector(props: {
   agent: AgentState | null
   events: readonly SimEvent[]
   replayTick: number
+  following: boolean
+  onToggleFollow: () => void
   onClose: () => void
 }) {
-  const { agent, events, replayTick, onClose } = props
+  const { agent, events, replayTick, following, onToggleFollow, onClose } = props
   if (!agent) return null
 
   const logEvents = events
@@ -158,6 +160,28 @@ export function Inspector(props: {
           }}
         />
         <span style={{ fontWeight: 700, fontSize: 16, flex: 1 }}>{agent.name}</span>
+        <button
+          type="button"
+          data-testid="follow-toggle"
+          aria-pressed={following}
+          onClick={onToggleFollow}
+          style={{
+            background: following ? 'rgba(255, 176, 80, 0.35)' : 'rgba(255,255,255,0.08)',
+            border: following
+              ? '1px solid rgba(255,200,120,0.55)'
+              : '1px solid rgba(255,255,255,0.12)',
+            color: following ? '#ffe7c2' : '#c8ced8',
+            borderRadius: 8,
+            padding: '4px 8px',
+            cursor: 'pointer',
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: 0.3,
+            lineHeight: 1.2,
+          }}
+        >
+          {following ? 'Following' : 'Follow'}
+        </button>
         <button
           type="button"
           aria-label="Close inspector"

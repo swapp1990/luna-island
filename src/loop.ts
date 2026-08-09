@@ -10,6 +10,8 @@ export interface LoopController {
   scrubTo: (tick: number) => void
   goLive: () => void
   selectAgent: (id: string | null) => void
+  setFollow: (on: boolean) => void
+  getFollow: () => boolean
   getState: () => SimStateBridge
   start: () => void
   stop: () => void
@@ -34,6 +36,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let speed = 1
   let mode: SimMode = 'live'
   let selectedAgentId: string | null = null
+  let follow = false
   let fork: Simulation | null = null
   let accumulator = 0
   let lastTs = 0
@@ -41,6 +44,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let running = false
   let ready = true
   let prevPositions = capturePositions(live)
+  /** Event count of the view sim already scanned for critical bubbles. */
+  let lastCriticalEventCount = 0
 
   const viewSim = (): Simulation => (mode === 'replay' && fork ? fork : live)
 
@@ -62,12 +67,39 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     }
   }
 
-  const applyScene = () => {
+  const scanCriticals = (sim: Simulation, now: number) => {
+    const events = sim.getEvents()
+    const start = lastCriticalEventCount
+    if (start >= events.length) {
+      lastCriticalEventCount = events.length
+      return
+    }
+    for (let i = start; i < events.length; i++) {
+      const ev = events[i]!
+      if (ev.type === 'need:critical' && ev.agentId) {
+        const need = (ev.data?.need as string) ?? 'hunger'
+        scene.overlays.pushCritical(ev.agentId, need, now)
+      }
+    }
+    lastCriticalEventCount = events.length
+  }
+
+  const applyScene = (now: number) => {
     const sim = viewSim()
-    scene.setTime(toSimTime(sim.state.tick))
-    // alpha: progress into the next tick; after multi-step show near current
     const alpha = speed > 0 ? Math.min(1, accumulator) : 1
+    scene.setTime(toSimTime(sim.state.tick))
     scene.updateAgents(sim.state.agents, prevPositions, alpha, selectedAgentId)
+    if (follow && selectedAgentId) {
+      scene.followAgent(sim.state.agents, prevPositions, alpha, selectedAgentId, 0.08)
+    }
+    scene.updateOverlays(
+      sim.state.agents,
+      prevPositions,
+      alpha,
+      selectedAgentId,
+      sim.state.places,
+      now,
+    )
   }
 
   const setSpeed = (n: number) => {
@@ -92,7 +124,9 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     speed = 0
     accumulator = 0
     prevPositions = capturePositions(fork)
-    applyScene()
+    // Don't re-fire historical criticals on scrub
+    lastCriticalEventCount = fork.getEventCount()
+    applyScene(performance.now())
   }
 
   const goLive = () => {
@@ -100,12 +134,20 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     fork = null
     accumulator = 0
     prevPositions = capturePositions(live)
-    applyScene()
+    lastCriticalEventCount = live.getEventCount()
+    applyScene(performance.now())
   }
 
   const selectAgent = (id: string | null) => {
     selectedAgentId = id
+    if (!id) follow = false
   }
+
+  const setFollow = (on: boolean) => {
+    follow = on && !!selectedAgentId
+  }
+
+  const getFollow = () => follow
 
   const frame = (ts: number) => {
     if (!running) return
@@ -145,7 +187,9 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       }
     }
 
-    applyScene()
+    const sim = viewSim()
+    scanCriticals(sim, ts)
+    applyScene(ts)
     scene.render()
     refreshBridge(getState())
     rafId = requestAnimationFrame(frame)
@@ -157,7 +201,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastTs = 0
     accumulator = 0
     prevPositions = capturePositions(viewSim())
-    applyScene()
+    lastCriticalEventCount = viewSim().getEventCount()
+    applyScene(performance.now())
     refreshBridge(getState())
     rafId = requestAnimationFrame(frame)
   }
@@ -174,6 +219,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     scrubTo,
     goLive,
     selectAgent,
+    setFollow,
+    getFollow,
     getState,
     start,
     stop,

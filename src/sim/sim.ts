@@ -269,7 +269,7 @@ export class Simulation {
           tick: this.state.tick,
           type: 'need:critical',
           agentId: agent.id,
-          data: { need: key, value },
+          data: { need: key, value, agentName: agent.name },
           reason: `${key} critically low (${pct(value)}%)`,
         })
       }
@@ -637,6 +637,9 @@ export class Simulation {
     agent.actionTicks = 0
     agent.actionStartNeeds = cloneNeeds(agent.needs)
 
+    const targetPlace = intent.targetPlaceId
+      ? this.state.places.find((p) => p.id === intent.targetPlaceId)
+      : undefined
     this.events.append({
       tick: this.state.tick,
       type: 'action:start',
@@ -644,6 +647,8 @@ export class Simulation {
       data: {
         kind: intent.kind,
         target: intent.targetPlaceId ?? `${tx},${ty}`,
+        agentName: agent.name,
+        placeKind: targetPlace?.kind,
       },
       reason: intent.reason,
     })

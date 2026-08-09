@@ -216,4 +216,106 @@ test.describe.serial('agents', () => {
     await page.screenshot({ path: crowdPath, fullPage: true })
     expect(fs.statSync(crowdPath).size).toBeGreaterThan(20 * 1024)
   })
+
+  test('watchability: status bubble, ticker, follow camera', async ({ page }) => {
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    // Run at 64× so the ticker gains action rows
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.eventCount as number), {
+        timeout: 20000,
+      })
+      .toBeGreaterThanOrEqual(40)
+
+    const ticker = page.getByTestId('ticker')
+    await expect(ticker).toBeVisible()
+    await expect
+      .poll(async () => ticker.locator('button[data-tick]').count(), { timeout: 15000 })
+      .toBeGreaterThanOrEqual(1)
+
+    // Select first agent → status bubble visible with text
+    await page.evaluate(() => {
+      const ids = (window as any).__simState.agentIds as string[]
+      ;(window as any).__simControl.selectAgent(ids[0])
+    })
+    const bubble = page.getByTestId('status-bubble')
+    await expect(bubble).toBeVisible()
+    await expect
+      .poll(async () => {
+        const text = await bubble.innerText()
+        return text.replace(/\s+/g, ' ').trim().length
+      })
+      .toBeGreaterThan(0)
+
+    // Click first ticker row with an agent → selectedAgentId set
+    const firstAgentRow = ticker.locator('button[data-tick][data-agent-id]:not([data-agent-id=""])').first()
+    await expect(firstAgentRow).toBeVisible()
+    await firstAgentRow.click()
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.selectedAgentId as string | null))
+      .not.toBeNull()
+
+    // Follow toggle: enable, run 64×, camera target should move
+    await expect(page.getByTestId('inspector')).toBeVisible()
+    const before = await page.evaluate(() => {
+      const t = (window as any).__cameraTarget as { x: number; y: number; z: number } | undefined
+      return t ? { x: t.x, y: t.y, z: t.z } : null
+    })
+    expect(before).not.toBeNull()
+
+    await page.getByTestId('follow-toggle').click()
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+    await page.waitForTimeout(2000)
+
+    const moved = await page.evaluate((b) => {
+      const t = (window as any).__cameraTarget as { x: number; y: number; z: number }
+      if (!t || !b) return false
+      const dx = t.x - b.x
+      const dy = t.y - b.y
+      const dz = t.z - b.z
+      return dx * dx + dy * dy + dz * dz > 1e-6
+    }, before)
+    expect(moved).toBe(true)
+  })
+
+  test('watchability screenshot', async ({ page }) => {
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    const artifactsDir = path.join(process.cwd(), 'artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+
+    // Afternoon ~14:00 = tick 480 from 06:00
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
+        timeout: 45000,
+      })
+      .toBeGreaterThanOrEqual(480)
+
+    await page.evaluate(() => {
+      ;(window as any).__simControl.scrubTo(480)
+      const ids = (window as any).__simState.agentIds as string[]
+      ;(window as any).__simControl.selectAgent(ids[0])
+    })
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number))
+      .toBe(480)
+
+    // Ensure ticker has rows at this tick (live events ≤ scrub tick)
+    await expect(page.getByTestId('ticker')).toBeVisible()
+    await expect(page.getByTestId('inspector')).toBeVisible()
+    await expect(page.getByTestId('status-bubble')).toBeVisible()
+    await page.waitForTimeout(500)
+
+    const shotPath = path.join(artifactsDir, 'watchability.png')
+    await page.screenshot({ path: shotPath, fullPage: true })
+    expect(fs.statSync(shotPath).size).toBeGreaterThan(20 * 1024)
+  })
 })

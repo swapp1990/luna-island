@@ -6,6 +6,7 @@ import { initBridge, type SimStateBridge } from './bridge'
 import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
 import { Inspector } from './ui/Inspector'
+import { Ticker } from './ui/Ticker'
 import type { AgentState, SimEvent } from './sim/types'
 
 const SEED = 42
@@ -33,6 +34,8 @@ export function App() {
   const [liveHeadTick, setLiveHeadTick] = useState(0)
   const [selectedAgent, setSelectedAgent] = useState<AgentState | null>(null)
   const [agentEvents, setAgentEvents] = useState<readonly SimEvent[]>([])
+  const [allEvents, setAllEvents] = useState<readonly SimEvent[]>([])
+  const [following, setFollowing] = useState(false)
 
   useEffect(() => {
     const el = containerRef.current
@@ -47,11 +50,18 @@ export function App() {
 
     const selectAgent = (id: string | null) => {
       loop.selectAgent(id)
+      if (!id) {
+        loop.setFollow(false)
+        setFollowing(false)
+      }
       const sim = loop.getViewSim()
       const agent = id ? (sim.state.agents.find((a) => a.id === id) ?? null) : null
       setSelectedAgent(agent ? { ...agent, needs: { ...agent.needs }, action: { ...agent.action } } : null)
-      setAgentEvents(sim.getEvents())
+      const events = sim.getEvents()
+      setAgentEvents(events)
+      setAllEvents(events)
       setHud(loop.getState())
+      setFollowing(loop.getFollow())
     }
 
     initBridge(
@@ -76,12 +86,16 @@ export function App() {
     loop.start()
     setHud(loop.getState())
     setLiveHeadTick(live.state.tick)
+    setAllEvents(live.getEvents())
 
     const poll = window.setInterval(() => {
       const s = loop.getState()
       setHud(s)
       setLiveHeadTick(live.state.tick)
       const sim = loop.getViewSim()
+      const events = sim.getEvents()
+      setAllEvents(events)
+      setFollowing(loop.getFollow())
       const id = s.selectedAgentId
       if (id) {
         const agent = sim.state.agents.find((a) => a.id === id) ?? null
@@ -94,7 +108,7 @@ export function App() {
               }
             : null,
         )
-        setAgentEvents(sim.getEvents())
+        setAgentEvents(events)
       } else {
         setSelectedAgent(null)
       }
@@ -126,6 +140,28 @@ export function App() {
           if (loopRef.current) setHud(loopRef.current.getState())
         }}
       />
+      <Ticker
+        events={allEvents}
+        replayTick={hud.tick}
+        onSelectAgent={(id) => {
+          const loop = loopRef.current
+          if (!loop) return
+          loop.selectAgent(id)
+          const sim = loop.getViewSim()
+          const agent = sim.state.agents.find((a) => a.id === id) ?? null
+          setSelectedAgent(
+            agent
+              ? {
+                  ...agent,
+                  needs: { ...agent.needs },
+                  action: { ...agent.action, path: agent.action.path?.slice() },
+                }
+              : null,
+          )
+          setAgentEvents(sim.getEvents())
+          setHud(loop.getState())
+        }}
+      />
       <Timeline
         state={hud}
         liveHeadTick={liveHeadTick}
@@ -135,6 +171,7 @@ export function App() {
             setHud(loopRef.current.getState())
             if (liveRef.current) setLiveHeadTick(liveRef.current.state.tick)
             const sim = loopRef.current.getViewSim()
+            setAllEvents(sim.getEvents())
             const id = loopRef.current.getState().selectedAgentId
             if (id) {
               const agent = sim.state.agents.find((a) => a.id === id) ?? null
@@ -153,16 +190,29 @@ export function App() {
         }}
         onGoLive={() => {
           loopRef.current?.goLive()
-          if (loopRef.current) setHud(loopRef.current.getState())
+          if (loopRef.current) {
+            setHud(loopRef.current.getState())
+            setAllEvents(loopRef.current.getViewSim().getEvents())
+          }
         }}
       />
       <Inspector
         agent={selectedAgent}
         events={agentEvents}
         replayTick={hud.tick}
+        following={following}
+        onToggleFollow={() => {
+          const loop = loopRef.current
+          if (!loop) return
+          const next = !loop.getFollow()
+          loop.setFollow(next)
+          setFollowing(loop.getFollow())
+        }}
         onClose={() => {
           loopRef.current?.selectAgent(null)
+          loopRef.current?.setFollow(false)
           setSelectedAgent(null)
+          setFollowing(false)
           if (loopRef.current) setHud(loopRef.current.getState())
         }}
       />

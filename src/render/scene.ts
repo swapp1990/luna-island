@@ -4,6 +4,7 @@ import type { AgentState, WorldState } from '../sim/types'
 import { buildTerrain, type TerrainHandle } from './terrain'
 import { createDayNight, type DayNightHandle } from './daynight'
 import { createAgents, type AgentsHandle } from './agents'
+import { createOverlays, type OverlaysHandle } from './overlays'
 import type { SimTime } from '../sim/types'
 
 export interface SceneHandle {
@@ -14,6 +15,7 @@ export interface SceneHandle {
   terrain: TerrainHandle
   dayNight: DayNightHandle
   agents: AgentsHandle
+  overlays: OverlaysHandle
   setTime: (time: SimTime) => void
   updateAgents: (
     agents: AgentState[],
@@ -23,12 +25,42 @@ export interface SceneHandle {
   ) => void
   /** Wire click-to-select; returns cleanup. */
   bindSelection: (onSelect: (id: string | null) => void) => () => void
+  /** Follow selected agent: lerp orbit target + camera by same delta. */
+  followAgent: (
+    agents: AgentState[],
+    prev: Map<string, { x: number; y: number }>,
+    alpha: number,
+    selectedId: string | null,
+    factor?: number,
+  ) => void
+  /** Project overlays for the current frame. */
+  updateOverlays: (
+    agents: AgentState[],
+    prev: Map<string, { x: number; y: number }>,
+    alpha: number,
+    selectedId: string | null,
+    places: WorldState['places'],
+    now: number,
+  ) => void
   resize: (w: number, h: number) => void
   dispose: () => void
   render: () => void
+  /** Publish camera target for e2e / debug. */
+  publishCameraTarget: () => void
+}
+
+declare global {
+  interface Window {
+    __cameraTarget?: { x: number; y: number; z: number }
+  }
 }
 
 export function createScene(container: HTMLElement, world: WorldState): SceneHandle {
+  // Ensure container is a positioning context for overlays
+  if (getComputedStyle(container).position === 'static') {
+    container.style.position = 'relative'
+  }
+
   const scene = new THREE.Scene()
   scene.background = new THREE.Color(0x9ed3ff)
   scene.fog = new THREE.Fog(0x9ed3ff, 40, 120)
@@ -66,6 +98,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   const terrain = buildTerrain(scene, world)
   const dayNight = createDayNight(scene, world)
   const agents = createAgents(scene, world.agents)
+  const overlays = createOverlays(container)
 
   const setTime = (time: SimTime) => {
     dayNight.update(time)
@@ -78,6 +111,62 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     selectedId: string | null,
   ) => {
     agents.update(list, prev, alpha, selectedId)
+  }
+
+  const followAgent = (
+    list: AgentState[],
+    prev: Map<string, { x: number; y: number }>,
+    alpha: number,
+    selectedId: string | null,
+    factor = 0.08,
+  ) => {
+    if (!selectedId) return
+    const agent = list.find((a) => a.id === selectedId)
+    if (!agent) return
+    const a = Math.max(0, Math.min(1, alpha))
+    const px = prev.get(agent.id)?.x ?? agent.x
+    const py = prev.get(agent.id)?.y ?? agent.y
+    const x = px + (agent.x - px) * a
+    const z = py + (agent.y - py) * a
+    const desiredY = 0.2
+    const dx = (x - controls.target.x) * factor
+    const dy = (desiredY - controls.target.y) * factor
+    const dz = (z - controls.target.z) * factor
+    controls.target.x += dx
+    controls.target.y += dy
+    controls.target.z += dz
+    camera.position.x += dx
+    camera.position.y += dy
+    camera.position.z += dz
+  }
+
+  const updateOverlays = (
+    list: AgentState[],
+    prev: Map<string, { x: number; y: number }>,
+    alpha: number,
+    selectedId: string | null,
+    places: WorldState['places'],
+    now: number,
+  ) => {
+    overlays.updateFrame({
+      camera,
+      width: renderer.domElement.clientWidth,
+      height: renderer.domElement.clientHeight,
+      selectedId,
+      agents: list,
+      places,
+      prev,
+      alpha,
+      now,
+    })
+  }
+
+  const publishCameraTarget = () => {
+    window.__cameraTarget = {
+      x: controls.target.x,
+      y: controls.target.y,
+      z: controls.target.z,
+    }
   }
 
   const bindSelection = (onSelect: (id: string | null) => void): (() => void) => {
@@ -130,6 +219,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   const render = () => {
     controls.update()
     renderer.render(scene, camera)
+    publishCameraTarget()
   }
 
   const dispose = () => {
@@ -137,6 +227,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     terrain.dispose()
     dayNight.dispose()
     agents.dispose()
+    overlays.dispose()
     renderer.dispose()
     if (renderer.domElement.parentElement === container) {
       container.removeChild(renderer.domElement)
@@ -154,11 +245,15 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     terrain,
     dayNight,
     agents,
+    overlays,
     setTime,
     updateAgents,
     bindSelection,
+    followAgent,
+    updateOverlays,
     resize,
     dispose,
     render,
+    publishCameraTarget,
   }
 }
