@@ -41,4 +41,33 @@ describe('determinism', () => {
     restored.advanceTicks(500)
     expect(restored.hash()).toBe(sim.hash())
   })
+
+  it('after 3 days: needs valid, every agent acted with reason, every agent slept', () => {
+    const sim = new Simulation(42)
+    sim.advanceTicks(4320) // 3 days
+
+    expect(sim.state.agents.length).toBe(24)
+
+    for (const agent of sim.state.agents) {
+      for (const key of ['hunger', 'energy', 'social'] as const) {
+        const v = agent.needs[key]
+        expect(Number.isFinite(v)).toBe(true)
+        expect(v).toBeGreaterThanOrEqual(0)
+        expect(v).toBeLessThanOrEqual(1)
+      }
+    }
+
+    const events = sim.getEvents()
+    for (const agent of sim.state.agents) {
+      const starts = events.filter(
+        (e) => e.agentId === agent.id && e.type === 'action:start',
+      )
+      expect(starts.length).toBeGreaterThanOrEqual(1)
+      for (const s of starts) {
+        expect(s.reason && s.reason.length > 0).toBe(true)
+      }
+      const slept = starts.some((e) => e.data?.kind === 'sleep')
+      expect(slept).toBe(true)
+    }
+  })
 })

@@ -5,6 +5,8 @@ import { createLoop, type LoopController } from './loop'
 import { initBridge, type SimStateBridge } from './bridge'
 import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
+import { Inspector } from './ui/Inspector'
+import type { AgentState, SimEvent } from './sim/types'
 
 const SEED = 42
 const HUD_HZ = 4
@@ -24,10 +26,13 @@ export function App() {
     tick: 0,
     speed: 1,
     agentCount: 0,
+    agentIds: [],
     selectedAgentId: null,
     eventCount: 0,
   })
   const [liveHeadTick, setLiveHeadTick] = useState(0)
+  const [selectedAgent, setSelectedAgent] = useState<AgentState | null>(null)
+  const [agentEvents, setAgentEvents] = useState<readonly SimEvent[]>([])
 
   useEffect(() => {
     const el = containerRef.current
@@ -40,6 +45,15 @@ export function App() {
     const loop = createLoop(live, scene)
     loopRef.current = loop
 
+    const selectAgent = (id: string | null) => {
+      loop.selectAgent(id)
+      const sim = loop.getViewSim()
+      const agent = id ? (sim.state.agents.find((a) => a.id === id) ?? null) : null
+      setSelectedAgent(agent ? { ...agent, needs: { ...agent.needs }, action: { ...agent.action } } : null)
+      setAgentEvents(sim.getEvents())
+      setHud(loop.getState())
+    }
+
     initBridge(
       () => loop.getState(),
       {
@@ -47,9 +61,11 @@ export function App() {
         pause: () => loop.pause(),
         scrubTo: (t) => loop.scrubTo(t),
         goLive: () => loop.goLive(),
-        selectAgent: (id) => loop.selectAgent(id),
+        selectAgent,
       },
     )
+
+    const unbind = scene.bindSelection(selectAgent)
 
     const onResize = () => {
       scene.resize(el.clientWidth, el.clientHeight)
@@ -65,11 +81,29 @@ export function App() {
       const s = loop.getState()
       setHud(s)
       setLiveHeadTick(live.state.tick)
+      const sim = loop.getViewSim()
+      const id = s.selectedAgentId
+      if (id) {
+        const agent = sim.state.agents.find((a) => a.id === id) ?? null
+        setSelectedAgent(
+          agent
+            ? {
+                ...agent,
+                needs: { ...agent.needs },
+                action: { ...agent.action, path: agent.action.path?.slice() },
+              }
+            : null,
+        )
+        setAgentEvents(sim.getEvents())
+      } else {
+        setSelectedAgent(null)
+      }
     }, 1000 / HUD_HZ)
 
     return () => {
       window.clearInterval(poll)
       window.removeEventListener('resize', onResize)
+      unbind()
       loop.stop()
       scene.dispose()
       loopRef.current = null
@@ -100,10 +134,35 @@ export function App() {
           if (loopRef.current) {
             setHud(loopRef.current.getState())
             if (liveRef.current) setLiveHeadTick(liveRef.current.state.tick)
+            const sim = loopRef.current.getViewSim()
+            const id = loopRef.current.getState().selectedAgentId
+            if (id) {
+              const agent = sim.state.agents.find((a) => a.id === id) ?? null
+              setSelectedAgent(
+                agent
+                  ? {
+                      ...agent,
+                      needs: { ...agent.needs },
+                      action: { ...agent.action },
+                    }
+                  : null,
+              )
+              setAgentEvents(sim.getEvents())
+            }
           }
         }}
         onGoLive={() => {
           loopRef.current?.goLive()
+          if (loopRef.current) setHud(loopRef.current.getState())
+        }}
+      />
+      <Inspector
+        agent={selectedAgent}
+        events={agentEvents}
+        replayTick={hud.tick}
+        onClose={() => {
+          loopRef.current?.selectAgent(null)
+          setSelectedAgent(null)
           if (loopRef.current) setHud(loopRef.current.getState())
         }}
       />

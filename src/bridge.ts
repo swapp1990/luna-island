@@ -9,6 +9,8 @@ export interface SimStateBridge {
   tick: number
   speed: number
   agentCount: number
+  /** Ordered agent ids (additive; for E2E selection). */
+  agentIds: string[]
   selectedAgentId: string | null
   eventCount: number
 }

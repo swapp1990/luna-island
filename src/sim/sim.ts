@@ -3,9 +3,31 @@ import { EventTrace } from './events'
 import { generateWorld } from './worldgen'
 import { toSimTime } from './time'
 import { fnv1aHex, stableStringify } from './stableStringify'
-import type { Rng, SimEvent, Tick, WorldState } from './types'
+import { spawnAgents } from './spawn'
+import { findPath, isWalkable, pathStillValid } from './pathfind'
+import {
+  UtilityBrain,
+  anyNeedCritical,
+  makeObservation,
+  scoreCurrentAction,
+  shouldKeepSleeping,
+} from './utilityBrain'
+import type {
+  AgentState,
+  Intent,
+  Needs,
+  Rng,
+  SimEvent,
+  Tick,
+  WorldState,
+} from './types'
 
 const SNAPSHOT_INTERVAL = 180
+const REDECIDE_INTERVAL = 30
+const HYSTERESIS = 0.15
+const EAT_DURATION = 15
+const DRINK_DURATION = 5
+const MOVE_SPEED = 1.0 // tiles per tick
 
 export interface SimSnapshot {
   state: WorldState
@@ -13,6 +35,24 @@ export interface SimSnapshot {
   eventSeq: number
   /** Events up to and including this snapshot's tick (for fork traces). */
   events: SimEvent[]
+}
+
+function cloneNeeds(n: Needs): Needs {
+  return { hunger: n.hunger, energy: n.energy, social: n.social }
+}
+
+function deepCloneAgent(a: AgentState): AgentState {
+  return {
+    ...a,
+    needs: cloneNeeds(a.needs),
+    needJitter: cloneNeeds(a.needJitter),
+    criticalFired: { ...a.criticalFired },
+    actionStartNeeds: cloneNeeds(a.actionStartNeeds),
+    action: {
+      ...a.action,
+      path: a.action.path ? a.action.path.map((p) => [p[0], p[1]] as [number, number]) : undefined,
+    },
+  }
 }
 
 function deepCloneWorld(state: WorldState): WorldState {
@@ -23,15 +63,36 @@ function deepCloneWorld(state: WorldState): WorldState {
     height: state.height,
     tiles: state.tiles.map((t) => ({ ...t })),
     places: state.places.map((p) => ({ ...p })),
-    agents: state.agents.map((a) => ({
-      ...a,
-      needs: { ...a.needs },
-      action: {
-        ...a.action,
-        path: a.action.path ? a.action.path.map((p) => [p[0], p[1]] as [number, number]) : undefined,
-      },
-    })),
+    agents: state.agents.map(deepCloneAgent),
   }
+}
+
+function clamp01(n: number): number {
+  if (n < 0) return 0
+  if (n > 1) return 1
+  return n
+}
+
+function pct(n: number): number {
+  return Math.round(clamp01(n) * 100)
+}
+
+function dist2(ax: number, ay: number, bx: number, by: number): number {
+  const dx = ax - bx
+  const dy = ay - by
+  return dx * dx + dy * dy
+}
+
+function atTarget(agent: AgentState, tx: number, ty: number): boolean {
+  return Math.abs(agent.x - tx) < 0.05 && Math.abs(agent.y - ty) < 0.05
+}
+
+function resolveTarget(agent: AgentState): { x: number; y: number } | null {
+  const a = agent.action
+  if (a.targetX !== undefined && a.targetY !== undefined) {
+    return { x: a.targetX, y: a.targetY }
+  }
+  return null
 }
 
 class SnapshotStore {
@@ -62,6 +123,7 @@ export class Simulation {
   private rng: Rng
   private events: EventTrace
   private snapshots: SnapshotStore
+  private brain = new UtilityBrain()
 
   constructor(seed: number)
   constructor(
@@ -95,6 +157,7 @@ export class Simulation {
       this.state = generateWorld(seed)
       // Agent rng starts fresh from seed (worldgen uses its own internal rng from seed)
       this.rng = createRng(seed)
+      spawnAgents(this.state, this.rng)
       if (!opts?.skipInitEvents) {
         this.events.append({
           tick: 0,
@@ -124,9 +187,379 @@ export class Simulation {
     return this.rng
   }
 
-  /** No-op hook for Dispatch B agent stepping. */
+  /** Advance every agent one sim minute: needs, movement, actions, decisions. */
   stepAgents(): void {
-    // Agent AI lands in Dispatch B
+    const world = this.state
+    const tick = world.tick
+    const time = toSimTime(tick)
+    const hour = time.hour
+
+    // Snapshot agent positions for proximity social regen
+    const positions = world.agents.map((a) => ({ id: a.id, x: a.x, y: a.y }))
+
+    for (const agent of world.agents) {
+      this.stepNeeds(agent, positions)
+      this.stepMovementAndAction(agent, hour)
+      this.maybeRedecide(agent, hour)
+    }
+  }
+
+  private stepNeeds(
+    agent: AgentState,
+    positions: Array<{ id: string; x: number; y: number }>,
+  ): void {
+    const j = agent.needJitter
+    const sleeping = agent.action.kind === 'sleep' && this.isPerforming(agent)
+    const socializing = agent.action.kind === 'socialize' && this.isPerforming(agent)
+
+    // Hunger decay always
+    agent.needs.hunger = clamp01(agent.needs.hunger - (1 / 960) * j.hunger)
+
+    // Energy: decay awake, regen asleep
+    if (sleeping) {
+      agent.needs.energy = clamp01(agent.needs.energy + (1 / 420) * j.energy)
+    } else {
+      agent.needs.energy = clamp01(agent.needs.energy - (1 / 1080) * j.energy)
+    }
+
+    // Social: decay, bonus while socializing, passive near others
+    if (socializing) {
+      agent.needs.social = clamp01(agent.needs.social + (1 / 90) * j.social)
+    } else {
+      agent.needs.social = clamp01(agent.needs.social - (1 / 720) * j.social)
+    }
+
+    // Passive regen within 2 tiles of another agent
+    let nearOther = false
+    for (const p of positions) {
+      if (p.id === agent.id) continue
+      if (dist2(agent.x, agent.y, p.x, p.y) <= 4) {
+        nearOther = true
+        break
+      }
+    }
+    if (nearOther && !socializing) {
+      agent.needs.social = clamp01(agent.needs.social + (1 / 2880) * j.social)
+    }
+
+    this.checkCritical(agent, 'hunger', agent.needs.hunger)
+    this.checkCritical(agent, 'energy', agent.needs.energy)
+    this.checkCritical(agent, 'social', agent.needs.social)
+  }
+
+  private checkCritical(
+    agent: AgentState,
+    key: 'hunger' | 'energy' | 'social',
+    value: number,
+  ): void {
+    if (value < 0.15) {
+      if (!agent.criticalFired[key]) {
+        agent.criticalFired[key] = true
+        this.events.append({
+          tick: this.state.tick,
+          type: 'need:critical',
+          agentId: agent.id,
+          data: { need: key, value },
+          reason: `${key} critically low (${pct(value)}%)`,
+        })
+      }
+    } else {
+      agent.criticalFired[key] = false
+    }
+  }
+
+  /** True when agent has arrived at action target (or idle with nothing to walk). */
+  private isPerforming(agent: AgentState): boolean {
+    if (agent.action.kind === 'idle') return true
+    const target = resolveTarget(agent)
+    if (!target) return true
+    const path = agent.action.path
+    if (path && agent.pathIndex < path.length) return false
+    return atTarget(agent, target.x, target.y)
+  }
+
+  private stepMovementAndAction(agent: AgentState, hour: number): void {
+    const kind = agent.action.kind
+    if (kind === 'idle') return
+
+    const target = resolveTarget(agent)
+    if (!target) return
+
+    // Re-path if invalid
+    const path = agent.action.path
+    if (path && path.length > 0 && agent.pathIndex < path.length) {
+      if (!pathStillValid(this.state, path, agent.pathIndex)) {
+        const fresh = findPath(this.state, agent.x, agent.y, target.x, target.y)
+        agent.action.path = fresh ?? []
+        agent.pathIndex = 0
+      }
+    } else if (!atTarget(agent, target.x, target.y)) {
+      // Need a path
+      if (!path || path.length === 0 || agent.pathIndex >= (path?.length ?? 0)) {
+        const fresh = findPath(this.state, agent.x, agent.y, target.x, target.y)
+        agent.action.path = fresh ?? []
+        agent.pathIndex = 0
+      }
+    }
+
+    // Move along path
+    if (agent.action.path && agent.pathIndex < agent.action.path.length) {
+      // Move MOVE_SPEED tiles toward next waypoint (adjacent tiles → 1 tile/tick)
+      let remaining = MOVE_SPEED
+      while (remaining > 0 && agent.pathIndex < agent.action.path.length) {
+        const [nx, ny] = agent.action.path[agent.pathIndex]!
+        const dx = nx - agent.x
+        const dy = ny - agent.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist <= remaining + 1e-9) {
+          agent.x = nx
+          agent.y = ny
+          agent.pathIndex++
+          remaining -= dist
+        } else if (dist > 0) {
+          agent.x += (dx / dist) * remaining
+          agent.y += (dy / dist) * remaining
+          remaining = 0
+        } else {
+          agent.pathIndex++
+        }
+      }
+      return // walking this tick — no perform yet
+    }
+
+    // Arrived: perform action effects
+    if (!atTarget(agent, target.x, target.y)) {
+      // Unreachable — snap attempt failed; idle out
+      this.endAction(agent, 'could not reach destination')
+      agent.action = { kind: 'idle', reason: 'Stuck — catching their breath' }
+      agent.actionTicks = 0
+      agent.pathIndex = 0
+      return
+    }
+
+    agent.x = target.x
+    agent.y = target.y
+    this.performAtTarget(agent, hour)
+  }
+
+  private performAtTarget(agent: AgentState, hour: number): void {
+    const kind = agent.action.kind
+    agent.actionTicks++
+
+    if (kind === 'eat') {
+      const before = agent.needs.hunger
+      agent.needs.hunger = clamp01(agent.needs.hunger + 1 / 15)
+      if (agent.actionTicks >= EAT_DURATION) {
+        this.endAction(
+          agent,
+          `ate berries, hunger ${pct(agent.actionStartNeeds.hunger)}%→${pct(agent.needs.hunger)}%`,
+        )
+        agent.action = { kind: 'idle', reason: 'Full and content' }
+        agent.actionTicks = 0
+        // force redecide next
+        agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      }
+      void before
+      return
+    }
+
+    if (kind === 'drink') {
+      agent.needs.energy = clamp01(agent.needs.energy + 0.02)
+      if (agent.actionTicks >= DRINK_DURATION) {
+        this.endAction(
+          agent,
+          `drank from the well, energy ${pct(agent.actionStartNeeds.energy)}%→${pct(agent.needs.energy)}%`,
+        )
+        agent.action = { kind: 'idle', reason: 'Refreshed' }
+        agent.actionTicks = 0
+        agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      }
+      return
+    }
+
+    if (kind === 'sleep') {
+      // energy regen applied in stepNeeds while performing sleep
+      if (agent.needs.energy >= 0.95 || hour >= 7) {
+        // Only wake on hour>=7 if we've actually slept a bit, or energy full
+        if (agent.needs.energy >= 0.95 || (hour >= 7 && hour < 21)) {
+          this.endAction(
+            agent,
+            `woke up, energy ${pct(agent.actionStartNeeds.energy)}%→${pct(agent.needs.energy)}%`,
+          )
+          agent.action = { kind: 'idle', reason: 'Rested and ready' }
+          agent.actionTicks = 0
+          agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+        }
+      }
+      return
+    }
+
+    if (kind === 'socialize') {
+      // social regen in stepNeeds; continuous until redecide
+      return
+    }
+
+    if (kind === 'wander') {
+      // Arrived at wander spot — done
+      this.endAction(agent, 'finished a short stroll')
+      agent.action = { kind: 'idle', reason: 'Looking around' }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+  }
+
+  private endAction(agent: AgentState, outcome: string): void {
+    if (agent.action.kind === 'idle') return
+    this.events.append({
+      tick: this.state.tick,
+      type: 'action:end',
+      agentId: agent.id,
+      data: { kind: agent.action.kind, outcome },
+      reason: outcome,
+    })
+  }
+
+  private maybeRedecide(agent: AgentState, hour: number): void {
+    const tick = this.state.tick
+    const urgent = anyNeedCritical(agent)
+    const idle = agent.action.kind === 'idle'
+    const due = tick - agent.lastDecideTick >= REDECIDE_INTERVAL
+
+    // Keep sleeping unless urgent interrupt (natural wake is handled in performAtTarget)
+    if (
+      agent.action.kind === 'sleep' &&
+      this.isPerforming(agent) &&
+      shouldKeepSleeping(agent, hour) &&
+      !urgent
+    ) {
+      return
+    }
+
+    // Don't interrupt eat/drink mid-meal unless urgent
+    if (
+      (agent.action.kind === 'eat' || agent.action.kind === 'drink') &&
+      this.isPerforming(agent) &&
+      agent.actionTicks > 0 &&
+      !urgent
+    ) {
+      return
+    }
+
+    // Re-decide when idle (action just finished), on interval, or urgent interrupt
+    if (!urgent && !idle && !due) return
+
+    this.redecide(agent)
+  }
+
+  private redecide(agent: AgentState): void {
+    const obs = makeObservation(agent, this.state)
+    const intent = this.brain.decide(obs, this.rng)
+    agent.lastDecideTick = this.state.tick
+
+    const currentKind = agent.action.kind
+    const sameTarget =
+      currentKind === intent.kind &&
+      agent.action.targetPlaceId === intent.targetPlaceId &&
+      (intent.kind !== 'wander' ||
+        (agent.action.targetX === intent.targetX && agent.action.targetY === intent.targetY))
+
+    if (sameTarget && currentKind !== 'idle') {
+      return // already doing it
+    }
+
+    // Hysteresis: keep current unless competitor beats by ≥ 0.15, except urgent
+    const urgent = anyNeedCritical(agent)
+    if (!urgent && currentKind !== 'idle' && currentKind !== 'wander') {
+      // wander can be freely replaced; idle always takes new intent
+      const currentScore = scoreCurrentAction(obs, currentKind)
+      const newObsScore = this.scoreIntent(obs, intent)
+      if (newObsScore < currentScore + HYSTERESIS) {
+        return
+      }
+    }
+
+    // Special: while sleeping and should keep sleeping, ignore non-urgent switches
+    if (
+      currentKind === 'sleep' &&
+      this.isPerforming(agent) &&
+      shouldKeepSleeping(agent, toSimTime(this.state.tick).hour) &&
+      !urgent
+    ) {
+      return
+    }
+
+    // Switch action
+    if (currentKind !== 'idle') {
+      this.endAction(agent, `stopped ${currentKind} to ${intent.kind}`)
+    }
+
+    this.startAction(agent, intent)
+  }
+
+  private scoreIntent(
+    obs: ReturnType<typeof makeObservation>,
+    intent: Intent,
+  ): number {
+    return scoreCurrentAction(obs, intent.kind)
+  }
+
+  private startAction(agent: AgentState, intent: Intent): void {
+    let tx = intent.targetX
+    let ty = intent.targetY
+
+    // Resolve place coords if missing
+    if ((tx === undefined || ty === undefined) && intent.targetPlaceId) {
+      const place = this.state.places.find((p) => p.id === intent.targetPlaceId)
+      if (place) {
+        tx = place.x
+        ty = place.y
+      }
+    }
+
+    // Wander without coords
+    if (intent.kind === 'wander' && (tx === undefined || ty === undefined)) {
+      tx = Math.round(agent.x)
+      ty = Math.round(agent.y)
+    }
+
+    // Fallback: stay put
+    if (tx === undefined || ty === undefined) {
+      tx = Math.round(agent.x)
+      ty = Math.round(agent.y)
+    }
+
+    // Ensure target walkable
+    if (!isWalkable(this.state, Math.round(tx), Math.round(ty))) {
+      // try stay
+      tx = Math.round(agent.x)
+      ty = Math.round(agent.y)
+    }
+
+    const path = findPath(this.state, agent.x, agent.y, tx, ty)
+
+    agent.action = {
+      kind: intent.kind,
+      targetPlaceId: intent.targetPlaceId,
+      targetX: tx,
+      targetY: ty,
+      path: path ?? [],
+      reason: intent.reason,
+    }
+    agent.pathIndex = 0
+    agent.actionTicks = 0
+    agent.actionStartNeeds = cloneNeeds(agent.needs)
+
+    this.events.append({
+      tick: this.state.tick,
+      type: 'action:start',
+      agentId: agent.id,
+      data: {
+        kind: intent.kind,
+        target: intent.targetPlaceId ?? `${tx},${ty}`,
+      },
+      reason: intent.reason,
+    })
   }
 
   advanceTicks(n: number): void {

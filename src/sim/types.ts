@@ -18,6 +18,9 @@ export type ActionKind = 'idle' | 'walk' | 'sleep' | 'eat' | 'drink' | 'socializ
 export interface AgentAction {
   kind: ActionKind
   targetPlaceId?: string
+  /** Tile target for wander (and resolved destinations). */
+  targetX?: number
+  targetY?: number
   path?: Array<[number, number]>
   /** Human-readable "why" — required, shown in the inspector. */
   reason: string
@@ -32,6 +35,18 @@ export interface AgentState {
   homeId: string
   needs: Needs
   action: AgentAction
+  /** Per-need decay multipliers drawn once at spawn, ~0.85–1.15. */
+  needJitter: Needs
+  /** Ticks spent performing current action at the target (not walking). */
+  actionTicks: number
+  /** Last tick we ran a full re-decide. */
+  lastDecideTick: number
+  /** Index of next waypoint in action.path. */
+  pathIndex: number
+  /** Once-per-drop flags for need:critical events. */
+  criticalFired: { hunger: boolean; energy: boolean; social: boolean }
+  /** Needs snapshot when the current action began (for action:end copy). */
+  actionStartNeeds: Needs
 }
 
 export interface WorldState {
@@ -56,7 +71,13 @@ export interface SimEvent {
 
 export interface Observation { self: AgentState; time: SimTime; world: WorldState }
 
-export interface Intent { kind: ActionKind; targetPlaceId?: string; reason: string }
+export interface Intent {
+  kind: ActionKind
+  targetPlaceId?: string
+  targetX?: number
+  targetY?: number
+  reason: string
+}
 
 /** THE brain seam. UtilityBrain (Phase 1) and LunaBrain (Phase 3, LLM) both implement this. */
 export interface Brain { decide(obs: Observation, rng: Rng): Intent }

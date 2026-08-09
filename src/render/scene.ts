@@ -1,8 +1,9 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { WorldState } from '../sim/types'
+import type { AgentState, WorldState } from '../sim/types'
 import { buildTerrain, type TerrainHandle } from './terrain'
 import { createDayNight, type DayNightHandle } from './daynight'
+import { createAgents, type AgentsHandle } from './agents'
 import type { SimTime } from '../sim/types'
 
 export interface SceneHandle {
@@ -12,7 +13,16 @@ export interface SceneHandle {
   controls: OrbitControls
   terrain: TerrainHandle
   dayNight: DayNightHandle
+  agents: AgentsHandle
   setTime: (time: SimTime) => void
+  updateAgents: (
+    agents: AgentState[],
+    prev: Map<string, { x: number; y: number }>,
+    alpha: number,
+    selectedId: string | null,
+  ) => void
+  /** Wire click-to-select; returns cleanup. */
+  bindSelection: (onSelect: (id: string | null) => void) => () => void
   resize: (w: number, h: number) => void
   dispose: () => void
   render: () => void
@@ -53,9 +63,58 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
 
   const terrain = buildTerrain(scene, world)
   const dayNight = createDayNight(scene, world)
+  const agents = createAgents(scene, world.agents)
 
   const setTime = (time: SimTime) => {
     dayNight.update(time)
+  }
+
+  const updateAgents = (
+    list: AgentState[],
+    prev: Map<string, { x: number; y: number }>,
+    alpha: number,
+    selectedId: string | null,
+  ) => {
+    agents.update(list, prev, alpha, selectedId)
+  }
+
+  const bindSelection = (onSelect: (id: string | null) => void): (() => void) => {
+    const canvas = renderer.domElement
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+    let downX = 0
+    let downY = 0
+
+    const onPointerDown = (e: PointerEvent) => {
+      downX = e.clientX
+      downY = e.clientY
+    }
+
+    const onPointerUp = (e: PointerEvent) => {
+      const dx = e.clientX - downX
+      const dy = e.clientY - downY
+      if (dx * dx + dy * dy > 25) return // drag — ignore (>5px)
+
+      const rect = canvas.getBoundingClientRect()
+      pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, camera)
+
+      const hits = raycaster.intersectObjects(agents.getPickables(), true)
+      if (hits.length > 0) {
+        const id = agents.agentIdFromObject(hits[0]!.object)
+        onSelect(id)
+      } else {
+        onSelect(null)
+      }
+    }
+
+    canvas.addEventListener('pointerdown', onPointerDown)
+    canvas.addEventListener('pointerup', onPointerUp)
+    return () => {
+      canvas.removeEventListener('pointerdown', onPointerDown)
+      canvas.removeEventListener('pointerup', onPointerUp)
+    }
   }
 
   const resize = (w: number, h: number) => {
@@ -75,6 +134,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     controls.dispose()
     terrain.dispose()
     dayNight.dispose()
+    agents.dispose()
     renderer.dispose()
     if (renderer.domElement.parentElement === container) {
       container.removeChild(renderer.domElement)
@@ -91,7 +151,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     controls,
     terrain,
     dayNight,
+    agents,
     setTime,
+    updateAgents,
+    bindSelection,
     resize,
     dispose,
     render,
