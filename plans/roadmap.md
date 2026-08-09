@@ -41,6 +41,10 @@
 
 *Stuff worth wanting: property, work, money, trade, relationships.*
 
+> **Decisions (locked 2026-08-09):** failed needs cause collapse/sickness, never death (death is a deliberate later decision). Population stays 24. Equal start: identical coins per villager; all productive assets (farms, stall, well) begin as commons owned by a village treasury — inequality must emerge, not be seeded. The ownership registry supports private transfer from day one so agents (especially Phase-3 minds) can privatize, trade, or hoard. Everything ships as world rules per CLAUDE.md invariant 7 — no merchant scripts; the UtilityBrain stays deliberately simple and economically boring. Money is a closed ledger: total coins constant (conservation-tested) unless deliberately minted.
+>
+> **Dispatch plan:** I (goods, coins, ownership, forage-to-inventory, collapse) → J (farms, jobs, wages, market stall, prices) → K (forestry/quarry resources, construction pipeline) → L (relationships, inspector biography tabs, town charts) → M (persistence: save/load world + timeline).
+
 **The watchable sim:** a working village economy. A farmer sows and harvests; a forester chops; goods flow to a market stall where prices move with supply; agents earn wages, buy food instead of foraging, and save. Someone accumulates enough to commission a new house — you watch it built plank by plank over sim-days. Friendships form from shared meals; the inspector now reads like a biography.
 
 **Scope:**
