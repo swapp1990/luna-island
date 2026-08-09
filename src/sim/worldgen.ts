@@ -47,7 +47,8 @@ function idx(x: number, y: number): number {
 function classify(elevation: number, forestNoise: number): { kind: TerrainKind; walkable: boolean } {
   if (elevation < 0.3) return { kind: 'water', walkable: false }
   if (elevation < 0.36) return { kind: 'sand', walkable: true }
-  if (elevation > 0.78) return { kind: 'rock', walkable: false }
+  // Raised threshold shrinks rock to a small hill (≤ ~8% of land; seed 42 ≈ 1–2%)
+  if (elevation > 0.80) return { kind: 'rock', walkable: false }
   // Higher threshold keeps forest ≤ ~25% of land (was a tree-wall at 0.55)
   if (forestNoise > 0.68) return { kind: 'forest', walkable: true }
   return { kind: 'grass', walkable: true }

@@ -13,12 +13,17 @@ const HEIGHTS: Record<Exclude<TerrainKind, 'water'>, number> = {
   rock: 0.55,
 }
 
+/** Rock terrace band heights (low / mid / high) — reads as a hill, not a slab. */
+const ROCK_HEIGHTS = [0.55, 0.8, 1.05] as const
+const ROCK_LOWER = 0x837c72 // warm stone lower
+const ROCK_UPPER = 0x9a938a // warm stone upper
+
 const COLORS: Record<TerrainKind, number> = {
   water: 0x3f7fae,
   sand: 0xe2cf9a,
   grass: 0x7fae5e,
   forest: 0x5f9147,
-  rock: 0x7a7a7a,
+  rock: ROCK_LOWER,
 }
 
 const FOREST_GROUND = 0x4a7a38 // slightly darker — reads as forest without a tree
@@ -32,6 +37,21 @@ const BUSH_GREEN = 0x4e9b47
 const BERRY_RED = 0xd95d67
 const SHALLOW_WATER = 0x5fa3c9
 const DEEP_WATER = 0x3f7fae
+/** Match scene.ts Fog far so the water edge sits past the horizon fade. */
+const FOG_FAR = 120
+
+/** Map rock elevation → terrace band index 0..2. */
+function rockBandIndex(elev: number, minE: number, maxE: number): number {
+  if (maxE <= minE) return 1
+  const u = (elev - minE) / (maxE - minE)
+  if (u < 1 / 3) return 0
+  if (u < 2 / 3) return 1
+  return 2
+}
+
+function rockTileHeight(elev: number, minE: number, maxE: number): number {
+  return ROCK_HEIGHTS[rockBandIndex(elev, minE, maxE)]!
+}
 
 /** Render-only mulberry32 from tile coords — never touches sim rng. */
 function tileRng(x: number, y: number, salt: number): () => number {
@@ -78,9 +98,10 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     return obj
   }
 
-  // Water: deep base plane + shallow quads on land-adjacent water tiles
+  // Water: deep base plane (extends past fog far so horizon is seamless) + shallow shoreline quads
   {
-    const geo = track(new THREE.PlaneGeometry(world.width + 4, world.height + 4))
+    const waterSize = Math.max(world.width, world.height) + FOG_FAR * 2
+    const geo = track(new THREE.PlaneGeometry(waterSize, waterSize))
     const mat = track(
       new THREE.MeshStandardMaterial({
         color: DEEP_WATER,
@@ -158,8 +179,9 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     const pathTiles = land.filter((t) => t.path)
     const nonPath = land.filter((t) => !t.path)
 
-    // Non-path by kind (forest ground slightly darker)
+    // Non-path by kind (forest ground slightly darker). Rock is terraced separately.
     for (const kind of Object.keys(byKind) as Array<Exclude<TerrainKind, 'water'>>) {
+      if (kind === 'rock') continue
       const list = nonPath.filter((t) => t.kind === kind)
       if (list.length === 0) continue
       const h = HEIGHTS[kind]
@@ -168,12 +190,11 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
       const mat = track(
         new THREE.MeshStandardMaterial({
           color,
-          roughness: kind === 'rock' ? 0.9 : 0.85,
+          roughness: 0.85,
           metalness: 0,
         }),
       )
       const inst = new THREE.InstancedMesh(boxGeo, mat, list.length)
-      inst.castShadow = kind === 'rock'
       inst.receiveShadow = true
       const dummy = new THREE.Object3D()
       for (let i = 0; i < list.length; i++) {
@@ -186,6 +207,52 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
       }
       inst.instanceMatrix.needsUpdate = true
       root.add(inst)
+    }
+
+    // Rock: 2–3 elevation bands (heights 0.55 / 0.8 / 1.05), warm stone palette
+    {
+      const rocks = nonPath.filter((t) => t.kind === 'rock')
+      if (rocks.length > 0) {
+        let minE = Infinity
+        let maxE = -Infinity
+        for (const t of rocks) {
+          if (t.elev < minE) minE = t.elev
+          if (t.elev > maxE) maxE = t.elev
+        }
+        const bands: LandTile[][] = [[], [], []]
+        for (const t of rocks) {
+          bands[rockBandIndex(t.elev, minE, maxE)]!.push(t)
+        }
+        for (let bi = 0; bi < 3; bi++) {
+          const list = bands[bi]!
+          if (list.length === 0) continue
+          const h = ROCK_HEIGHTS[bi]!
+          // lower two bands cooler-warm; top band lighter warm stone
+          const color = bi >= 2 ? ROCK_UPPER : ROCK_LOWER
+          const boxGeo = track(new THREE.BoxGeometry(1, h, 1))
+          const mat = track(
+            new THREE.MeshStandardMaterial({
+              color,
+              roughness: 0.9,
+              metalness: 0,
+            }),
+          )
+          const inst = new THREE.InstancedMesh(boxGeo, mat, list.length)
+          inst.castShadow = true
+          inst.receiveShadow = true
+          const dummy = new THREE.Object3D()
+          for (let i = 0; i < list.length; i++) {
+            const t = list[i]!
+            dummy.position.set(t.x, h / 2, t.y)
+            dummy.rotation.set(0, 0, 0)
+            dummy.scale.set(1, 1, 1)
+            dummy.updateMatrix()
+            inst.setMatrixAt(i, dummy.matrix)
+          }
+          inst.instanceMatrix.needsUpdate = true
+          root.add(inst)
+        }
+      }
     }
 
     // Path tiles as packed-dirt boxes (slightly lower than grass so they read)
@@ -276,9 +343,15 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     }
   }
 
-  // Rocks: raised grey terrain already drawn; ~15% get a boulder (no trees here)
+  // Rocks: terraced terrain already drawn; ~15% get a boulder (no trees here)
   {
     const rocks = byKind.rock
+    let minE = Infinity
+    let maxE = -Infinity
+    for (const t of rocks) {
+      if (t.elev < minE) minE = t.elev
+      if (t.elev > maxE) maxE = t.elev
+    }
     const boulderTiles = rocks.filter((t) => tileHash01(t.x, t.y, 99) < 0.15)
     if (boulderTiles.length > 0) {
       const rockGeo = track(new THREE.DodecahedronGeometry(0.28, 0))
@@ -296,9 +369,10 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
           const t = list[i]!
           const rnd = tileRng(t.x, t.y, 99)
           const s = 0.5 + rnd() * 0.5 // 0.5–1.0
+          const baseH = rockTileHeight(t.elev, minE, maxE)
           dummy.position.set(
             t.x + (rnd() - 0.5) * 0.2,
-            HEIGHTS.rock + 0.15 * s,
+            baseH + 0.15 * s,
             t.y + (rnd() - 0.5) * 0.2,
           )
           dummy.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI)
@@ -408,15 +482,17 @@ function addPlace(
 
     root.add(group)
   } else if (place.kind === 'plaza') {
-    // Light-stone disc radius ≈ 2.5 tiles
-    const geo = track(new THREE.CylinderGeometry(2.5, 2.5, 0.06, 32))
+    // Light-stone disc flush with grass top (half-thickness + tiny epsilon, no gap shadow)
+    const discH = 0.06
+    const plazaY = HEIGHTS.grass + discH / 2 + 0.002
+    const geo = track(new THREE.CylinderGeometry(2.5, 2.5, discH, 32))
     const mat = track(new THREE.MeshStandardMaterial({ color: PLAZA_STONE, roughness: 0.95 }))
     const mesh = new THREE.Mesh(geo, mat)
-    mesh.position.set(place.x, baseY + 0.02, place.y)
+    mesh.position.set(place.x, plazaY, place.y)
     mesh.receiveShadow = true
     root.add(mesh)
 
-    // Scattered flat stone slabs
+    // Scattered flat stone slabs on the disc surface
     const slabGeo = track(new THREE.BoxGeometry(0.45, 0.04, 0.35))
     const slabMat = track(new THREE.MeshStandardMaterial({ color: 0xb8b0a0, roughness: 0.92 }))
     const offsets: Array<[number, number, number]> = [
@@ -426,9 +502,10 @@ function addPlace(
       [-1.3, -0.7, 1.1],
       [1.5, -0.5, -0.9],
     ]
+    const slabY = plazaY + discH / 2 + 0.02
     for (const [ox, oz, yaw] of offsets) {
       const slab = new THREE.Mesh(slabGeo, slabMat)
-      slab.position.set(place.x + ox, baseY + 0.06, place.y + oz)
+      slab.position.set(place.x + ox, slabY, place.y + oz)
       slab.rotation.y = yaw
       slab.receiveShadow = true
       root.add(slab)
