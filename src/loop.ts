@@ -10,6 +10,7 @@ export interface LoopController {
   scrubTo: (tick: number) => void
   goLive: () => void
   selectAgent: (id: string | null) => void
+  selectPlace: (id: string | null) => void
   setFollow: (on: boolean) => void
   getFollow: () => boolean
   loadDay: (day: number) => void
@@ -40,6 +41,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let speed = 1
   let mode: SimMode = 'live'
   let selectedAgentId: string | null = null
+  let selectedPlaceId: string | null = null
   let follow = false
   let fork: Simulation | null = null
   let accumulator = 0
@@ -50,6 +52,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let prevPositions = capturePositions(live)
   /** Event count of the view sim already scanned for critical bubbles. */
   let lastCriticalEventCount = 0
+  /** Live-only toast scanner cursor (never backfills on replay enter). */
+  let lastToastEventCount = 0
   /**
    * Calendar day scoped in the timeline. null = follow live head day.
    * Set when loadDay / scrub into a day; cleared on goLive.
@@ -99,6 +103,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       agentCount: sim.state.agents.length,
       agentIds: sim.state.agents.map((a) => a.id),
       selectedAgentId,
+      selectedPlaceId,
+      placeIds: sim.state.places.map((p) => p.id),
       eventCount: mode === 'live' ? live.getEventCount() : sim.getEventCount(),
       archivedDayCount: live.archives().length,
       viewDay: resolvedViewDay(),
@@ -123,11 +129,74 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastCriticalEventCount = events.length
   }
 
+  /** Pickup / coin toasts — live path only, new events only (no replay backfill). */
+  const scanToasts = (sim: Simulation, now: number, liveMode: boolean) => {
+    if (!liveMode) {
+      lastToastEventCount = sim.getEventCount()
+      return
+    }
+    const events = sim.getEvents()
+    const start = lastToastEventCount
+    if (start >= events.length) {
+      lastToastEventCount = events.length
+      return
+    }
+    for (let i = start; i < events.length; i++) {
+      const ev = events[i]!
+      if (ev.type === 'goods:transfer') {
+        const toKind = ev.data?.toKind as string | undefined
+        if (toKind === 'agent' && ev.agentId) {
+          const good = (ev.data?.good as string) ?? 'food'
+          const amount = (ev.data?.amount as number) ?? 1
+          scene.overlays.pushToast(ev.agentId, 'goods', good, amount, now)
+        }
+      } else if (ev.type === 'coins:transfer') {
+        const kind = ev.data?.kind as string | undefined
+        const amount = (ev.data?.amount as number) ?? 0
+        const to = ev.data?.to as string | undefined
+        if (
+          (kind === 'wage' || kind === 'buy') &&
+          to &&
+          to !== 'treasury' &&
+          amount > 0
+        ) {
+          // Wage: agent receives; buy: stall/treasury receives — toast on receiver agent only for wage/agent buy refund edge
+          if (kind === 'wage') {
+            scene.overlays.pushToast(to, 'coins', 'coins', amount, now)
+          } else if (kind === 'buy' && sim.state.agents.some((a) => a.id === to)) {
+            scene.overlays.pushToast(to, 'coins', 'coins', amount, now)
+          }
+        }
+        // Also show spend toast on buyer when coins leave an agent for a buy
+        if (kind === 'buy') {
+          const from = ev.data?.from as string | undefined
+          if (from && from !== 'treasury' && amount > 0 && ev.agentId) {
+            // Prefer agent who bought — agentId is usually the buyer when to is treasury/seller
+            const buyer =
+              from !== 'treasury' ? from : ev.agentId !== to ? ev.agentId : null
+            if (buyer && sim.state.agents.some((a) => a.id === buyer)) {
+              // Skip negative toast; pickups are positive only per spec
+            }
+          }
+        }
+      }
+    }
+    lastToastEventCount = events.length
+  }
+
   const applyScene = (now: number) => {
     const sim = viewSim()
     const alpha = speed > 0 ? Math.min(1, accumulator) : 1
-    scene.setTime(toSimTime(sim.state.tick))
-    scene.updateAgents(sim.state.agents, prevPositions, alpha, selectedAgentId)
+    const t = toSimTime(sim.state.tick)
+    scene.setTime(t)
+    scene.updateAgents(
+      sim.state.agents,
+      prevPositions,
+      alpha,
+      selectedAgentId,
+      selectedPlaceId,
+      sim.state.places,
+    )
     if (follow && selectedAgentId) {
       scene.followAgent(sim.state.agents, prevPositions, alpha, selectedAgentId, 0.08)
     }
@@ -138,6 +207,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       selectedAgentId,
       sim.state.places,
       now,
+      t,
     )
     scene.updateEconomyVisuals(sim.state.places)
   }
@@ -158,6 +228,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     accumulator = 0
     prevPositions = capturePositions(live)
     lastCriticalEventCount = live.getEventCount()
+    lastToastEventCount = live.getEventCount()
     applyScene(performance.now())
   }
 
@@ -175,6 +246,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     accumulator = 0
     prevPositions = capturePositions(fork)
     lastCriticalEventCount = fork.getEventCount()
+    // Do not backfill toasts when entering replay
+    lastToastEventCount = fork.getEventCount()
     applyScene(performance.now())
   }
 
@@ -224,6 +297,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     if (mode === 'live') {
       prevPositions = capturePositions(live)
       lastCriticalEventCount = live.getEventCount()
+      // Skip toast spam from large ffwd batches — advance cursor only
+      lastToastEventCount = live.getEventCount()
       applyScene(performance.now())
     } else if (fork) {
       // Live advanced underneath; keep replay fork as-is
@@ -234,7 +309,16 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
   const selectAgent = (id: string | null) => {
     selectedAgentId = id
+    if (id) selectedPlaceId = null
     if (!id) follow = false
+  }
+
+  const selectPlace = (id: string | null) => {
+    selectedPlaceId = id
+    if (id) {
+      selectedAgentId = null
+      follow = false
+    }
   }
 
   const setFollow = (on: boolean) => {
@@ -289,6 +373,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
     const sim = viewSim()
     scanCriticals(sim, ts)
+    scanToasts(sim, ts, mode === 'live')
     applyScene(ts)
     scene.render()
     refreshBridge(getState())
@@ -302,6 +387,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     accumulator = 0
     prevPositions = capturePositions(viewSim())
     lastCriticalEventCount = viewSim().getEventCount()
+    lastToastEventCount = viewSim().getEventCount()
     applyScene(performance.now())
     refreshBridge(getState())
     rafId = requestAnimationFrame(frame)
@@ -319,6 +405,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     scrubTo,
     goLive,
     selectAgent,
+    selectPlace,
     setFollow,
     getFollow,
     loadDay,

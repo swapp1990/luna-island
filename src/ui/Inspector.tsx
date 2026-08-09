@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { AgentState, Place, SimEvent } from '../sim/types'
 import { toSimTime } from '../sim/time'
+import { SlotGrid } from './SlotGrid'
 
 type TabId = 'status' | 'life' | 'people' | 'work'
 
@@ -503,11 +504,24 @@ export function Inspector(props: {
           <div data-testid="job-row">💼 {jobLabel(agent, props.places)}</div>
           {owns ? <div data-testid="owns-row">🏠 Owns: {owns}</div> : null}
           <div data-testid="wallet-row">🪙 {agent.wallet ?? 0} coins</div>
-          <div data-testid="inv-row">
-            🎒 {agent.inventory?.food ?? 0} food
-            {(agent.inventory?.wood ?? 0) > 0 || (agent.inventory?.stone ?? 0) > 0
-              ? ` · ${agent.inventory?.wood ?? 0} wood · ${agent.inventory?.stone ?? 0} stone`
-              : ''}
+          <div>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: 0.6,
+                textTransform: 'uppercase',
+                opacity: 0.55,
+                marginBottom: 6,
+              }}
+            >
+              Inventory
+            </div>
+            <SlotGrid
+              inventory={agent.inventory}
+              slots={4}
+              containerTestId="inv-row"
+            />
           </div>
         </div>
       )}

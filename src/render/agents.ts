@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { AgentState } from '../sim/types'
+import type { AgentState, Good, Place } from '../sim/types'
 
 const BODY_H = 0.55
 const HEAD_R = 0.16
@@ -9,6 +9,12 @@ const BOB_AMP = 0.04
 const BOB_FREQ = 14
 const LEAN = 0.12
 
+const CARRY_TINT: Record<Good, number> = {
+  food: 0x5aaf4a,
+  wood: 0x8b6914,
+  stone: 0x8a8f98,
+}
+
 export interface AgentsHandle {
   root: THREE.Group
   /** Call each frame with current agent states, interp alpha, selection. */
@@ -17,6 +23,8 @@ export interface AgentsHandle {
     prev: Map<string, { x: number; y: number }>,
     alpha: number,
     selectedId: string | null,
+    selectedPlaceId?: string | null,
+    places?: Place[],
   ) => void
   /** Mesh list for raycasting (pickables). */
   getPickables: () => THREE.Object3D[]
@@ -52,6 +60,20 @@ interface AgentMesh {
   walkDist: number
   lastX: number
   lastZ: number
+  /** Small crate/sack on back when carrying goods. */
+  carryMesh: THREE.Mesh
+  carryMat: THREE.MeshStandardMaterial
+}
+
+function primaryCarryGood(agent: AgentState): Good | null {
+  // Prefer active haul cargo, else any inventory
+  if (agent.haulGood && agent.haulAmount > 0) return agent.haulGood
+  const inv = agent.inventory
+  if (!inv) return null
+  if ((inv.food ?? 0) > 0) return 'food'
+  if ((inv.wood ?? 0) > 0) return 'wood'
+  if ((inv.stone ?? 0) > 0) return 'stone'
+  return null
 }
 
 function isOnPath(agent: AgentState): boolean {
@@ -91,6 +113,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
 
   const bodyGeo = track(new THREE.CylinderGeometry(BODY_R * 0.85, BODY_R, BODY_H, 10))
   const headGeo = track(new THREE.SphereGeometry(HEAD_R, 12, 10))
+  const carryGeo = track(new THREE.BoxGeometry(0.16, 0.14, 0.12))
 
   for (const agent of agents) {
     const group = new THREE.Group()
@@ -127,12 +150,28 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     head.userData.agentId = agent.id
     group.add(head)
 
+    const carryMat = track(
+      new THREE.MeshStandardMaterial({
+        color: CARRY_TINT.food,
+        roughness: 0.85,
+        metalness: 0.05,
+      }),
+    )
+    const carryMesh = new THREE.Mesh(carryGeo, carryMat)
+    // On the back (local -Z when facing +Z walk direction after yaw)
+    carryMesh.position.set(0, GROUND_Y + BODY_H * 0.55, -BODY_R - 0.06)
+    carryMesh.castShadow = true
+    carryMesh.visible = false
+    carryMesh.userData.agentId = agent.id
+    group.add(carryMesh)
+
     group.position.set(agent.x, 0, agent.y)
     root.add(group)
 
     objectToId.set(group, agent.id)
     objectToId.set(body, agent.id)
     objectToId.set(head, agent.id)
+    objectToId.set(carryMesh, agent.id)
 
     meshes.set(agent.id, {
       id: agent.id,
@@ -144,10 +183,12 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       walkDist: 0,
       lastX: agent.x,
       lastZ: agent.y,
+      carryMesh,
+      carryMat,
     })
   }
 
-  // Selection ring
+  // Selection ring (agent)
   const ringGeo = track(new THREE.RingGeometry(0.28, 0.4, 32))
   const ringMat = track(
     new THREE.MeshBasicMaterial({
@@ -168,6 +209,25 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
   ring.visible = false
   root.add(ring)
 
+  // Larger selection ring for buildings
+  const placeRingGeo = track(new THREE.RingGeometry(0.55, 0.78, 40))
+  const placeRingMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0xfff0d0,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      depthTest: false,
+    }),
+  )
+  const placeRing = new THREE.Mesh(placeRingGeo, placeRingMat)
+  placeRing.renderOrder = 999
+  placeRing.rotation.x = -Math.PI / 2
+  placeRing.position.y = GROUND_Y + 0.04
+  placeRing.visible = false
+  root.add(placeRing)
+
   let pulseT = 0
 
   const update = (
@@ -175,6 +235,8 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     prev: Map<string, { x: number; y: number }>,
     alpha: number,
     selectedId: string | null,
+    selectedPlaceId: string | null = null,
+    places: Place[] = [],
   ) => {
     pulseT += 0.05
     const a = Math.max(0, Math.min(1, alpha))
@@ -212,12 +274,22 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       const socializing = isPerformingSocial(agent)
       const walking = isOnPath(agent) && moved > 1e-5
 
+      // Carry sack visibility + tint from inventory / haul
+      const carry = primaryCarryGood(agent)
+      if (carry) {
+        m.carryMesh.visible = true
+        m.carryMat.color.setHex(CARRY_TINT[carry])
+      } else {
+        m.carryMesh.visible = false
+      }
+
       if (sleeping) {
         m.group.position.set(x, 0, z)
         m.group.scale.set(1, 0.5, 1)
         m.group.rotation.set(0, m.group.rotation.y, 0)
         m.bodyMat.color.copy(m.baseBody).multiplyScalar(0.6)
         m.headMat.color.copy(m.baseHead).multiplyScalar(0.6)
+        m.carryMesh.visible = false
         continue
       }
 
@@ -273,14 +345,30 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     if (selectedId && meshes.has(selectedId)) {
       const m = meshes.get(selectedId)!
       ring.visible = true
+      placeRing.visible = false
       ring.position.x = m.group.position.x
       ring.position.z = m.group.position.z
       const pulse = 0.75 + Math.sin(pulseT) * 0.15
       ringMat.opacity = pulse
       const s = 1 + Math.sin(pulseT * 1.3) * 0.08
       ring.scale.set(s, s, s)
+    } else if (selectedPlaceId) {
+      ring.visible = false
+      const place = places.find((p) => p.id === selectedPlaceId)
+      if (place) {
+        placeRing.visible = true
+        placeRing.position.x = place.x
+        placeRing.position.z = place.y
+        const pulse = 0.75 + Math.sin(pulseT) * 0.15
+        placeRingMat.opacity = pulse
+        const s = 1 + Math.sin(pulseT * 1.3) * 0.08
+        placeRing.scale.set(s, s, s)
+      } else {
+        placeRing.visible = false
+      }
     } else {
       ring.visible = false
+      placeRing.visible = false
     }
   }
 

@@ -12,6 +12,10 @@ export interface SimStateBridge {
   /** Ordered agent ids (additive; for E2E selection). */
   agentIds: string[]
   selectedAgentId: string | null
+  /** Additive: selected place id (building panel). */
+  selectedPlaceId: string | null
+  /** Additive: ordered place ids (for E2E selection). */
+  placeIds: string[]
   eventCount: number
   /** Number of completed days archived on the live sim. */
   archivedDayCount: number
@@ -27,6 +31,8 @@ export interface SimControlBridge {
   scrubTo: (tick: number) => void
   goLive: () => void
   selectAgent: (id: string | null) => void
+  /** Additive: select a place (building); clears agent selection. */
+  selectPlace: (id: string | null) => void
   /** Load a calendar day into the scrubber (past → replay; today → scoped). */
   loadDay: (day: number) => void
   /** Synchronous batch advance of the LIVE sim (test/dev fast-step). */

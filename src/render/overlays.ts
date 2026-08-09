@@ -1,11 +1,17 @@
 import * as THREE from 'three'
 import { nearestAgentWithin } from '../sim/spots'
-import type { AgentState, Place } from '../sim/types'
+import { openJobSlots, workersOfPlace } from '../sim/selectors'
+import type { AgentState, Place, SimTime } from '../sim/types'
 
 const HEAD_Y = 0.22 + 0.55 + 0.16 * 0.85 // matches agents.ts head top-ish
 const BUBBLE_LIFT = 0.9
 const CRITICAL_TTL_MS = 3000
 const CRITICAL_POOL = 5
+const TOAST_TTL_MS = 1500
+const TOAST_POOL = 8
+const INDICATOR_POOL = 24
+
+const HOME_BILL: Record<'wood' | 'stone', number> = { wood: 12, stone: 6 }
 
 const BUBBLE_STYLE: Partial<CSSStyleDeclaration> = {
   position: 'absolute',
@@ -36,12 +42,9 @@ function applyBubbleBase(el: HTMLElement, mini = false): void {
     el.style.fontSize = '13px'
     el.style.borderRadius = '10px'
   }
-  // CSS triangle tail
-  el.style.setProperty('--tail', '1')
 }
 
 function ensureTailStyles(el: HTMLElement): void {
-  // Use a pseudo-element via an inner span for the ▼ tail
   if (el.querySelector('[data-tail]')) return
   const tail = document.createElement('span')
   tail.dataset.tail = '1'
@@ -92,7 +95,6 @@ export function formatStatusBubble(
     : undefined
   const placeKind = place?.kind
 
-  // Collapse overrides other status copy
   if (agent.collapsed) {
     return '😵 Collapsed — needs food'
   }
@@ -192,11 +194,141 @@ function criticalEmoji(need: string): string {
   }
 }
 
+const JOB_ICON: Record<string, string> = {
+  farm: '👨‍🌾',
+  stall: '🏪',
+  forestry: '🪓',
+  quarry: '⛏️',
+  'construction-site': '🏗️',
+  storehouse: '🏚️',
+}
+
+const JOB_TITLE: Record<string, string> = {
+  farm: 'Farmhand',
+  stall: 'Vendor',
+  forestry: 'Lumberjack',
+  quarry: 'Quarrier',
+  'construction-site': 'Builder',
+  storehouse: 'Storekeeper',
+}
+
+const PLACE_LABEL: Record<string, string> = {
+  farm: 'Farm',
+  stall: 'Stall',
+  storehouse: 'Storehouse',
+  forestry: 'Forestry',
+  quarry: 'Quarry',
+  well: 'Well',
+  home: 'Home',
+  'construction-site': 'Build site',
+}
+
+const GOOD_ICON: Record<string, string> = {
+  food: '🫐',
+  wood: '🪵',
+  stone: '🪨',
+  coins: '🪙',
+}
+
+export function formatAgentTooltip(
+  agent: AgentState,
+  places: Place[],
+  agents: readonly AgentState[],
+): string {
+  const jobPlace = agent.employedAt
+    ? places.find((p) => p.id === agent.employedAt)
+    : undefined
+  const jobIcon = jobPlace ? JOB_ICON[jobPlace.kind] ?? '💼' : '🧍'
+  const jobTitle = jobPlace
+    ? JOB_TITLE[jobPlace.kind] ?? jobPlace.kind
+    : 'Unemployed'
+  const doing = formatStatusBubble(agent, places, agents)
+  let carry = ''
+  if (agent.haulAmount > 0 && agent.haulGood) {
+    carry = ` ${agent.haulAmount} ${agent.haulGood}`
+  } else {
+    const inv = agent.inventory
+    if (inv) {
+      const parts: string[] = []
+      if (inv.food > 0) parts.push(`${inv.food} food`)
+      if (inv.wood > 0) parts.push(`${inv.wood} wood`)
+      if (inv.stone > 0) parts.push(`${inv.stone} stone`)
+      if (parts.length) carry = ` · carrying ${parts.join(', ')}`
+    }
+  }
+  return `${agent.name} · ${jobIcon} ${jobTitle} — ${doing}${carry}`
+}
+
+export function formatPlaceTooltip(
+  place: Place,
+  agents: readonly AgentState[],
+  time: SimTime | null,
+): string {
+  const label = PLACE_LABEL[place.kind] ?? place.kind
+  const parts: string[] = [label]
+  if ((place.jobSlots ?? 0) > 0) {
+    const n = workersOfPlace(agents, place.id).length
+    parts.push(`${n} worker${n === 1 ? '' : 's'}`)
+  }
+  if (place.production) {
+    const g = Math.max(0, Math.min(1, place.growth ?? 0))
+    const remain = Math.max(0, 1 - g)
+    const ticksLeft = Math.ceil(remain * place.production.cycleWorkedTicks)
+    if (g > 0.01 && ticksLeft > 0) {
+      const hours = Math.floor(ticksLeft / 60)
+      const mins = ticksLeft % 60
+      if (hours > 0) parts.push(`ready in ${hours}h${mins > 0 ? ` ${mins}m` : ''}`)
+      else parts.push(`ready in ${mins}m`)
+    } else if (g < 0.01) {
+      parts.push('idle')
+    } else {
+      parts.push('ready')
+    }
+  }
+  if (place.construction) {
+    const pct = Math.round((place.construction.progress ?? 0) * 100)
+    parts.push(`${pct}% built`)
+  }
+  if (place.kind === 'farm' && (place.inventory?.food ?? 0) >= 5) {
+    parts.push('ripe')
+  }
+  void time
+  return parts.join(' · ')
+}
+
+function placeActivelyWorked(place: Place, agents: readonly AgentState[]): boolean {
+  if (!place.production && !place.construction) return false
+  for (const a of agents) {
+    if (a.employedAt !== place.id) continue
+    if (a.action.kind !== 'work') continue
+    if (a.workPhase === 'hauling' || a.workPhase === 'returning') continue
+    const path = a.action.path
+    const walking = !!(path && path.length > 0 && a.pathIndex < path.length)
+    if (!walking) return true
+  }
+  return false
+}
+
 interface CriticalSlot {
   el: HTMLElement
   textEl: HTMLElement
   agentId: string | null
   born: number
+  active: boolean
+}
+
+interface ToastSlot {
+  el: HTMLElement
+  textEl: HTMLElement
+  agentId: string | null
+  born: number
+  active: boolean
+}
+
+interface IndicatorSlot {
+  el: HTMLElement
+  kind: string
+  placeId: string | null
   active: boolean
 }
 
@@ -212,9 +344,20 @@ export interface OverlaysHandle {
     prev: Map<string, { x: number; y: number }>
     alpha: number
     now: number
+    time?: SimTime | null
   }) => void
   /** Spawn / recycle a critical-need ambient bubble. */
   pushCritical: (agentId: string, need: string, now: number) => void
+  /** Live-only pickup/coin toast above an agent. */
+  pushToast: (
+    agentId: string,
+    kind: 'goods' | 'coins',
+    good: string,
+    amount: number,
+    now: number,
+  ) => void
+  /** Hover tooltip (HTML, near cursor). */
+  setTooltip: (text: string | null, clientX: number, clientY: number) => void
   dispose: () => void
 }
 
@@ -258,9 +401,93 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     pool.push({ el, textEl, agentId: null, born: 0, active: false })
   }
 
-  const freeOldest = () => {
+  // Pickup / coin toasts
+  const toastPool: ToastSlot[] = []
+  for (let i = 0; i < TOAST_POOL; i++) {
+    const el = document.createElement('div')
+    el.dataset.toast = String(i)
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      transform: 'translate(-50%, -100%)',
+      color: '#ffe7c2',
+      fontSize: '13px',
+      fontWeight: '700',
+      fontFamily: 'system-ui, sans-serif',
+      textShadow: '0 1px 3px rgba(0,0,0,0.75)',
+      pointerEvents: 'none',
+      zIndex: '9',
+      whiteSpace: 'nowrap',
+      display: 'none',
+    } as CSSStyleDeclaration)
+    const textEl = document.createElement('span')
+    el.appendChild(textEl)
+    root.appendChild(el)
+    toastPool.push({ el, textEl, agentId: null, born: 0, active: false })
+  }
+
+  // World indicators (progress, hiring, ripe, materials)
+  const indicators: IndicatorSlot[] = []
+  for (let i = 0; i < INDICATOR_POOL; i++) {
+    const el = document.createElement('div')
+    el.dataset.indicator = String(i)
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      transform: 'translate(-50%, -100%)',
+      pointerEvents: 'none',
+      zIndex: '7',
+      display: 'none',
+      whiteSpace: 'nowrap',
+    } as CSSStyleDeclaration)
+    root.appendChild(el)
+    indicators.push({ el, kind: '', placeId: null, active: false })
+  }
+
+  // Hover tooltip
+  const tooltipEl = document.createElement('div')
+  tooltipEl.dataset.testid = 'tooltip'
+  Object.assign(tooltipEl.style, {
+    position: 'fixed',
+    left: '0',
+    top: '0',
+    transform: 'translate(12px, 14px)',
+    background: 'rgba(12, 16, 28, 0.92)',
+    color: '#f2f4f8',
+    fontSize: '11px',
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: '600',
+    padding: '6px 10px',
+    borderRadius: '8px',
+    border: '1px solid rgba(255,255,255,0.14)',
+    boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+    pointerEvents: 'none',
+    zIndex: '40',
+    display: 'none',
+    maxWidth: '280px',
+    lineHeight: '1.35',
+  } as CSSStyleDeclaration)
+  // Attach to document body so fixed coords work even if container clips
+  document.body.appendChild(tooltipEl)
+
+  const freeOldestCritical = () => {
     let oldest: CriticalSlot | null = null
     for (const s of pool) {
+      if (!s.active) continue
+      if (!oldest || s.born < oldest.born) oldest = s
+    }
+    if (oldest) {
+      oldest.active = false
+      oldest.agentId = null
+      oldest.el.style.display = 'none'
+    }
+  }
+
+  const freeOldestToast = () => {
+    let oldest: ToastSlot | null = null
+    for (const s of toastPool) {
       if (!s.active) continue
       if (!oldest || s.born < oldest.born) oldest = s
     }
@@ -274,7 +501,7 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
   const pushCritical = (agentId: string, need: string, now: number) => {
     let slot = pool.find((s) => !s.active)
     if (!slot) {
-      freeOldest()
+      freeOldestCritical()
       slot = pool.find((s) => !s.active)
     }
     if (!slot) return
@@ -284,6 +511,40 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     slot.textEl.textContent = criticalEmoji(need)
     slot.el.style.display = 'block'
     slot.el.style.opacity = '1'
+  }
+
+  const pushToast = (
+    agentId: string,
+    kind: 'goods' | 'coins',
+    good: string,
+    amount: number,
+    now: number,
+  ) => {
+    let slot = toastPool.find((s) => !s.active)
+    if (!slot) {
+      freeOldestToast()
+      slot = toastPool.find((s) => !s.active)
+    }
+    if (!slot) return
+    slot.active = true
+    slot.agentId = agentId
+    slot.born = now
+    const icon =
+      kind === 'coins' ? '🪙' : GOOD_ICON[good] ?? (good === 'food' ? '🫐' : '📦')
+    slot.textEl.textContent = `+${amount} ${icon}`
+    slot.el.style.display = 'block'
+    slot.el.style.opacity = '1'
+  }
+
+  const setTooltip = (text: string | null, clientX: number, clientY: number) => {
+    if (!text) {
+      tooltipEl.style.display = 'none'
+      return
+    }
+    tooltipEl.textContent = text
+    tooltipEl.style.display = 'block'
+    tooltipEl.style.left = `${clientX}px`
+    tooltipEl.style.top = `${clientY}px`
   }
 
   const interpPos = (
@@ -300,6 +561,24 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     }
   }
 
+  const takeIndicator = (): IndicatorSlot | null => {
+    return indicators.find((s) => !s.active) ?? null
+  }
+
+  const renderRingHtml = (pct: number): string => {
+    const p = Math.max(0, Math.min(100, pct))
+    const r = 12
+    const c = 2 * Math.PI * r
+    const offset = c * (1 - p / 100)
+    return `<svg width="32" height="32" viewBox="0 0 32 32" style="display:block">
+      <circle cx="16" cy="16" r="${r}" fill="none" stroke="rgba(0,0,0,0.35)" stroke-width="3"/>
+      <circle cx="16" cy="16" r="${r}" fill="none" stroke="#6fbf7a" stroke-width="3"
+        stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${offset.toFixed(1)}"
+        stroke-linecap="round" transform="rotate(-90 16 16)"/>
+      <text x="16" y="18" text-anchor="middle" fill="#f2f4f8" font-size="8" font-weight="700" font-family="system-ui">${p}</text>
+    </svg>`
+  }
+
   const updateFrame = (args: {
     camera: THREE.Camera
     width: number
@@ -310,9 +589,11 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     prev: Map<string, { x: number; y: number }>
     alpha: number
     now: number
+    time?: SimTime | null
   }) => {
     const { camera, width, height, selectedId, agents, places, prev, alpha, now } =
       args
+    const time = args.time ?? null
 
     // Status bubble
     const selected = selectedId
@@ -379,18 +660,160 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
         slot.el.style.opacity = '0'
         continue
       }
-      // Fade in last 600ms
       const fadeStart = CRITICAL_TTL_MS - 600
       const opacity = age > fadeStart ? 1 - (age - fadeStart) / 600 : 1
       slot.el.style.display = 'block'
       slot.el.style.opacity = String(Math.max(0, opacity))
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
     }
+
+    // Toasts float upward
+    for (const slot of toastPool) {
+      if (!slot.active || !slot.agentId) continue
+      const age = now - slot.born
+      if (age >= TOAST_TTL_MS) {
+        slot.active = false
+        slot.agentId = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      const agent = byId.get(slot.agentId)
+      if (!agent) {
+        slot.active = false
+        slot.agentId = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      const pos = interpPos(agent, prev, alpha)
+      const lift = (age / TOAST_TTL_MS) * 36
+      const screen = project(
+        pos.x,
+        HEAD_Y + BUBBLE_LIFT + 0.2,
+        pos.z,
+        camera,
+        width,
+        height,
+        proj,
+      )
+      if (screen.behind) {
+        slot.el.style.opacity = '0'
+        continue
+      }
+      const fade = age > TOAST_TTL_MS - 400 ? 1 - (age - (TOAST_TTL_MS - 400)) / 400 : 1
+      slot.el.style.display = 'block'
+      slot.el.style.opacity = String(Math.max(0, fade))
+      slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - lift}px)`
+    }
+
+    // Reset indicators then rebuild
+    for (const ind of indicators) {
+      ind.active = false
+      ind.placeId = null
+      ind.el.style.display = 'none'
+    }
+
+    const hour = time?.hour ?? 12
+    const hiringHours = hour >= 6 && hour < 17
+
+    for (const place of places) {
+      const baseY = 1.15
+      const screen = project(place.x, baseY, place.y, camera, width, height, proj)
+      if (screen.behind) continue
+
+      // Production progress ring while actively worked
+      if (
+        place.production &&
+        placeActivelyWorked(place, agents) &&
+        (place.growth ?? 0) > 0.01
+      ) {
+        const slot = takeIndicator()
+        if (slot) {
+          slot.active = true
+          slot.kind = 'progress'
+          slot.placeId = place.id
+          const pct = Math.round(Math.max(0, Math.min(1, place.growth ?? 0)) * 100)
+          slot.el.innerHTML = renderRingHtml(pct)
+          slot.el.dataset.testid = 'prod-ring'
+          slot.el.style.display = 'block'
+          slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
+        }
+      }
+
+      // Material chips + bar on construction sites
+      if (place.kind === 'construction-site' && place.construction) {
+        const slot = takeIndicator()
+        if (slot) {
+          slot.active = true
+          slot.kind = 'materials'
+          slot.placeId = place.id
+          const c = place.construction
+          const inv = place.inventory
+          const woodHave = Math.min(
+            HOME_BILL.wood,
+            HOME_BILL.wood - (c.needs?.wood ?? 0) + (inv?.wood ?? 0),
+          )
+          const stoneHave = Math.min(
+            HOME_BILL.stone,
+            HOME_BILL.stone - (c.needs?.stone ?? 0) + (inv?.stone ?? 0),
+          )
+          const pct = Math.round(Math.max(0, Math.min(1, c.progress ?? 0)) * 100)
+          slot.el.innerHTML = `<div data-testid="material-chips" style="
+            background:rgba(12,16,28,0.82);border:1px solid rgba(255,255,255,0.12);
+            border-radius:10px;padding:4px 8px;color:#f2f4f8;font-size:11px;font-weight:700;
+            font-family:system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,0.35);
+            text-align:center;min-width:90px">
+            <div>🪵 ${woodHave}/${HOME_BILL.wood} 🪨 ${stoneHave}/${HOME_BILL.stone}</div>
+            <div style="margin-top:3px;height:4px;border-radius:2px;background:rgba(255,255,255,0.1);overflow:hidden">
+              <div style="width:${pct}%;height:100%;background:#c4a574;border-radius:2px"></div>
+            </div>
+          </div>`
+          slot.el.style.display = 'block'
+          slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
+        }
+      }
+
+      // Hiring badge
+      if (hiringHours && openJobSlots(place, agents) > 0) {
+        const slot = takeIndicator()
+        if (slot) {
+          slot.active = true
+          slot.kind = 'hiring'
+          slot.placeId = place.id
+          const bounce = Math.sin(now / 180) * 4
+          slot.el.innerHTML = `<div data-testid="hiring-badge" style="
+            background:#e0a040;color:#1a1208;font-weight:800;font-size:14px;
+            width:22px;height:22px;border-radius:11px;display:flex;align-items:center;
+            justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.4);
+            border:2px solid #fff3c8;font-family:system-ui,sans-serif">!</div>`
+          slot.el.style.display = 'block'
+          slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - 18 - bounce}px)`
+        }
+      }
+
+      // Ripe badge on farms
+      if (place.kind === 'farm' && (place.inventory?.food ?? 0) >= 5) {
+        const slot = takeIndicator()
+        if (slot) {
+          slot.active = true
+          slot.kind = 'ripe'
+          slot.placeId = place.id
+          slot.el.innerHTML = `<div data-testid="ripe-badge" style="
+            background:rgba(40,90,40,0.9);color:#c8f0c0;font-size:11px;font-weight:700;
+            padding:3px 7px;border-radius:8px;border:1px solid rgba(160,220,140,0.4);
+            font-family:system-ui,sans-serif">🫐 Ripe</div>`
+          slot.el.style.display = 'block'
+          // Offset if hiring also present
+          const yOff = hiringHours && openJobSlots(place, agents) > 0 ? 28 : 0
+          slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - yOff}px)`
+        }
+      }
+    }
   }
 
   const dispose = () => {
     if (root.parentElement === container) container.removeChild(root)
+    if (tooltipEl.parentElement) tooltipEl.parentElement.removeChild(tooltipEl)
   }
 
-  return { updateFrame, pushCritical, dispose }
+  return { updateFrame, pushCritical, pushToast, setTooltip, dispose }
 }

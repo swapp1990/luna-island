@@ -1,12 +1,28 @@
 import * as THREE from 'three'
 import type { Place, TerrainKind, WorldState } from '../sim/types'
 
+/** Place kinds that can be selected for the building panel. */
+const SELECTABLE_PLACE_KINDS = new Set([
+  'farm',
+  'stall',
+  'storehouse',
+  'forestry',
+  'quarry',
+  'well',
+  'home',
+  'construction-site',
+])
+
 export interface TerrainHandle {
   root: THREE.Group
   /** Show N berry dots on each bush from place inventory stock (0–6). */
   updateBushStock: (places: Place[]) => void
   /** Scale farm crops by growth; show stall/storehouse crates; sync dynamic sites. */
   updateEconomyVisuals: (places: Place[]) => void
+  /** Invisible hit volumes for building selection. */
+  getPlacePickables: () => THREE.Object3D[]
+  /** Resolve raycast hit to place id. */
+  placeIdFromObject: (obj: THREE.Object3D) => string | null
   dispose: () => void
 }
 
@@ -408,10 +424,41 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   const storeCrates = new Map<string, THREE.Mesh[]>()
   const siteVisuals = new Map<string, SiteVisual>()
   const dynamicHomes = new Map<string, THREE.Group>()
+  /** Invisible selection volumes keyed by place id. */
+  const placePicks = new Map<string, THREE.Mesh>()
+  const pickObjectToId = new Map<THREE.Object3D, string>()
+  const pickGeo = track(new THREE.CylinderGeometry(0.85, 0.85, 1.0, 12))
+  const pickMat = track(
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      colorWrite: false,
+    }),
+  )
+
+  const ensurePlacePick = (place: Place) => {
+    if (!SELECTABLE_PLACE_KINDS.has(place.kind)) return
+    let mesh = placePicks.get(place.id)
+    if (!mesh) {
+      mesh = new THREE.Mesh(pickGeo, pickMat)
+      mesh.userData.placeId = place.id
+      // Farms span ~3×3 — slightly larger hit volume
+      const r = place.kind === 'farm' ? 1.4 : place.kind === 'home' ? 0.7 : 0.9
+      mesh.scale.set(r, 1, r)
+      root.add(mesh)
+      placePicks.set(place.id, mesh)
+      pickObjectToId.set(mesh, place.id)
+    }
+    mesh.position.set(place.x, 0.22 + 0.5, place.y)
+    mesh.visible = true
+  }
+
   const staticIds = new Set(world.places.map((p) => p.id))
   const plaza = world.places.find((p) => p.kind === 'plaza')
   for (const place of world.places) {
     addPlace(root, place, track, plaza, bushBerries, farmCrops, stallCrates, storeCrates, siteVisuals)
+    ensurePlacePick(place)
   }
 
   const updateBushStock = (places: Place[]) => {
@@ -442,7 +489,16 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         dynamicHomes.delete(id)
       }
     }
+    for (const id of [...placePicks.keys()]) {
+      if (!liveIds.has(id)) {
+        const m = placePicks.get(id)!
+        root.remove(m)
+        placePicks.delete(id)
+        pickObjectToId.delete(m)
+      }
+    }
     for (const place of places) {
+      ensurePlacePick(place)
       if (place.kind === 'construction-site') {
         if (!siteVisuals.has(place.id)) {
           const vis = buildSiteVisual(place, track, plaza)
@@ -523,6 +579,19 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   // Initial stock visibility
   updateEconomyVisuals(world.places)
 
+  const getPlacePickables = (): THREE.Object3D[] => [...placePicks.values()]
+
+  const placeIdFromObject = (obj: THREE.Object3D): string | null => {
+    let cur: THREE.Object3D | null = obj
+    while (cur) {
+      const id =
+        pickObjectToId.get(cur) ?? (cur.userData.placeId as string | undefined)
+      if (id) return id
+      cur = cur.parent
+    }
+    return null
+  }
+
   const dispose = () => {
     scene.remove(root)
     root.traverse(() => {
@@ -535,9 +604,18 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     storeCrates.clear()
     siteVisuals.clear()
     dynamicHomes.clear()
+    placePicks.clear()
+    pickObjectToId.clear()
   }
 
-  return { root, updateBushStock, updateEconomyVisuals, dispose }
+  return {
+    root,
+    updateBushStock,
+    updateEconomyVisuals,
+    getPlacePickables,
+    placeIdFromObject,
+    dispose,
+  }
 }
 
 function buildHomeMesh(
