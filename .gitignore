@@ -1,0 +1,10 @@
+node_modules/
+dist/
+logs/
+artifacts/
+test-results/
+playwright-report/
+marketing/
+.tmp-*
+*.local
+.DS_Store
