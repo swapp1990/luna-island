@@ -224,6 +224,18 @@ function resolveTarget(agent: AgentState): { x: number; y: number } | null {
   return null
 }
 
+function cloneSimSnapshot(s: SimSnapshot): SimSnapshot {
+  return {
+    state: deepCloneWorld(s.state),
+    rngState: s.rngState,
+    eventSeq: s.eventSeq,
+    events: s.events.map((e) => ({
+      ...e,
+      data: e.data ? { ...e.data } : undefined,
+    })),
+  }
+}
+
 class SnapshotStore {
   private snaps: SimSnapshot[] = []
   /** Snapshot ticks that must survive prune (day-start pins). */
@@ -239,6 +251,10 @@ class SnapshotStore {
 
   pin(tick: Tick): void {
     this.pinned.add(tick)
+  }
+
+  isPinned(tick: Tick): boolean {
+    return this.pinned.has(tick)
   }
 
   /** Drop unpinned snapshots with startTick < tick ≤ endTick (fine ring for a finished day). */
@@ -265,6 +281,19 @@ class SnapshotStore {
     return this.snaps.map((s) => s.state.tick).sort((a, b) => a - b)
   }
 
+  /** Deep-cloned pack for persistence. */
+  exportPack(): { snaps: SimSnapshot[]; pinned: Tick[] } {
+    return {
+      snaps: this.snaps.map(cloneSimSnapshot),
+      pinned: [...this.pinned].sort((a, b) => a - b),
+    }
+  }
+
+  loadPack(snaps: SimSnapshot[], pinned: Tick[]): void {
+    this.snaps = snaps.map(cloneSimSnapshot)
+    this.pinned = new Set(pinned)
+  }
+
   clear(): void {
     this.snaps = []
     this.pinned.clear()
@@ -287,6 +316,7 @@ export class Simulation {
       rngState?: number
       events?: EventTrace
       snapshots?: SnapshotStore
+      dayArchives?: DayArchiveMeta[]
       skipInitEvents?: boolean
     },
   )
@@ -297,12 +327,20 @@ export class Simulation {
       rngState?: number
       events?: EventTrace
       snapshots?: SnapshotStore
+      dayArchives?: DayArchiveMeta[]
       skipInitEvents?: boolean
     },
   ) {
     this.snapshots = opts?.snapshots ?? new SnapshotStore()
     this.events = opts?.events ?? new EventTrace()
     this.rng = createRng(seed)
+    if (opts?.dayArchives) {
+      this.dayArchives = opts.dayArchives.map((a) => ({
+        day: a.day,
+        startTick: a.startTick,
+        endTick: a.endTick,
+      }))
+    }
 
     if (opts?.state) {
       this.state = opts.state
@@ -534,6 +572,11 @@ export class Simulation {
   /** Test/debug: ticks of retained snapshots (after day prunes). */
   snapshotTicks(): number[] {
     return this.snapshots.ticks()
+  }
+
+  /** Deep-cloned snapshot ring + pins for serializeSave. */
+  exportSnapshotPack(): { snaps: SimSnapshot[]; pinned: Tick[] } {
+    return this.snapshots.exportPack()
   }
 
   /** Synchronous multi-tick advance (bridge: `__simControl.ffwd`). */
@@ -2284,6 +2327,42 @@ export class Simulation {
     // Rebuild snapshot ring from restored position for further seeks on this fork
     sim.snapshots.add(sim.makeSnapshot())
     return sim
+  }
+
+  /**
+   * Full persistence restore: head state + event log + day archives + snapshot ring.
+   * Used by restoreSave only.
+   */
+  static fromSaveParts(parts: {
+    seed: number
+    head: SimSnapshot
+    events: SimEvent[]
+    dayArchives: DayArchiveMeta[]
+    snaps: SimSnapshot[]
+    pinned: Tick[]
+  }): Simulation {
+    const ev = new EventTrace()
+    ev.replace(
+      parts.events.map((e) => ({ ...e, data: e.data ? { ...e.data } : undefined })),
+      parts.head.eventSeq,
+    )
+    const store = new SnapshotStore()
+    store.loadPack(parts.snaps, parts.pinned)
+    // Ensure head is in the ring so seeks near live tick work after restore
+    const headClone = cloneSimSnapshot(parts.head)
+    headClone.events = parts.events.map((e) => ({
+      ...e,
+      data: e.data ? { ...e.data } : undefined,
+    }))
+    store.add(headClone)
+    return new Simulation(parts.seed, {
+      state: deepCloneWorld(parts.head.state),
+      rngState: parts.head.rngState,
+      events: ev,
+      snapshots: store,
+      dayArchives: parts.dayArchives,
+      skipInitEvents: true,
+    })
   }
 
   /**

@@ -19,6 +19,11 @@ export interface LoopController {
   start: () => void
   stop: () => void
   getViewSim: () => Simulation
+  /** Live sim (always the authority, never the replay fork). */
+  getLiveSim: () => Simulation
+  getMode: () => SimMode
+  setLastSavedTick: (tick: number | null) => void
+  getLastSavedTick: () => number | null
   /** Accumulator fraction toward the next tick [0,1), for render interp. */
   getAlpha: () => number
   getPrevAgentPositions: () => Map<string, { x: number; y: number }>
@@ -49,6 +54,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let rafId = 0
   let running = false
   let ready = true
+  let lastSavedTick: number | null = null
   let prevPositions = capturePositions(live)
   /** Event count of the view sim already scanned for critical bubbles. */
   let lastCriticalEventCount = 0
@@ -94,6 +100,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     for (const p of sim.state.places) {
       placeCounts[p.kind] = (placeCounts[p.kind] ?? 0) + 1
     }
+    const a0 = live.state.agents[0]
     return {
       ready,
       mode,
@@ -111,6 +118,11 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       archivedDayCount: live.archives().length,
       viewDay: resolvedViewDay(),
       placeCounts,
+      lastSavedTick,
+      seed: live.state.seed,
+      agent0: a0
+        ? { id: a0.id, x: a0.x, y: a0.y, wallet: a0.wallet }
+        : null,
     }
   }
 
@@ -460,6 +472,12 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     start,
     stop,
     getViewSim: viewSim,
+    getLiveSim: () => live,
+    getMode: () => mode,
+    setLastSavedTick: (tick: number | null) => {
+      lastSavedTick = tick
+    },
+    getLastSavedTick: () => lastSavedTick,
     getAlpha: () => accumulator,
     getPrevAgentPositions: () => prevPositions,
     getDayBounds,

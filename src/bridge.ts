@@ -23,6 +23,12 @@ export interface SimStateBridge {
   viewDay: number
   /** Additive: counts of place kinds in the view sim (construction e2e). */
   placeCounts?: Record<string, number>
+  /** Additive: last successful autosave tick, or null if never saved this session. */
+  lastSavedTick: number | null
+  /** Additive: world seed (new-world / layout e2e). */
+  seed: number
+  /** Additive: first agent layout + wallet probe for persistence e2e. */
+  agent0?: { id: string; x: number; y: number; wallet: number } | null
 }
 
 export interface SimControlBridge {
@@ -37,6 +43,10 @@ export interface SimControlBridge {
   loadDay: (day: number) => void
   /** Synchronous batch advance of the LIVE sim (test/dev fast-step). */
   ffwd: (n: number) => void
+  /** Additive: force autosave now. Resolves true on success. */
+  saveNow: () => Promise<boolean>
+  /** Additive: wipe autosave and start a fresh world with the given seed. */
+  newWorld: (seed: number) => void
 }
 
 declare global {
