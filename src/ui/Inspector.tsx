@@ -97,17 +97,21 @@ export function Inspector(props: {
   agent: AgentState | null
   events: readonly SimEvent[]
   replayTick: number
+  /** Inclusive lower bound for activity log (loaded day's start). */
+  dayStartTick?: number
   following: boolean
   onToggleFollow: () => void
   onClose: () => void
 }) {
   const { agent, events, replayTick, following, onToggleFollow, onClose } = props
+  const dayStart = props.dayStartTick ?? 0
   if (!agent) return null
 
   const logEvents = events
     .filter(
       (e) =>
         e.agentId === agent.id &&
+        e.tick >= dayStart &&
         e.tick <= replayTick &&
         (e.type === 'action:start' || e.type === 'action:end' || e.type === 'need:critical'),
     )

@@ -17,8 +17,9 @@ export interface TickerRow {
 export function buildTickerRows(
   events: readonly SimEvent[],
   replayTick: number,
+  dayStartTick = 0,
 ): TickerRow[] {
-  const filtered = events.filter((e) => e.tick <= replayTick)
+  const filtered = events.filter((e) => e.tick >= dayStartTick && e.tick <= replayTick)
   const lastKindByAgent = new Map<string, string>()
   const rows: TickerRow[] = []
 
@@ -78,13 +79,16 @@ export function buildTickerRows(
 export function Ticker(props: {
   events: readonly SimEvent[]
   replayTick: number
+  /** Inclusive lower bound for ticker (loaded day's start). */
+  dayStartTick?: number
   onSelectAgent: (id: string) => void
 }) {
   const { events, replayTick, onSelectAgent } = props
+  const dayStart = props.dayStartTick ?? 0
   const [collapsed, setCollapsed] = useState(false)
   const rows = useMemo(
-    () => buildTickerRows(events, replayTick),
-    [events, replayTick],
+    () => buildTickerRows(events, replayTick, dayStart),
+    [events, replayTick, dayStart],
   )
   const visible = rows.slice(0, 6)
 

@@ -1,7 +1,7 @@
 import { createRng } from './rng'
 import { EventTrace } from './events'
 import { generateWorld } from './worldgen'
-import { toSimTime } from './time'
+import { dayStartTick, toSimTime } from './time'
 import { fnv1aHex, stableStringify } from './stableStringify'
 import { spawnAgents } from './spawn'
 import { findPath, isWalkable, pathStillValid } from './pathfind'
@@ -45,6 +45,13 @@ export interface SimSnapshot {
   eventSeq: number
   /** Events up to and including this snapshot's tick (for fork traces). */
   events: SimEvent[]
+}
+
+/** Completed calendar day, reconstructible from pinned start snapshot + events. */
+export interface DayArchiveMeta {
+  day: number
+  startTick: Tick
+  endTick: Tick
 }
 
 function cloneNeeds(n: Needs): Needs {
@@ -107,9 +114,28 @@ function resolveTarget(agent: AgentState): { x: number; y: number } | null {
 
 class SnapshotStore {
   private snaps: SimSnapshot[] = []
+  /** Snapshot ticks that must survive prune (day-start pins). */
+  private pinned = new Set<Tick>()
 
   add(snap: SimSnapshot): void {
-    this.snaps.push(snap)
+    // Replace any existing snap at the same tick (keep one entry per tick).
+    const t = snap.state.tick
+    const idx = this.snaps.findIndex((s) => s.state.tick === t)
+    if (idx >= 0) this.snaps[idx] = snap
+    else this.snaps.push(snap)
+  }
+
+  pin(tick: Tick): void {
+    this.pinned.add(tick)
+  }
+
+  /** Drop unpinned snapshots with startTick < tick ≤ endTick (fine ring for a finished day). */
+  pruneRange(startTick: Tick, endTick: Tick): void {
+    this.snaps = this.snaps.filter((s) => {
+      const t = s.state.tick
+      if (t <= startTick || t > endTick) return true
+      return this.pinned.has(t)
+    })
   }
 
   /** Nearest snapshot with tick ≤ target. */
@@ -123,8 +149,13 @@ class SnapshotStore {
     return best
   }
 
+  ticks(): number[] {
+    return this.snaps.map((s) => s.state.tick).sort((a, b) => a - b)
+  }
+
   clear(): void {
     this.snaps = []
+    this.pinned.clear()
   }
 }
 
@@ -133,6 +164,7 @@ export class Simulation {
   private rng: Rng
   private events: EventTrace
   private snapshots: SnapshotStore
+  private dayArchives: DayArchiveMeta[] = []
   private brain = new UtilityBrain()
 
   constructor(seed: number)
@@ -180,8 +212,9 @@ export class Simulation {
           data: { day: 1 },
         })
       }
-      // Snapshot at tick 0
+      // Snapshot at tick 0 — permanently pinned as Day 1 start
       this.snapshots.add(this.makeSnapshot())
+      this.snapshots.pin(0)
     }
   }
 
@@ -195,6 +228,21 @@ export class Simulation {
 
   getRng(): Rng {
     return this.rng
+  }
+
+  /** Completed day archives (oldest first). Events are never pruned. */
+  archives(): readonly DayArchiveMeta[] {
+    return this.dayArchives
+  }
+
+  /** Test/debug: ticks of retained snapshots (after day prunes). */
+  snapshotTicks(): number[] {
+    return this.snapshots.ticks()
+  }
+
+  /** Synchronous multi-tick advance (bridge: `__simControl.ffwd`). */
+  advanceTicksBatch(n: number): void {
+    this.advanceTicks(n)
   }
 
   /** Advance every agent one sim minute: needs, movement, actions, decisions. */
@@ -669,6 +717,7 @@ export class Simulation {
     const prev = toSimTime(prevTick)
     const next = toSimTime(this.state.tick)
     if (next.day !== prev.day) {
+      this.archiveCompletedDay(prev.day, prevTick)
       this.events.append({
         tick: this.state.tick,
         type: 'day:start',
@@ -680,7 +729,30 @@ export class Simulation {
 
     if (this.state.tick % SNAPSHOT_INTERVAL === 0) {
       this.snapshots.add(this.makeSnapshot())
+      // Pin midnight day-starts so they survive the next day's prune
+      if (toSimTime(this.state.tick).hour === 0 && toSimTime(this.state.tick).minute === 0) {
+        this.snapshots.pin(this.state.tick)
+      }
     }
+  }
+
+  /**
+   * Record a finished calendar day, pin its start snapshot, drop fine-grained
+   * snapshots inside the day (reconstruct via start snap + events).
+   */
+  private archiveCompletedDay(day: number, endTick: Tick): void {
+    const startTick = dayStartTick(day)
+    if (this.dayArchives.some((a) => a.day === day)) return
+    this.snapshots.pin(startTick)
+    // Ensure a snap exists at start (tick 0 always does; later midnights are interval-aligned)
+    const nearest = this.snapshots.nearestAtOrBefore(startTick)
+    if (!nearest || nearest.state.tick !== startTick) {
+      // Should not happen on normal runs; skip prune rather than leave day unrecoverable
+      this.dayArchives.push({ day, startTick, endTick })
+      return
+    }
+    this.snapshots.pruneRange(startTick, endTick)
+    this.dayArchives.push({ day, startTick, endTick })
   }
 
   private makeSnapshot(): SimSnapshot {

@@ -1,6 +1,6 @@
 import type { SceneHandle } from './render/scene'
 import { Simulation } from './sim/sim'
-import { toSimTime } from './sim/time'
+import { dayEndTick, dayStartTick, toSimTime } from './sim/time'
 import type { SimMode, SimStateBridge } from './bridge'
 import { refreshBridge } from './bridge'
 
@@ -12,6 +12,8 @@ export interface LoopController {
   selectAgent: (id: string | null) => void
   setFollow: (on: boolean) => void
   getFollow: () => boolean
+  loadDay: (day: number) => void
+  ffwd: (n: number) => void
   getState: () => SimStateBridge
   start: () => void
   stop: () => void
@@ -19,6 +21,8 @@ export interface LoopController {
   /** Accumulator fraction toward the next tick [0,1), for render interp. */
   getAlpha: () => number
   getPrevAgentPositions: () => Map<string, { x: number; y: number }>
+  /** Inclusive scrubber bounds for the currently viewed day. */
+  getDayBounds: () => { startTick: number; endTick: number }
 }
 
 const SPEEDS = new Set([0, 1, 8, 64])
@@ -46,6 +50,34 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let prevPositions = capturePositions(live)
   /** Event count of the view sim already scanned for critical bubbles. */
   let lastCriticalEventCount = 0
+  /**
+   * Calendar day scoped in the timeline. null = follow live head day.
+   * Set when loadDay / scrub into a day; cleared on goLive.
+   */
+  let viewDayOverride: number | null = null
+
+  const liveDay = (): number => toSimTime(live.state.tick).day
+
+  const resolvedViewDay = (): number => {
+    if (viewDayOverride !== null) return viewDayOverride
+    if (mode === 'replay' && fork) return toSimTime(fork.state.tick).day
+    return liveDay()
+  }
+
+  const dayBounds = (day: number): { startTick: number; endTick: number } => {
+    const startTick = dayStartTick(day)
+    const archive = live.archives().find((a) => a.day === day)
+    if (archive) {
+      return { startTick: archive.startTick, endTick: archive.endTick }
+    }
+    // Today (or future-safe): up to live head
+    const end = Math.max(startTick, live.state.tick)
+    // Cap at theoretical day end so scrubber never exceeds the calendar day
+    const theoreticalEnd = dayEndTick(day)
+    return { startTick, endTick: Math.min(end, theoreticalEnd) }
+  }
+
+  const getDayBounds = () => dayBounds(resolvedViewDay())
 
   const viewSim = (): Simulation => (mode === 'replay' && fork ? fork : live)
 
@@ -64,6 +96,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       agentIds: sim.state.agents.map((a) => a.id),
       selectedAgentId,
       eventCount: mode === 'live' ? live.getEventCount() : sim.getEventCount(),
+      archivedDayCount: live.archives().length,
+      viewDay: resolvedViewDay(),
     }
   }
 
@@ -111,31 +145,85 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     speed = 0
   }
 
-  const scrubTo = (tick: number) => {
-    const head = live.state.tick
-    const target = Math.max(0, Math.min(Math.floor(tick), head))
-    if (target >= head) {
-      goLive()
-      return
-    }
-    mode = 'replay'
-    fork = live.stateAt(target)
-    // Hold at scrubbed tick until the user presses play (required for stable scrub UX / e2e)
-    speed = 0
-    accumulator = 0
-    prevPositions = capturePositions(fork)
-    // Don't re-fire historical criticals on scrub
-    lastCriticalEventCount = fork.getEventCount()
-    applyScene(performance.now())
-  }
-
   const goLive = () => {
     mode = 'live'
     fork = null
+    viewDayOverride = null
     accumulator = 0
     prevPositions = capturePositions(live)
     lastCriticalEventCount = live.getEventCount()
     applyScene(performance.now())
+  }
+
+  const enterReplayAt = (target: number) => {
+    const head = live.state.tick
+    const t = Math.max(0, Math.min(Math.floor(target), head))
+    if (t >= head) {
+      goLive()
+      return
+    }
+    mode = 'replay'
+    fork = live.stateAt(t)
+    // Hold at scrubbed tick until the user presses play
+    speed = 0
+    accumulator = 0
+    prevPositions = capturePositions(fork)
+    lastCriticalEventCount = fork.getEventCount()
+    applyScene(performance.now())
+  }
+
+  const scrubTo = (tick: number) => {
+    const day = resolvedViewDay()
+    const { startTick, endTick } = dayBounds(day)
+    const head = live.state.tick
+    // Clamp to the viewed day's scrubber range
+    let target = Math.max(startTick, Math.min(Math.floor(tick), endTick, head))
+    viewDayOverride = day
+
+    if (target >= head && day === liveDay()) {
+      goLive()
+      return
+    }
+    enterReplayAt(target)
+    viewDayOverride = day
+  }
+
+  const loadDay = (day: number) => {
+    const maxDay = liveDay()
+    if (!Number.isFinite(day) || day < 1 || day > maxDay) return
+
+    viewDayOverride = day
+    const { startTick, endTick } = dayBounds(day)
+
+    if (day === maxDay) {
+      // Today: scoped view — stay live at head, scrubber limited to today-so-far
+      if (mode === 'replay') {
+        // Jump to start of today in replay, or go live at head?
+        // Spec: "scoped live view of today-so-far" → go live
+        goLive()
+        viewDayOverride = day
+      }
+      return
+    }
+
+    // Past day: fork at day start (scrubber = full day bounds)
+    void endTick
+    enterReplayAt(startTick)
+    viewDayOverride = day
+  }
+
+  const ffwd = (n: number) => {
+    if (n <= 0) return
+    live.advanceTicksBatch(n)
+    if (mode === 'live') {
+      prevPositions = capturePositions(live)
+      lastCriticalEventCount = live.getEventCount()
+      applyScene(performance.now())
+    } else if (fork) {
+      // Live advanced underneath; keep replay fork as-is
+      applyScene(performance.now())
+    }
+    refreshBridge(getState())
   }
 
   const selectAgent = (id: string | null) => {
@@ -167,21 +255,27 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
       if (mode === 'live') {
         if (steps > 0) {
-          // Positions before the batch for interp; step the whole batch at once
           prevPositions = capturePositions(live)
           live.advanceTicks(steps)
         }
       } else if (fork) {
         if (steps > 0) {
           const head = live.state.tick
-          const room = head - fork.state.tick
-          const take = Math.min(steps, room)
+          const day = resolvedViewDay()
+          const { endTick } = dayBounds(day)
+          const cap = Math.min(head, endTick)
+          const room = cap - fork.state.tick
+          const take = Math.min(steps, Math.max(0, room))
           if (take > 0) {
             prevPositions = capturePositions(fork)
             fork.advanceTicks(take)
           }
-          if (fork.state.tick >= head) {
+          if (fork.state.tick >= head && day === liveDay()) {
             goLive()
+          } else if (fork.state.tick >= endTick && day < liveDay()) {
+            // Past day: auto-pause at day end
+            speed = 0
+            accumulator = 0
           }
         }
       }
@@ -221,11 +315,14 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     selectAgent,
     setFollow,
     getFollow,
+    loadDay,
+    ffwd,
     getState,
     start,
     stop,
     getViewSim: viewSim,
     getAlpha: () => accumulator,
     getPrevAgentPositions: () => prevPositions,
+    getDayBounds,
   }
 }

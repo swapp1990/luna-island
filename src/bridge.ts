@@ -13,6 +13,10 @@ export interface SimStateBridge {
   agentIds: string[]
   selectedAgentId: string | null
   eventCount: number
+  /** Number of completed days archived on the live sim. */
+  archivedDayCount: number
+  /** Calendar day currently scoped in the timeline (live head day when live). */
+  viewDay: number
 }
 
 export interface SimControlBridge {
@@ -21,6 +25,10 @@ export interface SimControlBridge {
   scrubTo: (tick: number) => void
   goLive: () => void
   selectAgent: (id: string | null) => void
+  /** Load a calendar day into the scrubber (past → replay; today → scoped). */
+  loadDay: (day: number) => void
+  /** Synchronous batch advance of the LIVE sim (test/dev fast-step). */
+  ffwd: (n: number) => void
 }
 
 declare global {

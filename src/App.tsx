@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Simulation } from './sim/sim'
+import { dayStartTick } from './sim/time'
 import { createScene, type SceneHandle } from './render/scene'
 import { createLoop, type LoopController } from './loop'
 import { initBridge, type SimStateBridge } from './bridge'
@@ -30,12 +31,49 @@ export function App() {
     agentIds: [],
     selectedAgentId: null,
     eventCount: 0,
+    archivedDayCount: 0,
+    viewDay: 1,
   })
   const [liveHeadTick, setLiveHeadTick] = useState(0)
   const [selectedAgent, setSelectedAgent] = useState<AgentState | null>(null)
   const [agentEvents, setAgentEvents] = useState<readonly SimEvent[]>([])
   const [allEvents, setAllEvents] = useState<readonly SimEvent[]>([])
   const [following, setFollowing] = useState(false)
+  const [scrubMin, setScrubMin] = useState(0)
+  const [scrubMax, setScrubMax] = useState(0)
+
+  const viewDayStart = useMemo(() => dayStartTick(hud.viewDay), [hud.viewDay])
+
+  const syncFromLoop = () => {
+    const loop = loopRef.current
+    if (!loop) return
+    const s = loop.getState()
+    setHud(s)
+    if (liveRef.current) setLiveHeadTick(liveRef.current.state.tick)
+    const bounds = loop.getDayBounds()
+    setScrubMin(bounds.startTick)
+    setScrubMax(bounds.endTick)
+    const sim = loop.getViewSim()
+    const events = sim.getEvents()
+    setAllEvents(events)
+    setFollowing(loop.getFollow())
+    const id = s.selectedAgentId
+    if (id) {
+      const agent = sim.state.agents.find((a) => a.id === id) ?? null
+      setSelectedAgent(
+        agent
+          ? {
+              ...agent,
+              needs: { ...agent.needs },
+              action: { ...agent.action, path: agent.action.path?.slice() },
+            }
+          : null,
+      )
+      setAgentEvents(events)
+    } else {
+      setSelectedAgent(null)
+    }
+  }
 
   useEffect(() => {
     const el = containerRef.current
@@ -69,9 +107,23 @@ export function App() {
       {
         setSpeed: (n) => loop.setSpeed(n),
         pause: () => loop.pause(),
-        scrubTo: (t) => loop.scrubTo(t),
-        goLive: () => loop.goLive(),
+        scrubTo: (t) => {
+          loop.scrubTo(t)
+          syncFromLoop()
+        },
+        goLive: () => {
+          loop.goLive()
+          syncFromLoop()
+        },
         selectAgent,
+        loadDay: (day) => {
+          loop.loadDay(day)
+          syncFromLoop()
+        },
+        ffwd: (n) => {
+          loop.ffwd(n)
+          syncFromLoop()
+        },
       },
     )
 
@@ -87,31 +139,12 @@ export function App() {
     setHud(loop.getState())
     setLiveHeadTick(live.state.tick)
     setAllEvents(live.getEvents())
+    const b0 = loop.getDayBounds()
+    setScrubMin(b0.startTick)
+    setScrubMax(b0.endTick)
 
     const poll = window.setInterval(() => {
-      const s = loop.getState()
-      setHud(s)
-      setLiveHeadTick(live.state.tick)
-      const sim = loop.getViewSim()
-      const events = sim.getEvents()
-      setAllEvents(events)
-      setFollowing(loop.getFollow())
-      const id = s.selectedAgentId
-      if (id) {
-        const agent = sim.state.agents.find((a) => a.id === id) ?? null
-        setSelectedAgent(
-          agent
-            ? {
-                ...agent,
-                needs: { ...agent.needs },
-                action: { ...agent.action, path: agent.action.path?.slice() },
-              }
-            : null,
-        )
-        setAgentEvents(events)
-      } else {
-        setSelectedAgent(null)
-      }
+      syncFromLoop()
     }, 1000 / HUD_HZ)
 
     return () => {
@@ -124,6 +157,7 @@ export function App() {
       sceneRef.current = null
       liveRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -143,6 +177,7 @@ export function App() {
       <Ticker
         events={allEvents}
         replayTick={hud.tick}
+        dayStartTick={viewDayStart}
         onSelectAgent={(id) => {
           const loop = loopRef.current
           if (!loop) return
@@ -154,7 +189,7 @@ export function App() {
               ? {
                   ...agent,
                   needs: { ...agent.needs },
-                  action: { ...agent.action, path: agent.action.path?.slice() },
+                  action: { ...agent.action },
                 }
               : null,
           )
@@ -165,41 +200,26 @@ export function App() {
       <Timeline
         state={hud}
         liveHeadTick={liveHeadTick}
+        scrubMin={scrubMin}
+        scrubMax={scrubMax}
         onScrub={(t) => {
           loopRef.current?.scrubTo(t)
-          if (loopRef.current) {
-            setHud(loopRef.current.getState())
-            if (liveRef.current) setLiveHeadTick(liveRef.current.state.tick)
-            const sim = loopRef.current.getViewSim()
-            setAllEvents(sim.getEvents())
-            const id = loopRef.current.getState().selectedAgentId
-            if (id) {
-              const agent = sim.state.agents.find((a) => a.id === id) ?? null
-              setSelectedAgent(
-                agent
-                  ? {
-                      ...agent,
-                      needs: { ...agent.needs },
-                      action: { ...agent.action },
-                    }
-                  : null,
-              )
-              setAgentEvents(sim.getEvents())
-            }
-          }
+          syncFromLoop()
         }}
         onGoLive={() => {
           loopRef.current?.goLive()
-          if (loopRef.current) {
-            setHud(loopRef.current.getState())
-            setAllEvents(loopRef.current.getViewSim().getEvents())
-          }
+          syncFromLoop()
+        }}
+        onLoadDay={(day) => {
+          loopRef.current?.loadDay(day)
+          syncFromLoop()
         }}
       />
       <Inspector
         agent={selectedAgent}
         events={agentEvents}
         replayTick={hud.tick}
+        dayStartTick={viewDayStart}
         following={following}
         onToggleFollow={() => {
           const loop = loopRef.current
