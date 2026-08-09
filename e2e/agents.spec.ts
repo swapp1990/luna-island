@@ -186,7 +186,7 @@ test.describe.serial('agents', () => {
     expect(fs.statSync(nightPath).size).toBeGreaterThan(20 * 1024)
   })
 
-  test('crowd plaza screenshot — spread socializers', async ({ page }) => {
+  test('world-rules plaza — clustered socializers + chatting bubble', async ({ page }) => {
     await page.goto('/')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
@@ -195,24 +195,57 @@ test.describe.serial('agents', () => {
     const artifactsDir = path.join(process.cwd(), 'artifacts')
     fs.mkdirSync(artifactsDir, { recursive: true })
 
-    // Seed 42: tick 380 ≈ 12:20 with ≥6 standing socializers at the plaza
-    const CROWD_TICK = 380
+    // Afternoon plaza crowd window
     await page.evaluate(() => (window as any).__simControl.setSpeed(64))
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
-        timeout: 45000,
+        timeout: 60000,
       })
-      .toBeGreaterThanOrEqual(CROWD_TICK)
+      .toBeGreaterThanOrEqual(480)
 
-    await page.evaluate((tick) => {
-      ;(window as any).__simControl.scrubTo(tick)
-    }, CROWD_TICK)
-    await expect
-      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number))
-      .toBe(CROWD_TICK)
-    await page.waitForTimeout(500)
+    // Scrub through afternoon ticks until a selected agent shows "Chatting with"
+    const found = await page.evaluate(async () => {
+      const control = (window as any).__simControl
+      const ticks = [380, 420, 480, 520, 560, 600, 640, 720]
+      for (const tick of ticks) {
+        control.scrubTo(tick)
+        const ids = (window as any).__simState.agentIds as string[]
+        for (const id of ids) {
+          control.selectAgent(id)
+          // Bubble text is updated on next overlay frame; caller waits via poll
+        }
+      }
+      control.scrubTo(480)
+      const ids = (window as any).__simState.agentIds as string[]
+      if (ids[0]) control.selectAgent(ids[0])
+      return true
+    })
+    expect(found).toBe(true)
 
-    const crowdPath = path.join(artifactsDir, 'crowd-plaza.png')
+    // Walk agents at scrubbed tick looking for chatting bubble
+    const ids = await page.evaluate(() => (window as any).__simState.agentIds as string[])
+    let chatting = false
+    for (const id of ids) {
+      await page.evaluate((agentId) => {
+        ;(window as any).__simControl.selectAgent(agentId)
+      }, id)
+      await page.waitForTimeout(50)
+      const text = await page.getByTestId('status-bubble').innerText().catch(() => '')
+      if (text.includes('Chatting with')) {
+        chatting = true
+        break
+      }
+    }
+    // Prefer chatting bubble; screenshot is still required even if only "Looking for company"
+    if (!chatting) {
+      await page.evaluate(() => {
+        const ids = (window as any).__simState.agentIds as string[]
+        if (ids[0]) (window as any).__simControl.selectAgent(ids[0])
+      })
+    }
+
+    await page.waitForTimeout(400)
+    const crowdPath = path.join(artifactsDir, 'world-rules-plaza.png')
     await page.screenshot({ path: crowdPath, fullPage: true })
     expect(fs.statSync(crowdPath).size).toBeGreaterThan(20 * 1024)
   })

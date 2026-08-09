@@ -80,6 +80,8 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
 
   // Resident index per home (spawn order) for distinct standing tiles
   const homeResidentCount = new Map<string, number>()
+  /** Global occupancy so no two agents spawn stacked (world rule 3). */
+  const taken = new Set<string>()
 
   const agents: AgentState[] = []
   for (let i = 0; i < AGENT_NAMES.length; i++) {
@@ -96,11 +98,29 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       const y = home.y + dy
       if (isWalkable(world, x, y)) slots.push([x, y])
     }
-    if (slots.length > 0) {
-      const slot = slots[residentIdx % slots.length]!
+    // Prefer free slot by resident index; widen if home ring is full (world rule 3)
+    const free = slots.filter(([x, y]) => !taken.has(`${x},${y}`))
+    if (free.length > 0) {
+      const slot = free[residentIdx % free.length]!
       sx = slot[0]
       sy = slot[1]
+    } else {
+      let found = false
+      for (let r = 0; r <= 5 && !found; r++) {
+        for (let dy = -r; dy <= r && !found; dy++) {
+          for (let dx = -r; dx <= r && !found; dx++) {
+            const x = home.x + dx
+            const y = home.y + dy
+            if (!isWalkable(world, x, y)) continue
+            if (taken.has(`${x},${y}`)) continue
+            sx = x
+            sy = y
+            found = true
+          }
+        }
+      }
     }
+    taken.add(`${sx},${sy}`)
 
     const hunger = needInRange(rng)
     const energy = needInRange(rng)
@@ -128,4 +148,14 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
     })
   }
   world.agents = agents
+
+  // Home slots = resident count (world rule 1)
+  const residentsByHome = new Map<string, number>()
+  for (const a of agents) {
+    residentsByHome.set(a.homeId, (residentsByHome.get(a.homeId) ?? 0) + 1)
+  }
+  for (const p of world.places) {
+    if (p.kind !== 'home') continue
+    p.slots = Math.max(1, residentsByHome.get(p.id) ?? 1)
+  }
 }

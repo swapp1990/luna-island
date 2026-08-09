@@ -16,7 +16,8 @@ npm install && npm run dev   # port 5175, host 127.0.0.1
 4. **Time travel = snapshot + re-sim.** `stateAt(tick)` reconstructs any past moment from the nearest periodic snapshot plus deterministic re-simulation. Events are the *trace*, not the state authority.
 5. **The Brain seam.** `Brain.decide(observation, rng) → Intent` is the one interface agent minds implement. `UtilityBrain` (Phase 1–2) and `LunaBrain` (Phase 3, LLM-backed) are drop-in swaps. Engine-side code must never care which brain produced an intent.
 6. **Renderer is plain three.js** (no React Three Fiber, no drei). React renders HUD/panels only. The render loop interpolates between sim ticks; HUD state updates must never re-render the 3D scene.
-7. **Window bridges are load-bearing for E2E** — keep shapes stable:
+7. **Scaffold, not script.** The engine codifies WORLD RULES only — the ground truth every mind must live within: needs physics, tile occupancy (one standing agent per tile), generic place interaction slots (using a place = standing on one of its free slot tiles), proximity gates (e.g. social recharge requires another agent within 1.5 tiles). It must NOT encode behavioral choreography: no matchmaking systems, queueing policies, per-place special cases, or social scripts. Behavior belongs to the Brain — and the UtilityBrain is kept deliberately simple because LunaBrain (the LLM) replaces it as the source of interesting behavior. Rule of thumb: a mechanic answering "what is possible?" is engine; one answering "what should I do?" is brain — keep the latter thin. When a fix is needed, prefer generalizing a world rule over adding a case.
+8. **Window bridges are load-bearing for E2E** — keep shapes stable:
    - `window.__simState = { ready, mode: 'live'|'replay', day, hour, minute, tick, speed, agentCount, selectedAgentId, eventCount }`
    - `window.__simControl = { setSpeed(n), pause(), scrubTo(tick), goLive(), selectAgent(id|null) }`
 

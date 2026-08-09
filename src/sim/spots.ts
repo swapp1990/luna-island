@@ -1,13 +1,16 @@
 import { findPath, isWalkable } from './pathfind'
 import type { AgentState, Place, PlaceKind, Rng, WorldState } from './types'
 
-/** Base reservation radii (euclidean) for place kinds. Home uses discrete 3×3. */
+/** Base footprint radii (euclidean) for place kinds. Home uses discrete 3×3. */
 export const PLACE_RADIUS: Record<PlaceKind, number> = {
   plaza: 2.5,
   'berry-bush': 1.2,
   well: 1.2,
   home: 1.0,
 }
+
+/** Actions that restore a need while using a place. */
+const RESTORE_KINDS = new Set(['sleep', 'eat', 'drink', 'socialize'])
 
 const NEIGHBOR8: Array<[number, number]> = [
   [0, 0],
@@ -42,18 +45,19 @@ export function isStanding(agent: AgentState): boolean {
   return !isWalking(agent)
 }
 
-/** Walkable tiles within place region at baseRadius + extra (euclidean, or chebyshev for home). */
-export function candidatesForPlace(
+/** Social proximity gate: another agent within 1.5 tiles. */
+export const SOCIAL_PROXIMITY = 1.5
+export const SOCIAL_PROXIMITY_SQ = SOCIAL_PROXIMITY * SOCIAL_PROXIMITY
+
+/** Walkable tiles within place footprint (slot tiles) — no radius widening. */
+export function slotTiles(
   world: WorldState,
   place: Place,
-  extraRadius = 0,
 ): Array<[number, number]> {
   const out: Array<[number, number]> = []
   if (place.kind === 'home') {
-    const maxD = 1 + extraRadius
-    for (let dy = -maxD; dy <= maxD; dy++) {
-      for (let dx = -maxD; dx <= maxD; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) > maxD) continue
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
         const x = place.x + dx
         const y = place.y + dy
         if (isWalkable(world, x, y)) out.push([x, y])
@@ -62,7 +66,7 @@ export function candidatesForPlace(
     return out
   }
 
-  const r = PLACE_RADIUS[place.kind] + extraRadius
+  const r = PLACE_RADIUS[place.kind]
   const rCeil = Math.ceil(r)
   for (let dy = -rCeil; dy <= rCeil; dy++) {
     for (let dx = -rCeil; dx <= rCeil; dx++) {
@@ -74,6 +78,25 @@ export function candidatesForPlace(
     }
   }
   return out
+}
+
+/** True if (x,y) is a slot tile of the place. */
+export function isSlotTile(
+  world: WorldState,
+  place: Place,
+  x: number,
+  y: number,
+): boolean {
+  const tx = Math.round(x)
+  const ty = Math.round(y)
+  if (place.kind === 'home') {
+    return Math.max(Math.abs(tx - place.x), Math.abs(ty - place.y)) <= 1 &&
+      isWalkable(world, tx, ty)
+  }
+  const dx = tx - place.x
+  const dy = ty - place.y
+  if (Math.sqrt(dx * dx + dy * dy) > PLACE_RADIUS[place.kind] + 1e-9) return false
+  return isWalkable(world, tx, ty)
 }
 
 /**
@@ -102,74 +125,92 @@ export function buildBlockedTiles(
   return blocked
 }
 
+/** Agents currently targeting this place for a restore action (incl. walkers). */
+export function countPlaceUsers(
+  world: WorldState,
+  placeId: string,
+  excludeAgentId?: string,
+): number {
+  let n = 0
+  for (const a of world.agents) {
+    if (excludeAgentId && a.id === excludeAgentId) continue
+    if (!RESTORE_KINDS.has(a.action.kind)) continue
+    if (a.action.targetPlaceId === placeId) n++
+  }
+  return n
+}
+
+/** Free (unblocked) slot tiles within the place footprint. */
+export function freeSlotTiles(
+  world: WorldState,
+  place: Place,
+  excludeAgentId: string,
+): Array<[number, number]> {
+  const blocked = buildBlockedTiles(world, excludeAgentId)
+  return slotTiles(world, place).filter(([x, y]) => !blocked.has(key(x, y)))
+}
+
+/** True when place has free slot tiles and concurrent users < slots. */
+export function placeHasCapacity(
+  world: WorldState,
+  place: Place,
+  excludeAgentId?: string,
+): boolean {
+  if (countPlaceUsers(world, place.id, excludeAgentId) >= place.slots) return false
+  if (!excludeAgentId) {
+    // Without an agent, still need at least one walkable slot tile
+    return slotTiles(world, place).length > 0
+  }
+  return freeSlotTiles(world, place, excludeAgentId).length > 0
+}
+
 /**
- * Pick a free destination near a place. Prefers nearest free candidate to the
- * agent; widens radius by +1 up to +3; then falls back to free walkable
- * neighbors of the region edge.
+ * Pick a free slot tile for a place reservation. No ring-widening beyond
+ * footprint — if full, returns null (brain picks next place or wanders).
+ * Optional preferred tile is used when free.
  */
 export function reserveSpot(
   world: WorldState,
   place: Place,
   agent: AgentState,
   rng: Rng,
-): { x: number; y: number } {
-  const blocked = buildBlockedTiles(world, agent.id)
+  preferred?: { x: number; y: number },
+): { x: number; y: number } | null {
+  if (countPlaceUsers(world, place.id, agent.id) >= place.slots) return null
+
+  const free = freeSlotTiles(world, place, agent.id)
+  if (free.length === 0) return null
+
+  if (preferred) {
+    const px = Math.round(preferred.x)
+    const py = Math.round(preferred.y)
+    if (free.some(([x, y]) => x === px && y === py)) {
+      return { x: px, y: py }
+    }
+  }
+
   const ax = agent.x
   const ay = agent.y
-
-  const pickNearest = (cands: Array<[number, number]>): [number, number] | null => {
-    const free = cands.filter(([x, y]) => !blocked.has(key(x, y)))
-    if (free.length === 0) return null
-    let bestD = Infinity
-    const nearest: Array<[number, number]> = []
-    for (const [x, y] of free) {
-      const d = (x - ax) * (x - ax) + (y - ay) * (y - ay)
-      if (d < bestD - 1e-12) {
-        bestD = d
-        nearest.length = 0
-        nearest.push([x, y])
-      } else if (Math.abs(d - bestD) <= 1e-12) {
-        nearest.push([x, y])
-      }
-    }
-    return rng.pick(nearest)
-  }
-
-  for (let extra = 0; extra <= 3; extra++) {
-    const picked = pickNearest(candidatesForPlace(world, place, extra))
-    if (picked) return { x: picked[0], y: picked[1] }
-  }
-
-  // Fallback: free walkable neighbors of the max-radius region edge
-  const region = candidatesForPlace(world, place, 3)
-  const regionSet = new Set(region.map(([x, y]) => key(x, y)))
-  const edgeNeighbors: Array<[number, number]> = []
-  const seen = new Set<string>()
-  for (const [x, y] of region) {
-    for (const [dx, dy] of CARDINAL) {
-      const nx = x + dx
-      const ny = y + dy
-      const k = key(nx, ny)
-      if (seen.has(k) || regionSet.has(k)) continue
-      seen.add(k)
-      if (!isWalkable(world, nx, ny)) continue
-      if (blocked.has(k)) continue
-      edgeNeighbors.push([nx, ny])
+  let bestD = Infinity
+  const nearest: Array<[number, number]> = []
+  for (const [x, y] of free) {
+    const d = (x - ax) * (x - ax) + (y - ay) * (y - ay)
+    if (d < bestD - 1e-12) {
+      bestD = d
+      nearest.length = 0
+      nearest.push([x, y])
+    } else if (Math.abs(d - bestD) <= 1e-12) {
+      nearest.push([x, y])
     }
   }
-  if (edgeNeighbors.length > 0) {
-    const p = rng.pick(edgeNeighbors)
-    return { x: p[0], y: p[1] }
-  }
-
-  // Last resort: place tile if walkable, else agent tile
-  if (isWalkable(world, place.x, place.y)) return { x: place.x, y: place.y }
-  return { x: Math.round(agent.x), y: Math.round(agent.y) }
+  const picked = rng.pick(nearest)
+  return { x: picked[0], y: picked[1] }
 }
 
 /**
  * Deterministic bed tile for a home resident: home tile + neighbors ordered
  * by fixed offset list, assigned by resident index among agents sharing homeId.
+ * Prefers unblocked tiles so adjacent homes don't share a standing tile.
  */
 export function bedSlotForAgent(
   world: WorldState,
@@ -189,39 +230,27 @@ export function bedSlotForAgent(
     if (isWalkable(world, x, y)) slots.push([x, y])
   }
   if (slots.length === 0) return { x: home.x, y: home.y }
-  const slot = slots[residentIndex % slots.length]!
+
+  const blocked = buildBlockedTiles(world, agent.id)
+  const free = slots.filter(([x, y]) => !blocked.has(key(x, y)))
+  const pool = free.length > 0 ? free : slots
+  const slot = pool[residentIndex % pool.length]!
   return { x: slot[0], y: slot[1] }
 }
 
-/** Concurrent eat reservations for a berry bush (including walkers). */
-export function countBushEaters(
-  world: WorldState,
-  bushId: string,
-  excludeAgentId?: string,
-): number {
-  let n = 0
-  for (const a of world.agents) {
-    if (excludeAgentId && a.id === excludeAgentId) continue
-    if (a.action.kind === 'eat' && a.action.targetPlaceId === bushId) n++
-  }
-  return n
-}
-
-const BUSH_CAPACITY = 2
-
 /**
- * Nearest berry bush with a free eat slot (< 2 reservations). If all full,
- * returns nearest anyway. `crowded` is true when the chosen bush is not the
- * nearest overall (near ones were at capacity).
+ * Nearest place of `kind` with free capacity. `crowded` is true when the
+ * chosen place is not the nearest overall (near ones were full).
  */
-export function pickBushForAgent(
+export function pickPlaceForAgent(
   world: WorldState,
   agent: AgentState,
-): { bush: Place | null; crowded: boolean } {
-  const bushes = world.places.filter((p) => p.kind === 'berry-bush')
-  if (bushes.length === 0) return { bush: null, crowded: false }
+  kind: PlaceKind,
+): { place: Place | null; crowded: boolean } {
+  const list = world.places.filter((p) => p.kind === kind)
+  if (list.length === 0) return { place: null, crowded: false }
 
-  const sorted = bushes.slice().sort((a, b) => {
+  const sorted = list.slice().sort((a, b) => {
     const da = (a.x - agent.x) ** 2 + (a.y - agent.y) ** 2
     const db = (b.x - agent.x) ** 2 + (b.y - agent.y) ** 2
     if (da !== db) return da - db
@@ -229,37 +258,100 @@ export function pickBushForAgent(
   })
 
   const nearest = sorted[0]!
-  for (const bush of sorted) {
-    if (countBushEaters(world, bush.id, agent.id) < BUSH_CAPACITY) {
-      return { bush, crowded: bush.id !== nearest.id }
+  for (const place of sorted) {
+    if (placeHasCapacity(world, place, agent.id)) {
+      return { place, crowded: place.id !== nearest.id }
     }
   }
-  return { bush: nearest, crowded: false }
+  return { place: null, crowded: false }
 }
 
-/** Adjacent free tiles (cardinal) within plaza radius for social milling. */
-export function millCandidates(
+/**
+ * Prefer free slot tiles within SOCIAL_PROXIMITY of another current-or-inbound
+ * socializer; else free tile nearest plaza center. Returns null if no free slots.
+ */
+export function pickSocialSlot(
   world: WorldState,
   agent: AgentState,
   plaza: Place,
-): Array<[number, number]> {
-  const blocked = buildBlockedTiles(world, agent.id)
-  // Own standing tile is free for leaving; do not block re-entry to self
-  const r = PLACE_RADIUS.plaza
-  const out: Array<[number, number]> = []
-  const ax = Math.round(agent.x)
-  const ay = Math.round(agent.y)
-  for (const [dx, dy] of CARDINAL) {
-    const x = ax + dx
-    const y = ay + dy
-    if (!isWalkable(world, x, y)) continue
-    const ddx = x - plaza.x
-    const ddy = y - plaza.y
-    if (Math.sqrt(ddx * ddx + ddy * ddy) > r + 1e-9) continue
-    if (blocked.has(key(x, y))) continue
-    out.push([x, y])
+  rng: Rng,
+): { x: number; y: number } | null {
+  if (!placeHasCapacity(world, plaza, agent.id)) return null
+  const free = freeSlotTiles(world, plaza, agent.id)
+  if (free.length === 0) return null
+
+  // Positions of other socializers (standing or inbound targets)
+  const anchors: Array<{ x: number; y: number }> = []
+  for (const other of world.agents) {
+    if (other.id === agent.id) continue
+    if (other.action.kind !== 'socialize') continue
+    if (
+      other.action.targetX !== undefined &&
+      other.action.targetY !== undefined
+    ) {
+      anchors.push({ x: other.action.targetX, y: other.action.targetY })
+    }
+    if (isStanding(other)) {
+      anchors.push({ x: other.x, y: other.y })
+    }
   }
-  return out
+
+  const nearCluster: Array<[number, number]> = []
+  for (const [x, y] of free) {
+    for (const a of anchors) {
+      const dx = x - a.x
+      const dy = y - a.y
+      if (dx * dx + dy * dy <= SOCIAL_PROXIMITY_SQ + 1e-9) {
+        nearCluster.push([x, y])
+        break
+      }
+    }
+  }
+
+  const pool = nearCluster.length > 0 ? nearCluster : free
+  // Among pool: prefer nearest to plaza center (stable cluster core)
+  let bestD = Infinity
+  const nearest: Array<[number, number]> = []
+  for (const [x, y] of pool) {
+    const d = (x - plaza.x) ** 2 + (y - plaza.y) ** 2
+    if (d < bestD - 1e-12) {
+      bestD = d
+      nearest.length = 0
+      nearest.push([x, y])
+    } else if (Math.abs(d - bestD) <= 1e-12) {
+      nearest.push([x, y])
+    }
+  }
+  const picked = rng.pick(nearest)
+  return { x: picked[0], y: picked[1] }
+}
+
+/**
+ * Standing restorers at a place on slot tiles, ordered by agent list index.
+ * Only the first `place.slots` may apply restore this tick.
+ */
+export function canRestoreThisTick(
+  world: WorldState,
+  agent: AgentState,
+  place: Place,
+): boolean {
+  if (!isStanding(agent)) return false
+  if (!isSlotTile(world, place, agent.x, agent.y)) return false
+
+  // Collect standing restorers on slot tiles for this place, by world agent index
+  const restorers: number[] = []
+  for (let i = 0; i < world.agents.length; i++) {
+    const a = world.agents[i]!
+    if (!RESTORE_KINDS.has(a.action.kind)) continue
+    if (a.action.targetPlaceId !== place.id) continue
+    if (!isStanding(a)) continue
+    if (!isSlotTile(world, place, a.x, a.y)) continue
+    restorers.push(i)
+  }
+  // Already sorted by index ascending
+  const myIndex = world.agents.indexOf(agent)
+  const allowed = restorers.slice(0, place.slots)
+  return allowed.includes(myIndex)
 }
 
 /** Adjacent free tiles for co-standing nudge (any walkable neighbor). */
@@ -305,4 +397,26 @@ export function extendPathTo(
   const path = findPath(world, agent.x, agent.y, tx, ty)
   agent.action.path = path ?? []
   agent.pathIndex = 0
+}
+
+/** Nearest other agent within SOCIAL_PROXIMITY (render/UI only). */
+export function nearestAgentWithin(
+  agent: AgentState,
+  agents: readonly AgentState[],
+  maxDist = SOCIAL_PROXIMITY,
+): AgentState | null {
+  const maxSq = maxDist * maxDist
+  let best: AgentState | null = null
+  let bestD = Infinity
+  for (const other of agents) {
+    if (other.id === agent.id) continue
+    const dx = other.x - agent.x
+    const dy = other.y - agent.y
+    const d = dx * dx + dy * dy
+    if (d <= maxSq + 1e-9 && d < bestD) {
+      bestD = d
+      best = other
+    }
+  }
+  return best
 }

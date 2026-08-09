@@ -7,12 +7,13 @@ import { spawnAgents } from './spawn'
 import { findPath, isWalkable, pathStillValid } from './pathfind'
 import {
   bedSlotForAgent,
+  canRestoreThisTick,
   extendPathTo,
   isStanding,
   isWalking,
-  millCandidates,
   nudgeCandidates,
   reserveSpot,
+  SOCIAL_PROXIMITY_SQ,
 } from './spots'
 import {
   UtilityBrain,
@@ -260,6 +261,10 @@ export class Simulation {
       this.stepMovementAndAction(agent)
       this.maybeRedecide(agent, hour)
     }
+    // World rule 3: after movement, later-indexed co-standers yield a free tile
+    for (const agent of world.agents) {
+      this.resolveCoStanding(agent)
+    }
   }
 
   private stepNeeds(
@@ -267,37 +272,44 @@ export class Simulation {
     positions: Array<{ id: string; x: number; y: number }>,
   ): void {
     const j = agent.needJitter
-    const sleeping = agent.action.kind === 'sleep' && this.isPerforming(agent)
-    const socializing = agent.action.kind === 'socialize' && this.isPerforming(agent)
+    const place = agent.action.targetPlaceId
+      ? this.state.places.find((p) => p.id === agent.action.targetPlaceId)
+      : undefined
+    const canRestore =
+      !!place &&
+      this.isPerforming(agent) &&
+      canRestoreThisTick(this.state, agent, place)
+    const sleeping = agent.action.kind === 'sleep' && canRestore
 
     // Hunger decay always
     agent.needs.hunger = clamp01(agent.needs.hunger - (1 / 960) * j.hunger)
 
-    // Energy: decay awake, regen asleep
+    // Energy: decay awake, regen asleep (only on home slot tile within capacity)
     if (sleeping) {
       agent.needs.energy = clamp01(agent.needs.energy + (1 / 420) * j.energy)
     } else {
       agent.needs.energy = clamp01(agent.needs.energy - (1 / 1080) * j.energy)
     }
 
-    // Social: decay, bonus while socializing, passive near others
-    if (socializing) {
-      agent.needs.social = clamp01(agent.needs.social + (1 / 90) * j.social)
-    } else {
-      agent.needs.social = clamp01(agent.needs.social - (1 / 720) * j.social)
-    }
-
-    // Passive regen within 2 tiles of another agent
+    // World rule 2: social regenerates only with another agent within 1.5 tiles
     let nearOther = false
     for (const p of positions) {
       if (p.id === agent.id) continue
-      if (dist2(agent.x, agent.y, p.x, p.y) <= 4) {
+      if (dist2(agent.x, agent.y, p.x, p.y) <= SOCIAL_PROXIMITY_SQ) {
         nearOther = true
         break
       }
     }
-    if (nearOther && !socializing) {
-      agent.needs.social = clamp01(agent.needs.social + (1 / 2880) * j.social)
+    if (nearOther) {
+      // Active socialize on a plaza slot gets the full rate; otherwise passive proximity
+      const socializing = agent.action.kind === 'socialize' && canRestore
+      if (socializing) {
+        agent.needs.social = clamp01(agent.needs.social + (1 / 90) * j.social)
+      } else {
+        agent.needs.social = clamp01(agent.needs.social + (1 / 2880) * j.social)
+      }
+    } else {
+      agent.needs.social = clamp01(agent.needs.social - (1 / 720) * j.social)
     }
 
     this.checkCritical(agent, 'hunger', agent.needs.hunger)
@@ -404,9 +416,15 @@ export class Simulation {
     const kind = agent.action.kind
     agent.actionTicks++
 
+    const place = agent.action.targetPlaceId
+      ? this.state.places.find((p) => p.id === agent.action.targetPlaceId)
+      : undefined
+    const restoring = !!place && canRestoreThisTick(this.state, agent, place)
+
     if (kind === 'eat') {
-      const before = agent.needs.hunger
-      agent.needs.hunger = clamp01(agent.needs.hunger + 1 / 15)
+      if (restoring) {
+        agent.needs.hunger = clamp01(agent.needs.hunger + 1 / 15)
+      }
       if (agent.actionTicks >= EAT_DURATION) {
         this.endAction(
           agent,
@@ -414,15 +432,15 @@ export class Simulation {
         )
         agent.action = { kind: 'idle', reason: 'Full and content' }
         agent.actionTicks = 0
-        // force redecide next
         agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       }
-      void before
       return
     }
 
     if (kind === 'drink') {
-      agent.needs.energy = clamp01(agent.needs.energy + 0.02)
+      if (restoring) {
+        agent.needs.energy = clamp01(agent.needs.energy + 0.02)
+      }
       if (agent.actionTicks >= DRINK_DURATION) {
         this.endAction(
           agent,
@@ -436,8 +454,7 @@ export class Simulation {
     }
 
     if (kind === 'sleep') {
-      // energy regen applied in stepNeeds while performing sleep
-      // Wake when fully rested, or when the clock crosses 07:00 (not "any daytime hour").
+      // energy regen applied in stepNeeds while restoring on home slot
       const curr = toSimTime(this.state.tick)
       const prev = toSimTime(Math.max(0, this.state.tick - 1))
       const crossed7am =
@@ -455,13 +472,11 @@ export class Simulation {
     }
 
     if (kind === 'socialize') {
-      // social regen in stepNeeds; mill to adjacent free plaza tiles
-      this.maybeMillSocial(agent)
+      // social regen gated by proximity + slot in stepNeeds — no milling
       return
     }
 
     if (kind === 'wander') {
-      // Arrived at wander spot — done
       this.endAction(agent, 'finished a short stroll')
       agent.action = { kind: 'idle', reason: 'Looking around' }
       agent.actionTicks = 0
@@ -596,28 +611,6 @@ export class Simulation {
     extendPathTo(this.state, agent, pick[0], pick[1])
   }
 
-  /** After arriving at plaza: every 20–40 ticks, 30% chance to step adjacent. */
-  private maybeMillSocial(agent: AgentState): void {
-    const tick = this.state.tick
-    if (agent.action.millNextTick === undefined) {
-      agent.action.millNextTick = tick + 20 + this.rng.int(21) // 20..40
-    }
-    if (tick < agent.action.millNextTick) return
-
-    agent.action.millNextTick = tick + 20 + this.rng.int(21)
-    if (this.rng.next() >= 0.3) return
-
-    const placeId = agent.action.targetPlaceId
-    if (!placeId) return
-    const plaza = this.state.places.find((p) => p.id === placeId)
-    if (!plaza || plaza.kind !== 'plaza') return
-
-    const cands = millCandidates(this.state, agent, plaza)
-    if (cands.length === 0) return
-    const pick = this.rng.pick(cands)
-    extendPathTo(this.state, agent, pick[0], pick[1])
-  }
-
   private scoreIntent(
     obs: ReturnType<typeof makeObservation>,
     intent: Intent,
@@ -628,41 +621,51 @@ export class Simulation {
   private startAction(agent: AgentState, intent: Intent): void {
     let tx = intent.targetX
     let ty = intent.targetY
+    let kind = intent.kind
+    let targetPlaceId = intent.targetPlaceId
+    let reason = intent.reason
 
-    const place = intent.targetPlaceId
-      ? this.state.places.find((p) => p.id === intent.targetPlaceId)
+    const place = targetPlaceId
+      ? this.state.places.find((p) => p.id === targetPlaceId)
       : undefined
 
     // Bed slots: shared-home residents sleep on distinct deterministic tiles
-    if (intent.kind === 'sleep' && place && place.kind === 'home') {
+    if (kind === 'sleep' && place && place.kind === 'home') {
       const bed = bedSlotForAgent(this.state, agent, place)
       tx = bed.x
       ty = bed.y
-    } else if (place && intent.kind !== 'wander') {
-      // Spot reservation: free tile within place radius (stored on action)
-      const spot = reserveSpot(this.state, place, agent, this.rng)
-      tx = spot.x
-      ty = spot.y
+    } else if (place && kind !== 'wander') {
+      // Slot reservation: free tile within footprint only (no ring-widening)
+      const preferred =
+        tx !== undefined && ty !== undefined ? { x: tx, y: ty } : undefined
+      const spot = reserveSpot(this.state, place, agent, this.rng, preferred)
+      if (spot) {
+        tx = spot.x
+        ty = spot.y
+      } else {
+        // Place full — fall through to a short wander (no waiting state)
+        kind = 'wander'
+        targetPlaceId = undefined
+        reason = 'Place was full — wandering nearby'
+        tx = Math.round(agent.x)
+        ty = Math.round(agent.y)
+      }
     } else if ((tx === undefined || ty === undefined) && place) {
       tx = place.x
       ty = place.y
     }
 
-    // Wander without coords
-    if (intent.kind === 'wander' && (tx === undefined || ty === undefined)) {
+    if (kind === 'wander' && (tx === undefined || ty === undefined)) {
       tx = Math.round(agent.x)
       ty = Math.round(agent.y)
     }
 
-    // Fallback: stay put
     if (tx === undefined || ty === undefined) {
       tx = Math.round(agent.x)
       ty = Math.round(agent.y)
     }
 
-    // Ensure target walkable
     if (!isWalkable(this.state, Math.round(tx), Math.round(ty))) {
-      // try stay
       tx = Math.round(agent.x)
       ty = Math.round(agent.y)
     }
@@ -670,35 +673,31 @@ export class Simulation {
     const path = findPath(this.state, agent.x, agent.y, tx, ty)
 
     agent.action = {
-      kind: intent.kind,
-      targetPlaceId: intent.targetPlaceId,
+      kind,
+      targetPlaceId,
       targetX: tx,
       targetY: ty,
       path: path ?? [],
-      reason: intent.reason,
-      millNextTick:
-        intent.kind === 'socialize'
-          ? this.state.tick + 20 + this.rng.int(21)
-          : undefined,
+      reason,
     }
     agent.pathIndex = 0
     agent.actionTicks = 0
     agent.actionStartNeeds = cloneNeeds(agent.needs)
 
-    const targetPlace = intent.targetPlaceId
-      ? this.state.places.find((p) => p.id === intent.targetPlaceId)
+    const targetPlace = targetPlaceId
+      ? this.state.places.find((p) => p.id === targetPlaceId)
       : undefined
     this.events.append({
       tick: this.state.tick,
       type: 'action:start',
       agentId: agent.id,
       data: {
-        kind: intent.kind,
-        target: intent.targetPlaceId ?? `${tx},${ty}`,
+        kind,
+        target: targetPlaceId ?? `${tx},${ty}`,
         agentName: agent.name,
         placeKind: targetPlace?.kind,
       },
-      reason: intent.reason,
+      reason,
     })
   }
 

@@ -254,7 +254,7 @@ export function generateWorld(seed: number): WorldState {
     }
   }
 
-  places.push({ id: 'plaza-0', kind: 'plaza', x: plazaX, y: plazaY })
+  places.push({ id: 'plaza-0', kind: 'plaza', x: plazaX, y: plazaY, slots: 12 })
 
   // Clear 2-tile radius around plaza (force grass walkable, keep non-water)
   for (let dy = -2; dy <= 2; dy++) {
@@ -285,13 +285,13 @@ export function generateWorld(seed: number): WorldState {
     const wx = plazaX + ox
     const wy = plazaY + oy
     if (isWalkableGrass(tiles, wx, wy)) {
-      places.push({ id: 'well-0', kind: 'well', x: wx, y: wy })
+      places.push({ id: 'well-0', kind: 'well', x: wx, y: wy, slots: 2 })
       wellPlaced = true
       break
     }
   }
   if (!wellPlaced) {
-    places.push({ id: 'well-0', kind: 'well', x: plazaX, y: plazaY })
+    places.push({ id: 'well-0', kind: 'well', x: plazaX, y: plazaY, slots: 2 })
   }
 
   // 10 homes on a ring radius 4–7 (expand outer radius if needed), Chebyshev spacing ≥ 2
@@ -341,7 +341,8 @@ export function generateWorld(seed: number): WorldState {
       if (seenHomes.has(key) || occupied.has(key)) continue
       seenHomes.add(key)
       if (homeTooClose(hx, hy)) continue
-      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
+      // slots = residents; finalized in spawnAgents once agents are assigned
+      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy, slots: 3 })
       occupied.add(key)
       homeCount++
     }
@@ -364,7 +365,7 @@ export function generateWorld(seed: number): WorldState {
       if (homeTooClose(hx, hy)) continue
       const dist = Math.sqrt((hx - plazaX) ** 2 + (hy - plazaY) ** 2)
       if (dist < 4 || dist > 14) continue
-      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
+      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy, slots: 3 })
       occupied.add(key)
       homeCount++
     }
@@ -405,7 +406,7 @@ export function generateWorld(seed: number): WorldState {
       }
     }
     if (tooClose) continue
-    places.push({ id: `bush-${bushCount}`, kind: 'berry-bush', x: bx, y: by })
+    places.push({ id: `bush-${bushCount}`, kind: 'berry-bush', x: bx, y: by, slots: 2 })
     occupied.add(`${bx},${by}`)
     bushCount++
   }

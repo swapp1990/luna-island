@@ -16,7 +16,15 @@ export interface Tile {
 
 export type PlaceKind = 'home' | 'berry-bush' | 'well' | 'plaza'
 
-export interface Place { id: string; kind: PlaceKind; x: number; y: number; ownerId?: string }
+export interface Place {
+  id: string
+  kind: PlaceKind
+  x: number
+  y: number
+  /** Concurrent restore capacity (agents using this place). */
+  slots: number
+  ownerId?: string
+}
 
 /** All needs 0..1, where 1 = fully satisfied. */
 export interface Needs { hunger: number; energy: number; social: number }
@@ -32,8 +40,6 @@ export interface AgentAction {
   path?: Array<[number, number]>
   /** Human-readable "why" — required, shown in the inspector. */
   reason: string
-  /** Next tick to attempt social milling (snapshot-round-trips). */
-  millNextTick?: number
 }
 
 export interface AgentState {

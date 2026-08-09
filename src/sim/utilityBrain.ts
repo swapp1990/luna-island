@@ -1,4 +1,4 @@
-import { pickBushForAgent } from './spots'
+import { pickPlaceForAgent, pickSocialSlot } from './spots'
 import { toSimTime } from './time'
 import type {
   ActionKind,
@@ -25,10 +25,6 @@ function isDaytime(hour: number): boolean {
 
 function placeById(world: WorldState, id: string): Place | undefined {
   return world.places.find((p) => p.id === id)
-}
-
-function placesOf(world: WorldState, kind: Place['kind']): Place[] {
-  return world.places.filter((p) => p.kind === kind)
 }
 
 function collectWalkableNear(
@@ -69,7 +65,6 @@ function sleepReason(energy: number, night: boolean): string {
   if (night) {
     return `Night has fallen (energy ${pct(energy)}%) — time for bed`
   }
-  // Daytime: "Feeling tired" only when truly low; otherwise short rest copy
   if (energy < 0.35) {
     return `Feeling tired (energy ${pct(energy)}%) — going home to nap`
   }
@@ -109,9 +104,27 @@ function wanderReason(): string {
   return 'Curious about the island — wandering nearby'
 }
 
+function makeWanderIntent(
+  world: WorldState,
+  self: AgentState,
+  rng: Rng,
+  reason = wanderReason(),
+): Intent {
+  const spots = collectWalkableNear(world, self.x, self.y, 8)
+  let tx = Math.round(self.x)
+  let ty = Math.round(self.y)
+  if (spots.length > 0) {
+    const pick = rng.pick(spots)
+    tx = pick[0]
+    ty = pick[1]
+  }
+  return { kind: 'wander', targetX: tx, targetY: ty, reason }
+}
+
 /**
  * Utility-based brain: scores sleep / eat / drink / socialize / wander,
  * returns the max-scoring intent with product-copy reason strings.
+ * Place-full → next-nearest of same kind, else wander (no waiting).
  */
 export class UtilityBrain implements Brain {
   decide(obs: Observation, rng: Rng): Intent {
@@ -121,7 +134,7 @@ export class UtilityBrain implements Brain {
 
     const candidates: Scored[] = []
 
-    // sleep → own home (only when not already well-rested — avoids 90% micro-naps all night)
+    // sleep → own home
     if (self.needs.energy < 0.85) {
       const home = placeById(world, self.homeId)
       const score = sleepScore(self.needs.energy, hour)
@@ -137,78 +150,71 @@ export class UtilityBrain implements Brain {
       })
     }
 
-    // eat → nearest berry-bush with free capacity (max 2 eaters)
+    // eat → nearest berry-bush with free capacity; else skip (wander competes)
     {
-      const { bush, crowded } = pickBushForAgent(world, self)
-      let score = (1 - self.needs.hunger) * 1.3
-      if (self.needs.hunger < 0.25) score += 0.5
-      candidates.push({
-        score,
-        intent: {
-          kind: 'eat',
-          targetPlaceId: bush?.id,
-          targetX: bush?.x,
-          targetY: bush?.y,
-          reason: eatReason(self.needs.hunger, crowded),
-        },
-      })
-    }
-
-    // drink → well (daytime only)
-    if (isDaytime(hour)) {
-      const well = placesOf(world, 'well')[0] ?? null
-      const score = (1 - self.needs.energy) * 0.35
-      candidates.push({
-        score,
-        intent: {
-          kind: 'drink',
-          targetPlaceId: well?.id,
-          targetX: well?.x,
-          targetY: well?.y,
-          reason: drinkReason(self.needs.energy),
-        },
-      })
-    }
-
-    // socialize → plaza
-    {
-      const plaza = placesOf(world, 'plaza')[0] ?? null
-      let score = (1 - self.needs.social) * 0.9
-      if (hour >= 10 && hour < 20) score *= 1.3
-      candidates.push({
-        score,
-        intent: {
-          kind: 'socialize',
-          targetPlaceId: plaza?.id,
-          targetX: plaza?.x,
-          targetY: plaza?.y,
-          reason: socialReason(self.needs.social),
-        },
-      })
-    }
-
-    // wander → random walkable within 8 tiles
-    {
-      const spots = collectWalkableNear(world, self.x, self.y, 8)
-      let tx = Math.round(self.x)
-      let ty = Math.round(self.y)
-      if (spots.length > 0) {
-        const pick = rng.pick(spots)
-        tx = pick[0]
-        ty = pick[1]
+      const { place: bush, crowded } = pickPlaceForAgent(world, self, 'berry-bush')
+      if (bush) {
+        let score = (1 - self.needs.hunger) * 1.3
+        if (self.needs.hunger < 0.25) score += 0.5
+        candidates.push({
+          score,
+          intent: {
+            kind: 'eat',
+            targetPlaceId: bush.id,
+            targetX: bush.x,
+            targetY: bush.y,
+            reason: eatReason(self.needs.hunger, crowded),
+          },
+        })
       }
-      candidates.push({
-        score: 0.15,
-        intent: {
-          kind: 'wander',
-          targetX: tx,
-          targetY: ty,
-          reason: wanderReason(),
-        },
-      })
     }
 
-    // Pick max score (stable tie-break: first in list)
+    // drink → nearest well with free capacity (daytime only)
+    if (isDaytime(hour)) {
+      const { place: well } = pickPlaceForAgent(world, self, 'well')
+      if (well) {
+        const score = (1 - self.needs.energy) * 0.35
+        candidates.push({
+          score,
+          intent: {
+            kind: 'drink',
+            targetPlaceId: well.id,
+            targetX: well.x,
+            targetY: well.y,
+            reason: drinkReason(self.needs.energy),
+          },
+        })
+      }
+    }
+
+    // socialize → free plaza slot near other socializers (else nearest-to-center)
+    {
+      const { place: plaza } = pickPlaceForAgent(world, self, 'plaza')
+      if (plaza) {
+        const slot = pickSocialSlot(world, self, plaza, rng)
+        if (slot) {
+          let score = (1 - self.needs.social) * 0.9
+          if (hour >= 10 && hour < 20) score *= 1.3
+          candidates.push({
+            score,
+            intent: {
+              kind: 'socialize',
+              targetPlaceId: plaza.id,
+              targetX: slot.x,
+              targetY: slot.y,
+              reason: socialReason(self.needs.social),
+            },
+          })
+        }
+      }
+    }
+
+    // wander baseline
+    candidates.push({
+      score: 0.15,
+      intent: makeWanderIntent(world, self, rng),
+    })
+
     let best = candidates[0]!
     for (let i = 1; i < candidates.length; i++) {
       const c = candidates[i]!
@@ -225,7 +231,6 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
 
   switch (kind) {
     case 'sleep':
-      // Match decide(): don't treat sleep as competitive when already rested
       if (self.needs.energy >= 0.85) return 0
       return sleepScore(self.needs.energy, hour)
     case 'eat': {
@@ -274,7 +279,6 @@ export function urgentDifferentNeed(agent: AgentState): boolean {
   switch (kind) {
     case 'sleep':
     case 'drink':
-      // serving energy
       return hunger < 0.15 || social < 0.15
     case 'eat':
       return energy < 0.15 || social < 0.15

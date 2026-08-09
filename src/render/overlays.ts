@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { nearestAgentWithin } from '../sim/spots'
 import type { AgentState, Place } from '../sim/types'
 
 const HEAD_Y = 0.22 + 0.55 + 0.16 * 0.85 // matches agents.ts head top-ish
@@ -76,8 +77,12 @@ function project(
   return { x, y, behind }
 }
 
-/** Destination / action micro-status for the selected-agent bubble. */
-export function formatStatusBubble(agent: AgentState, places: Place[]): string {
+/** Destination / action micro-status for the selected-agent bubble (derived, no sim state). */
+export function formatStatusBubble(
+  agent: AgentState,
+  places: Place[],
+  agents: readonly AgentState[] = [],
+): string {
   const a = agent.action
   const path = a.path
   const walking = !!(path && path.length > 0 && agent.pathIndex < path.length)
@@ -117,8 +122,12 @@ export function formatStatusBubble(agent: AgentState, places: Place[]): string {
       return '💧 At the well'
     case 'sleep':
       return '😴 Sleeping'
-    case 'socialize':
-      return '💬 Chatting'
+    case 'socialize': {
+      const other = nearestAgentWithin(agent, agents)
+      return other
+        ? `💬 Chatting with ${other.name}`
+        : '💬 Looking for company'
+    }
     case 'wander':
       return '🚶 Wandering'
     case 'walk':
@@ -290,7 +299,7 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
         statusEl.style.display = 'block'
         statusEl.style.opacity = '1'
         statusEl.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
-        const text = formatStatusBubble(selected, places)
+        const text = formatStatusBubble(selected, places, agents)
         if (text !== lastStatusText) {
           lastStatusText = text
           statusText.textContent = text
