@@ -5,6 +5,8 @@ export interface TerrainHandle {
   root: THREE.Group
   /** Show N berry dots on each bush from place inventory stock (0–6). */
   updateBushStock: (places: Place[]) => void
+  /** Scale farm crops by growth; show stall crates by stock. */
+  updateEconomyVisuals: (places: Place[]) => void
   dispose: () => void
 }
 
@@ -392,9 +394,11 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
 
   // Places — berry meshes keyed by place id for stock-driven visibility
   const bushBerries = new Map<string, THREE.Mesh[]>()
+  const farmCrops = new Map<string, THREE.Object3D[]>()
+  const stallCrates = new Map<string, THREE.Mesh[]>()
   const plaza = world.places.find((p) => p.kind === 'plaza')
   for (const place of world.places) {
-    addPlace(root, place, track, plaza, bushBerries)
+    addPlace(root, place, track, plaza, bushBerries, farmCrops, stallCrates)
   }
 
   const updateBushStock = (places: Place[]) => {
@@ -408,8 +412,41 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
       }
     }
   }
+
+  const updateEconomyVisuals = (places: Place[]) => {
+    updateBushStock(places)
+    for (const place of places) {
+      if (place.kind === 'farm') {
+        const crops = farmCrops.get(place.id)
+        if (!crops) continue
+        const g = Math.max(0, Math.min(1, place.growth ?? 0))
+        // Scale crops with growth; keep a tiny minimum so empty plots still read
+        const s = 0.15 + g * 0.85
+        for (const crop of crops) {
+          crop.scale.set(s, s, s)
+          crop.visible = g > 0.02 || (place.inventory?.food ?? 0) > 0
+          if ((place.inventory?.food ?? 0) > 0 && g < 0.02) {
+            // Ready harvest piles: full size green even after growth reset
+            crop.scale.set(1, 1, 1)
+            crop.visible = true
+          }
+        }
+      }
+      if (place.kind === 'stall') {
+        const crates = stallCrates.get(place.id)
+        if (!crates) continue
+        const stock = Math.max(0, Math.floor(place.inventory?.food ?? 0))
+        // Show up to 8 crates proportional to stock
+        const n = Math.min(crates.length, Math.ceil(stock / 2))
+        for (let i = 0; i < crates.length; i++) {
+          crates[i]!.visible = i < n
+        }
+      }
+    }
+  }
+
   // Initial stock visibility
-  updateBushStock(world.places)
+  updateEconomyVisuals(world.places)
 
   const dispose = () => {
     scene.remove(root)
@@ -418,9 +455,11 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     })
     for (const d of disposables) d.dispose()
     bushBerries.clear()
+    farmCrops.clear()
+    stallCrates.clear()
   }
 
-  return { root, updateBushStock, dispose }
+  return { root, updateBushStock, updateEconomyVisuals, dispose }
 }
 
 function addPlace(
@@ -429,6 +468,8 @@ function addPlace(
   track: <T extends { dispose: () => void }>(obj: T) => T,
   plaza: Place | undefined,
   bushBerries: Map<string, THREE.Mesh[]>,
+  farmCrops: Map<string, THREE.Object3D[]>,
+  stallCrates: Map<string, THREE.Mesh[]>,
 ): void {
   const baseY = 0.22
   if (place.kind === 'home') {
@@ -565,5 +606,114 @@ function addPlace(
       berries.push(berry)
     }
     bushBerries.set(place.id, berries)
+  } else if (place.kind === 'farm') {
+    // Tilled dark-soil tiles (3×3) + simple green crop cones scaled by growth
+    const soilGeo = track(new THREE.BoxGeometry(0.92, 0.06, 0.92))
+    const soilMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x4a3728, roughness: 0.95 }),
+    )
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const soil = new THREE.Mesh(soilGeo, soilMat)
+        soil.position.set(place.x + dx, HEIGHTS.grass + 0.03, place.y + dy)
+        soil.receiveShadow = true
+        root.add(soil)
+      }
+    }
+    const cropGeo = track(new THREE.ConeGeometry(0.12, 0.35, 5))
+    const cropMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x5aaf4a, roughness: 0.8 }),
+    )
+    const crops: THREE.Object3D[] = []
+    // 5 crop positions in the plot
+    const cropOffsets: Array<[number, number]> = [
+      [0, 0],
+      [0.55, 0.4],
+      [-0.5, 0.45],
+      [0.45, -0.5],
+      [-0.55, -0.4],
+    ]
+    for (const [ox, oz] of cropOffsets) {
+      const crop = new THREE.Mesh(cropGeo, cropMat)
+      crop.position.set(place.x + ox, HEIGHTS.grass + 0.12, place.y + oz)
+      crop.castShadow = true
+      crop.visible = false
+      root.add(crop)
+      crops.push(crop)
+    }
+    farmCrops.set(place.id, crops)
+  } else if (place.kind === 'stall') {
+    // Small canopy + crates (crate count reflects stock)
+    const group = new THREE.Group()
+    group.position.set(place.x, 0, place.y)
+    if (plaza) {
+      const dx = plaza.x - place.x
+      const dz = plaza.y - place.y
+      group.rotation.y = Math.atan2(dx, dz)
+    }
+
+    // Counter / table
+    const tableGeo = track(new THREE.BoxGeometry(0.9, 0.35, 0.55))
+    const tableMat = track(
+      new THREE.MeshStandardMaterial({ color: 0xa67c52, roughness: 0.85 }),
+    )
+    const table = new THREE.Mesh(tableGeo, tableMat)
+    table.position.y = baseY + 0.18
+    table.castShadow = true
+    table.receiveShadow = true
+    group.add(table)
+
+    // Canopy posts + awning
+    const postGeo = track(new THREE.BoxGeometry(0.06, 0.7, 0.06))
+    const postMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 }),
+    )
+    for (const [ox, oz] of [
+      [-0.4, -0.22],
+      [0.4, -0.22],
+      [-0.4, 0.22],
+      [0.4, 0.22],
+    ] as Array<[number, number]>) {
+      const post = new THREE.Mesh(postGeo, postMat)
+      post.position.set(ox, baseY + 0.45, oz)
+      post.castShadow = true
+      group.add(post)
+    }
+    const awningGeo = track(new THREE.BoxGeometry(1.05, 0.05, 0.7))
+    const awningMat = track(
+      new THREE.MeshStandardMaterial({ color: 0xc45c3e, roughness: 0.75 }),
+    )
+    const awning = new THREE.Mesh(awningGeo, awningMat)
+    awning.position.y = baseY + 0.82
+    awning.castShadow = true
+    group.add(awning)
+
+    root.add(group)
+
+    // Crates in front of stall (stock-driven visibility)
+    const crateGeo = track(new THREE.BoxGeometry(0.22, 0.18, 0.22))
+    const crateMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.88 }),
+    )
+    const crates: THREE.Mesh[] = []
+    const crateOffsets: Array<[number, number]> = [
+      [0.35, 0.55],
+      [0.6, 0.55],
+      [0.1, 0.7],
+      [0.85, 0.7],
+      [-0.15, 0.55],
+      [1.05, 0.55],
+      [0.35, 0.85],
+      [0.6, 0.85],
+    ]
+    for (const [ox, oz] of crateOffsets) {
+      const crate = new THREE.Mesh(crateGeo, crateMat)
+      crate.position.set(place.x + ox - 0.4, baseY + 0.09, place.y + oz - 0.2)
+      crate.castShadow = true
+      crate.visible = false
+      root.add(crate)
+      crates.push(crate)
+    }
+    stallCrates.set(place.id, crates)
   }
 }

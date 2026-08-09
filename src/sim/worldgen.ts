@@ -228,6 +228,7 @@ export function generateWorld(seed: number): WorldState {
       agents: [],
       treasury: 200,
       owners: {},
+      stats: [],
     }
   }
 
@@ -408,8 +409,149 @@ export function generateWorld(seed: number): WorldState {
     }
   }
 
+  // Market stall near plaza (commons shop)
+  {
+    const stallOffsets: Array<[number, number]> = [
+      [2, 1],
+      [2, -1],
+      [-2, 1],
+      [-2, -1],
+      [3, 0],
+      [-3, 0],
+      [0, 3],
+      [0, -3],
+    ]
+    let stallPlaced = false
+    for (const [ox, oy] of stallOffsets) {
+      const sx = plazaX + ox
+      const sy = plazaY + oy
+      if (!isWalkableGrass(tiles, sx, sy)) continue
+      const key = `${sx},${sy}`
+      if (occupied.has(key)) continue
+      places.push({
+        id: 'stall-0',
+        kind: 'stall',
+        x: sx,
+        y: sy,
+        slots: 4,
+        jobSlots: 1,
+        wage: 5,
+        inventory: { food: 0 },
+        // price = clamp(round(4 × sqrt(8 / max(stock,1))), 2, 12) at stock 0
+        price: { food: 11 },
+      })
+      occupied.add(key)
+      // Clear a small pad around the stall
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const px = sx + dx
+          const py = sy + dy
+          if (!inBounds(px, py)) continue
+          const t = tiles[idx(px, py)]!
+          if (t.kind === 'water') continue
+          t.kind = 'grass'
+          t.walkable = true
+        }
+      }
+      stallPlaced = true
+      break
+    }
+    if (!stallPlaced) {
+      places.push({
+        id: 'stall-0',
+        kind: 'stall',
+        x: plazaX + 2,
+        y: plazaY,
+        slots: 4,
+        jobSlots: 1,
+        wage: 5,
+        inventory: { food: 0 },
+        price: { food: 11 },
+      })
+    }
+  }
+
+  // 3 farm plots (3×3 footprint) on grass near the village
+  {
+    const farmCandidates: Array<[number, number]> = []
+    for (const [x, y] of grassRegion) {
+      const dist = Math.sqrt((x - plazaX) ** 2 + (y - plazaY) ** 2)
+      if (dist < 5 || dist > 12) continue
+      // Need a free 3×3 of non-water tiles (will force grass/walkable)
+      let ok = true
+      for (let dy = -1; dy <= 1 && ok; dy++) {
+        for (let dx = -1; dx <= 1 && ok; dx++) {
+          const px = x + dx
+          const py = y + dy
+          if (!inBounds(px, py)) {
+            ok = false
+            break
+          }
+          const t = tiles[idx(px, py)]!
+          if (t.kind === 'water') ok = false
+          if (occupied.has(`${px},${py}`)) ok = false
+        }
+      }
+      if (ok) farmCandidates.push([x, y])
+    }
+    farmCandidates.sort((a, b) => {
+      const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
+      const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
+      if (da !== db) return da - db
+      if (a[0] !== b[0]) return a[0] - b[0]
+      return a[1] - b[1]
+    })
+    let farmCount = 0
+    for (const [fx, fy] of farmCandidates) {
+      if (farmCount >= 3) break
+      // Re-check occupancy (previous farms)
+      let blocked = false
+      for (let dy = -1; dy <= 1 && !blocked; dy++) {
+        for (let dx = -1; dx <= 1 && !blocked; dx++) {
+          if (occupied.has(`${fx + dx},${fy + dy}`)) blocked = true
+        }
+      }
+      if (blocked) continue
+      // Tilled plot: force grass walkable rows
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const px = fx + dx
+          const py = fy + dy
+          const t = tiles[idx(px, py)]!
+          t.kind = 'grass'
+          t.walkable = true
+          occupied.add(`${px},${py}`)
+        }
+      }
+      places.push({
+        id: `farm-${farmCount}`,
+        kind: 'farm',
+        x: fx,
+        y: fy,
+        slots: 2,
+        jobSlots: 2,
+        wage: 6,
+        growth: 0,
+        inventory: { food: 0 },
+      })
+      farmCount++
+    }
+  }
+
   // Footpaths: BFS corridor home→plaza and plaza→well; mark tiles path:true
   markPathCorridor(tiles, plazaX, plazaY, places)
+  // Also path to farms and stall
+  for (const p of places) {
+    if (p.kind === 'farm' || p.kind === 'stall') {
+      const path = bfsCorridor(tiles, plazaX, plazaY, p.x, p.y)
+      if (path) {
+        for (const [x, y] of path) {
+          const t = tiles[idx(x, y)]!
+          if (t.walkable) t.path = true
+        }
+      }
+    }
+  }
 
   // 8 berry-bushes on grass/forest, 4–12 tiles from plaza
   const bushCandidates: Array<[number, number]> = []
@@ -470,5 +612,6 @@ export function generateWorld(seed: number): WorldState {
     agents: [],
     treasury: 200,
     owners,
+    stats: [],
   }
 }

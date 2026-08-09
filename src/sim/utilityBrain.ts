@@ -1,5 +1,16 @@
-import { pickPlaceForAgent, pickSocialSlot, placeHasCapacity } from './spots'
+import {
+  pickOpenWorkplace,
+  pickPlaceForAgent,
+  pickSocialSlot,
+  placeHasCapacity,
+} from './spots'
 import { toSimTime } from './time'
+
+/** Mirror of sim.marketPriceFromStock — keep pure (no sim import cycle). */
+function marketPriceFromStock(stock: number): number {
+  const raw = Math.round(4 * Math.sqrt(8 / Math.max(stock, 1)))
+  return Math.max(2, Math.min(12, raw))
+}
 import type {
   ActionKind,
   AgentState,
@@ -21,6 +32,10 @@ function isNight(hour: number): boolean {
 
 function isDaytime(hour: number): boolean {
   return !isNight(hour)
+}
+
+function isWorkHours(hour: number): boolean {
+  return hour >= 8 && hour < 17
 }
 
 function placeById(world: WorldState, id: string): Place | undefined {
@@ -99,6 +114,23 @@ function forageReason(hunger: number, crowded: boolean): string {
   return `Need food (${pct(hunger)}%) — heading to the berry bushes`
 }
 
+function buyReason(hunger: number, price: number): string {
+  if (hunger < 0.25) {
+    return `Starving (${pct(hunger)}%) — buying food at the stall (${price} coins)`
+  }
+  return `Hungry (${pct(hunger)}%) — shopping at the market (${price} coins)`
+}
+
+function workReason(place: Place): string {
+  if (place.kind === 'farm') return `Working the farm — tending crops`
+  if (place.kind === 'stall') return `Working the market stall`
+  return `Working at the ${place.kind}`
+}
+
+function claimReason(place: Place): string {
+  return `Taking a job at the ${place.kind} (${place.wage ?? 0} coins/day)`
+}
+
 function foodCount(agent: AgentState): number {
   return agent.inventory?.food ?? 0
 }
@@ -158,10 +190,21 @@ function makeWanderIntent(
   return { kind: 'wander', targetX: tx, targetY: ty, reason }
 }
 
+function stallPlace(world: WorldState): Place | undefined {
+  return world.places.find((p) => p.kind === 'stall')
+}
+
+function urgentNeedy(agent: AgentState): boolean {
+  return (
+    agent.needs.hunger < 0.2 ||
+    agent.needs.energy < 0.2 ||
+    agent.needs.social < 0.15
+  )
+}
+
 /**
- * Utility-based brain: scores sleep / eat / forage / drink / socialize / wander,
- * returns the max-scoring intent with product-copy reason strings.
- * Place-full → next-nearest of same kind, else wander (no waiting).
+ * Utility-based brain: scores sleep / eat / forage / buy / drink / socialize /
+ * work / wander. Place-full → next-nearest of same kind, else wander.
  */
 export class UtilityBrain implements Brain {
   decide(obs: Observation, rng: Rng): Intent {
@@ -203,8 +246,34 @@ export class UtilityBrain implements Brain {
       })
     }
 
-    // forage → nearest stocked bush with free slot; only when carrying 0 food
+    // Hungry + no food: prefer buy over forage when wallet covers posted price
     if (carried === 0) {
+      const stall = stallPlace(world)
+      const stock = stall?.inventory.food ?? 0
+      const price =
+        stall?.price?.food ?? marketPriceFromStock(stock)
+      const canBuy =
+        !!stall &&
+        stock > 0 &&
+        self.wallet >= price &&
+        placeHasCapacity(world, stall, self.id)
+
+      if (canBuy && stall) {
+        // Slightly above forage so the market is the default when solvent
+        let score = (1 - self.needs.hunger) * 1.28
+        if (self.needs.hunger < 0.25) score += 0.5
+        candidates.push({
+          score,
+          intent: {
+            kind: 'buy',
+            targetPlaceId: stall.id,
+            targetX: stall.x,
+            targetY: stall.y,
+            reason: buyReason(self.needs.hunger, price),
+          },
+        })
+      }
+
       const { place: bush, crowded } = pickStockedBush(world, self)
       if (bush) {
         let score = (1 - self.needs.hunger) * 1.2
@@ -262,6 +331,47 @@ export class UtilityBrain implements Brain {
       }
     }
 
+    // Unemployed + daytime → claim nearest workplace with a free job seat
+    // (work intent; hire is a world rule on startAction)
+    if (!self.employedAt && isDaytime(hour) && !self.collapsed) {
+      const job = pickOpenWorkplace(world, self)
+      if (job && placeHasCapacity(world, job, self.id)) {
+        candidates.push({
+          score: 0.55,
+          intent: {
+            kind: 'work',
+            targetPlaceId: job.id,
+            targetX: job.x,
+            targetY: job.y,
+            reason: claimReason(job),
+          },
+        })
+      }
+    }
+
+    // Employed + work hours + not urgent-needy → work (score ~0.65)
+    // Slightly above baseline social when social is OK so farms actually get tended.
+    if (
+      self.employedAt &&
+      isWorkHours(hour) &&
+      !urgentNeedy(self) &&
+      !self.collapsed
+    ) {
+      const workplace = placeById(world, self.employedAt)
+      if (workplace && placeHasCapacity(world, workplace, self.id)) {
+        candidates.push({
+          score: 0.65,
+          intent: {
+            kind: 'work',
+            targetPlaceId: workplace.id,
+            targetX: workplace.x,
+            targetY: workplace.y,
+            reason: workReason(workplace),
+          },
+        })
+      }
+    }
+
     // wander baseline
     candidates.push({
       score: 0.15,
@@ -279,7 +389,7 @@ export class UtilityBrain implements Brain {
 
 /** Score the currently-held action kind for hysteresis comparisons. */
 export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
-  const { self, time } = obs
+  const { self, time, world } = obs
   const hour = time.hour
   const carried = foodCount(self)
 
@@ -298,6 +408,21 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
       let s = (1 - self.needs.hunger) * 1.2
       if (self.needs.hunger < 0.25) s += 0.5
       return s
+    }
+    case 'buy': {
+      if (carried > 0) return 0
+      const stall = stallPlace(world)
+      const stock = stall?.inventory.food ?? 0
+      const price = stall?.price?.food ?? marketPriceFromStock(stock)
+      if (!stall || stock <= 0 || self.wallet < price) return 0
+      let s = (1 - self.needs.hunger) * 1.28
+      if (self.needs.hunger < 0.25) s += 0.5
+      return s
+    }
+    case 'work': {
+      if (!self.employedAt) return 0.55 // claiming
+      if (!isWorkHours(hour) || urgentNeedy(self) || self.collapsed) return 0
+      return 0.65
     }
     case 'drink':
       if (!isDaytime(hour)) return -1
@@ -348,7 +473,14 @@ export function urgentDifferentNeed(agent: AgentState): boolean {
       return hunger < 0.15 || social < 0.15
     case 'eat':
     case 'forage':
+    case 'buy':
       return energy < 0.15 || social < 0.15
+    case 'work':
+      // Hauling is non-interruptible (handled in sim); otherwise real needs preempt
+      if (agent.workPhase === 'hauling' || agent.workPhase === 'returning') {
+        return false
+      }
+      return hunger < 0.15 || energy < 0.15 || social < 0.15
     case 'socialize':
       return hunger < 0.15 || energy < 0.15
     default:

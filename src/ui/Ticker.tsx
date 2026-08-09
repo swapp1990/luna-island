@@ -78,6 +78,42 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'job:hired') {
+      const name =
+        (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const kind = (ev.data?.placeKind as string) ?? 'workplace'
+      const wage = (ev.data?.wage as number) ?? 0
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `hire-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · ${name} hired at the ${kind} (${wage}/day)`,
+      })
+      continue
+    }
+
+    if (ev.type === 'coins:transfer') {
+      const kind = ev.data?.kind as string | undefined
+      if (kind === 'wage') {
+        const amount = (ev.data?.amount as number) ?? 0
+        const to = ev.data?.to as string | undefined
+        // Prefer reason ("Mira earned 6 coins") for product copy
+        const reason = (ev.reason ?? '').trim()
+        const t = toSimTime(ev.tick)
+        const text = reason
+          ? `💰 ${reason}`
+          : `💰 Wage paid: ${amount} coins`
+        rows.push({
+          key: `wage-${ev.seq}`,
+          tick: ev.tick,
+          agentId: to && to !== 'treasury' ? to : (ev.agentId ?? null),
+          text: `${pad2(t.hour)}:${pad2(t.minute)} · ${text}`,
+        })
+      }
+      continue
+    }
+
     if (ev.type === 'action:start') {
       const agentId = ev.agentId
       if (!agentId) continue

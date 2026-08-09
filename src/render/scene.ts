@@ -44,6 +44,8 @@ export interface SceneHandle {
   ) => void
   /** Sync bush berry-dot visibility to place inventory stock. */
   updateBushStock: (places: WorldState['places']) => void
+  /** Sync farm growth + stall crate visuals. */
+  updateEconomyVisuals: (places: WorldState['places']) => void
   resize: (w: number, h: number) => void
   dispose: () => void
   render: () => void
@@ -166,6 +168,9 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   const updateBushStock = (places: WorldState['places']) => {
     terrain.updateBushStock(places)
   }
+  const updateEconomyVisuals = (places: WorldState['places']) => {
+    terrain.updateEconomyVisuals(places)
+  }
 
   const publishCameraTarget = () => {
     window.__cameraTarget = {
@@ -258,6 +263,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     followAgent,
     updateOverlays,
     updateBushStock,
+    updateEconomyVisuals,
     resize,
     dispose,
     render,

@@ -101,6 +101,13 @@ export function formatStatusBubble(
     switch (a.kind) {
       case 'forage':
         return '🚶 → berry bushes'
+      case 'buy':
+        return '🛒 → market stall'
+      case 'work':
+        if (agent.workPhase === 'hauling') return '🧺 Hauling the harvest'
+        if (placeKind === 'farm') return '🚶 → the farm'
+        if (placeKind === 'stall') return '🚶 → the stall'
+        return '🚶 → work'
       case 'eat':
         return '🍽️ Eating'
       case 'drink':
@@ -116,6 +123,8 @@ export function formatStatusBubble(
         if (placeKind === 'well') return '🚶 → the well'
         if (placeKind === 'home') return '🏠 Heading home'
         if (placeKind === 'plaza') return '🚶 → plaza'
+        if (placeKind === 'farm') return '🚶 → the farm'
+        if (placeKind === 'stall') return '🚶 → the stall'
         return '🚶 Walking'
       default:
         return '🚶 Walking'
@@ -125,6 +134,13 @@ export function formatStatusBubble(
   switch (a.kind) {
     case 'forage':
       return '🫐 Picking berries'
+    case 'buy':
+      return '🛒 Buying food'
+    case 'work':
+      if (agent.workPhase === 'hauling') return '🧺 Hauling the harvest'
+      if (placeKind === 'stall') return '🏪 Working the stall'
+      if (placeKind === 'farm') return '👨‍🌾 Working the farm'
+      return '👨‍🌾 Working'
     case 'eat':
       return '🍽️ Eating'
     case 'drink':

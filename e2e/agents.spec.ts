@@ -315,6 +315,64 @@ test.describe.serial('agents', () => {
     expect(moved).toBe(true)
   })
 
+  test('economy: market jobs + farm screenshot', async ({ page }) => {
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    const artifactsDir = path.join(process.cwd(), 'artifacts')
+    fs.mkdirSync(artifactsDir, { recursive: true })
+
+    // Fast-forward ~2 sim-days via ffwd (1 tick = 1 sim minute; 2 days = 2880)
+    await page.evaluate(() => {
+      ;(window as any).__simControl.ffwd(2880)
+    })
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
+        timeout: 120000,
+      })
+      .toBeGreaterThanOrEqual(2880)
+
+    // Afternoon for screenshot (~14:00 = +480 from 06:00 day start; day 3 starts at 2880-360? 
+    // tick 0 = day1 06:00; after 2880 ticks ≈ day 3 06:00. Nudge to afternoon.
+    await page.evaluate(() => {
+      ;(window as any).__simControl.ffwd(480)
+    })
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState.tick as number), {
+        timeout: 60000,
+      })
+      .toBeGreaterThanOrEqual(3360)
+
+    await page.evaluate(() => (window as any).__simControl.pause())
+
+    // Find an employed agent via job-row
+    const ids = await page.evaluate(() => (window as any).__simState.agentIds as string[])
+    let foundEmployed = false
+    for (const id of ids) {
+      await page.evaluate((agentId) => {
+        ;(window as any).__simControl.selectAgent(agentId)
+      }, id)
+      await page.waitForTimeout(30)
+      const jobText = await page.getByTestId('job-row').innerText().catch(() => '')
+      if (jobText && !/Unemployed/i.test(jobText) && /coins\/day|Farm|Stall/i.test(jobText)) {
+        foundEmployed = true
+        break
+      }
+    }
+    expect(foundEmployed, 'some agent should show employed job-row').toBe(true)
+
+    const jobRow = page.getByTestId('job-row')
+    await expect(jobRow).toBeVisible()
+    await expect(jobRow).not.toContainText('Unemployed')
+
+    await page.waitForTimeout(400)
+    const shotPath = path.join(artifactsDir, 'economy-market.png')
+    await page.screenshot({ path: shotPath, fullPage: true })
+    expect(fs.statSync(shotPath).size).toBeGreaterThan(20 * 1024)
+  })
+
   test('economy: forage inspector rows + screenshot', async ({ page }) => {
     await page.goto('/')
     await expect

@@ -8,7 +8,7 @@ import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
 import { Inspector } from './ui/Inspector'
 import { Ticker } from './ui/Ticker'
-import type { AgentState, SimEvent } from './sim/types'
+import type { AgentState, Place, SimEvent } from './sim/types'
 
 const SEED = 42
 const HUD_HZ = 4
@@ -38,6 +38,7 @@ export function App() {
   const [selectedAgent, setSelectedAgent] = useState<AgentState | null>(null)
   const [agentEvents, setAgentEvents] = useState<readonly SimEvent[]>([])
   const [allEvents, setAllEvents] = useState<readonly SimEvent[]>([])
+  const [places, setPlaces] = useState<Place[]>([])
   const [following, setFollowing] = useState(false)
   const [scrubMin, setScrubMin] = useState(0)
   const [scrubMax, setScrubMax] = useState(0)
@@ -56,6 +57,7 @@ export function App() {
     const sim = loop.getViewSim()
     const events = sim.getEvents()
     setAllEvents(events)
+    setPlaces(sim.state.places.map((p) => ({ ...p, inventory: { ...p.inventory } })))
     setFollowing(loop.getFollow())
     const id = s.selectedAgentId
     if (id) {
@@ -220,6 +222,7 @@ export function App() {
         events={agentEvents}
         replayTick={hud.tick}
         dayStartTick={viewDayStart}
+        places={places}
         following={following}
         onToggleFollow={() => {
           const loop = loopRef.current

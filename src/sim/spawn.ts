@@ -148,6 +148,11 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       inventory: { food: 2 },
       wallet: 20,
       collapsed: false,
+      employedAt: null,
+      workedTicks: 0,
+      daysIdleOnJob: 0,
+      workPhase: null,
+      haulAmount: 0,
     })
   }
   world.agents = agents

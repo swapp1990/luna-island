@@ -9,11 +9,13 @@ import {
   bedSlotForAgent,
   canRestoreThisTick,
   extendPathTo,
+  isSlotTile,
   isStanding,
   isWalking,
   nudgeCandidates,
   reserveSpot,
   SOCIAL_PROXIMITY_SQ,
+  workplaceHasOpenJob,
 } from './spots'
 import {
   UtilityBrain,
@@ -25,11 +27,13 @@ import {
 } from './utilityBrain'
 import type {
   AgentState,
+  EconomyStat,
   Good,
   Intent,
   Inventory,
   Needs,
   OwnerId,
+  Place,
   Rng,
   SimEvent,
   Tick,
@@ -53,6 +57,15 @@ const MOVE_SPEED = 1.0 // tiles per tick
 const COLLAPSE_MOVE_FACTOR = 0.4
 const COLLAPSE_ENTER = 0.02
 const COLLAPSE_CLEAR = 0.25
+/** Full daily wage requires this many work ticks (08:00–17:00). */
+const FULL_WAGE_TICKS = 300
+/** Farm harvest haul size. */
+const HAUL_SIZE = 5
+/** Max food units per market visit. */
+const BUY_MAX_UNITS = 2
+/** Farm growth per tick while tended. */
+const FARM_GROWTH_PER_TICK = 1 / 1440
+const FARM_PRODUCE_AMOUNT = 10
 
 /** Coin party: agent id or the village treasury. */
 export type CoinParty = string | 'treasury'
@@ -97,6 +110,22 @@ function deepCloneAgent(a: AgentState): AgentState {
       ...a.action,
       path: a.action.path ? a.action.path.map((p) => [p[0], p[1]] as [number, number]) : undefined,
     },
+    employedAt: a.employedAt,
+    workedTicks: a.workedTicks,
+    daysIdleOnJob: a.daysIdleOnJob,
+    workPhase: a.workPhase,
+    haulAmount: a.haulAmount,
+  }
+}
+
+function deepClonePlace(p: Place): Place {
+  return {
+    ...p,
+    inventory: cloneInventory(p.inventory ?? { food: 0 }),
+    growth: p.growth,
+    jobSlots: p.jobSlots,
+    wage: p.wage,
+    price: p.price ? { ...p.price } : undefined,
   }
 }
 
@@ -107,14 +136,18 @@ function deepCloneWorld(state: WorldState): WorldState {
     width: state.width,
     height: state.height,
     tiles: state.tiles.map((t) => ({ ...t })),
-    places: state.places.map((p) => ({
-      ...p,
-      inventory: cloneInventory(p.inventory ?? { food: 0 }),
-    })),
+    places: state.places.map(deepClonePlace),
     agents: state.agents.map(deepCloneAgent),
     treasury: state.treasury,
     owners: { ...state.owners },
+    stats: state.stats.map((s) => ({ ...s })),
   }
+}
+
+/** Posted stall food price from stock (world fact). */
+export function marketPriceFromStock(stock: number): number {
+  const raw = Math.round(4 * Math.sqrt(8 / Math.max(stock, 1)))
+  return Math.max(2, Math.min(12, raw))
 }
 
 function clamp01(n: number): number {
@@ -272,6 +305,7 @@ export class Simulation {
     to: CoinParty,
     amount: number,
     reason: string,
+    extra?: Record<string, unknown>,
   ): boolean {
     if (amount <= 0 || from === to) return false
     const fromBal = this.coinBalance(from)
@@ -281,7 +315,31 @@ export class Simulation {
     this.events.append({
       tick: this.state.tick,
       type: 'coins:transfer',
-      data: { from, to, amount },
+      agentId: to !== 'treasury' ? to : from !== 'treasury' ? from : undefined,
+      data: { from, to, amount, ...(extra ?? {}) },
+      reason,
+    })
+    return true
+  }
+
+  /**
+   * Mint goods at a place (farm harvest only). Emits `goods:produced`.
+   * The ONLY creation path besides bush regrowth.
+   */
+  produceGoods(
+    placeId: string,
+    good: Good,
+    amount: number,
+    reason: string,
+  ): boolean {
+    if (amount <= 0) return false
+    const place = this.state.places.find((p) => p.id === placeId)
+    if (!place) return false
+    place.inventory[good] = (place.inventory[good] ?? 0) + amount
+    this.events.append({
+      tick: this.state.tick,
+      type: 'goods:produced',
+      data: { good, amount, placeId, placeKind: place.kind },
       reason,
     })
     return true
@@ -319,6 +377,14 @@ export class Simulation {
       },
       reason,
     })
+    // Keep posted stall price honest when stock moves mid-hour
+    if (
+      good === 'food' &&
+      ((from.kind === 'place' && this.state.places.find((p) => p.id === from.id)?.kind === 'stall') ||
+        (to.kind === 'place' && this.state.places.find((p) => p.id === to.id)?.kind === 'stall'))
+    ) {
+      this.stepMarketPrice()
+    }
     return true
   }
 
@@ -444,9 +510,12 @@ export class Simulation {
       this.stepMovementAndAction(agent)
       this.maybeRedecide(agent, hour)
     }
-    // World rule 3: after movement, later-indexed co-standers yield a free tile
-    for (const agent of world.agents) {
-      this.resolveCoStanding(agent)
+    // World rule 3: after movement, later-indexed co-standers yield a free tile.
+    // Two passes — a first nudge can free a tile for a third stacked agent.
+    for (let pass = 0; pass < 2; pass++) {
+      for (const agent of world.agents) {
+        this.resolveCoStanding(agent)
+      }
     }
   }
 
@@ -762,6 +831,22 @@ export class Simulation {
       return
     }
 
+    if (kind === 'work') {
+      // Work uses footprint occupancy (isSlotTile), not restore-slot ranking —
+      // job seats are separate from place.slots concurrent capacity.
+      const onWorkSlot =
+        !!place &&
+        isStanding(agent) &&
+        isSlotTile(this.state, place, agent.x, agent.y)
+      this.performWork(agent, place, onWorkSlot)
+      return
+    }
+
+    if (kind === 'buy') {
+      this.performBuy(agent, place, onSlot)
+      return
+    }
+
     if (kind === 'wander') {
       this.endAction(agent, 'finished a short stroll')
       agent.action = { kind: 'idle', reason: 'Looking around' }
@@ -769,6 +854,249 @@ export class Simulation {
       agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       return
     }
+  }
+
+  /** Work at workplace: accrue ticks; farms tend/haul; stall is passive. */
+  private performWork(
+    agent: AgentState,
+    place: Place | undefined,
+    onSlot: boolean,
+  ): void {
+    // During haul/return the target place is stall or farm — resolve by phase
+    const workplace = agent.employedAt
+      ? this.state.places.find((p) => p.id === agent.employedAt)
+      : undefined
+    if (!workplace) {
+      this.endAction(agent, 'no longer employed')
+      agent.action = { kind: 'idle', reason: 'Looking for work' }
+      agent.actionTicks = 0
+      this.returnHaulCargo(agent)
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+
+    const time = toSimTime(this.state.tick)
+    const workHours = time.hour >= 8 && time.hour < 17
+
+    // Accrue workedTicks only on workplace slot during work hours (tend only)
+    const onWorkplaceSlot =
+      isStanding(agent) && isSlotTile(this.state, workplace, agent.x, agent.y)
+    if (
+      onWorkplaceSlot &&
+      workHours &&
+      (agent.workPhase === null || agent.workPhase === 'tend')
+    ) {
+      agent.workedTicks++
+    }
+
+    // Stall work: just stand and accrue
+    if (workplace.kind === 'stall') {
+      agent.workPhase = 'tend'
+      return
+    }
+
+    // Farm work: tend / haul phases
+    if (workplace.kind !== 'farm') return
+
+    if (agent.workPhase === null) agent.workPhase = 'tend'
+
+    // Hauling to stall
+    if (agent.workPhase === 'hauling') {
+      const stall = this.state.places.find((p) => p.kind === 'stall')
+      if (!stall) {
+        this.returnHaulCargo(agent)
+        agent.workPhase = 'tend'
+        return
+      }
+      const atStall =
+        isStanding(agent) && isSlotTile(this.state, stall, agent.x, agent.y)
+      if (atStall && agent.haulAmount > 0) {
+        const amt = Math.min(agent.haulAmount, agent.inventory.food ?? 0)
+        if (amt > 0) {
+          this.transferGoods(
+            { kind: 'agent', id: agent.id },
+            { kind: 'place', id: stall.id },
+            'food',
+            amt,
+            `${agent.name} stocked the market stall with ${amt} food`,
+          )
+        }
+        agent.haulAmount = 0
+        agent.workPhase = 'returning'
+        this.retargetToPlace(agent, workplace, 'Returning to the farm after hauling')
+      } else if (
+        // Ensure path keeps targeting the stall
+        agent.action.targetPlaceId !== stall.id &&
+        agent.haulAmount > 0
+      ) {
+        this.retargetToPlace(
+          agent,
+          stall,
+          `Hauling ${agent.haulAmount} food to the market stall`,
+        )
+      }
+      return
+    }
+
+    if (agent.workPhase === 'returning') {
+      if (onWorkplaceSlot) {
+        agent.workPhase = 'tend'
+        agent.action.targetPlaceId = workplace.id
+        agent.action.reason = `Working the farm at ${workplace.id}`
+      } else if (agent.action.targetPlaceId !== workplace.id) {
+        this.retargetToPlace(agent, workplace, 'Returning to the farm after hauling')
+      }
+      return
+    }
+
+    // Tend phase: when farm has ≥5 food, auto-start haul leg
+    if (agent.workPhase === 'tend' && onWorkplaceSlot) {
+      const farmFood = workplace.inventory.food ?? 0
+      if (farmFood >= HAUL_SIZE) {
+        const stall = this.state.places.find((p) => p.kind === 'stall')
+        if (stall) {
+          const amt = Math.min(HAUL_SIZE, farmFood)
+          const ok = this.transferGoods(
+            { kind: 'place', id: workplace.id },
+            { kind: 'agent', id: agent.id },
+            'food',
+            amt,
+            `${agent.name} picked up ${amt} food to haul to market`,
+          )
+          if (ok) {
+            agent.haulAmount = amt
+            agent.workPhase = 'hauling'
+            this.retargetToPlace(
+              agent,
+              stall,
+              `Hauling ${amt} food to the market stall`,
+            )
+          }
+        }
+      }
+    }
+    void place
+    void onSlot
+  }
+
+  private performBuy(
+    agent: AgentState,
+    place: Place | undefined,
+    onSlot: boolean,
+  ): void {
+    if (!place || place.kind !== 'stall' || !onSlot) {
+      if (agent.actionTicks > 30) {
+        this.endAction(agent, 'could not buy at the stall')
+        agent.action = { kind: 'idle', reason: 'Left the market' }
+        agent.actionTicks = 0
+        agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      }
+      return
+    }
+
+    const price = place.price?.food ?? marketPriceFromStock(place.inventory.food ?? 0)
+
+    // One unit per performing tick, up to BUY_MAX_UNITS
+    if (agent.actionTicks <= BUY_MAX_UNITS) {
+      const stock = place.inventory.food ?? 0
+      if (stock <= 0 || agent.wallet < price) {
+        this.endAction(
+          agent,
+          stock <= 0 ? 'stall sold out' : 'not enough coins',
+        )
+        agent.action = {
+          kind: 'idle',
+          reason: stock <= 0 ? 'Stall empty' : 'Short on coins',
+        }
+        agent.actionTicks = 0
+        agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+        return
+      }
+      const paid = this.transferCoins(
+        agent.id,
+        'treasury',
+        price,
+        `${agent.name} paid ${price} coins for food at the stall`,
+        { kind: 'buy', good: 'food', unitPrice: price },
+      )
+      if (paid) {
+        this.transferGoods(
+          { kind: 'place', id: place.id },
+          { kind: 'agent', id: agent.id },
+          'food',
+          1,
+          `${agent.name} bought 1 food at the stall`,
+        )
+      }
+    }
+
+    if (agent.actionTicks >= BUY_MAX_UNITS) {
+      this.endAction(agent, 'bought food at the market')
+      agent.action = { kind: 'idle', reason: 'Bag of groceries' }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+    }
+  }
+
+  /** Retarget current work action to another place without ending it. */
+  private retargetToPlace(
+    agent: AgentState,
+    place: Place,
+    reason: string,
+  ): void {
+    const spot = reserveSpot(this.state, place, agent, this.rng)
+    const tx = spot?.x ?? place.x
+    const ty = spot?.y ?? place.y
+    agent.action.targetPlaceId = place.id
+    agent.action.targetX = tx
+    agent.action.targetY = ty
+    agent.action.reason = reason
+    agent.action.path = findPath(this.state, agent.x, agent.y, tx, ty) ?? []
+    agent.pathIndex = 0
+  }
+
+  private hireAgent(agent: AgentState, place: Place): boolean {
+    if (agent.employedAt === place.id) return true
+    if (agent.employedAt) return false
+    if (!workplaceHasOpenJob(this.state, place, agent.id)) return false
+    agent.employedAt = place.id
+    agent.daysIdleOnJob = 0
+    agent.workedTicks = 0
+    this.events.append({
+      tick: this.state.tick,
+      type: 'job:hired',
+      agentId: agent.id,
+      data: {
+        agentName: agent.name,
+        placeId: place.id,
+        placeKind: place.kind,
+        wage: place.wage ?? 0,
+      },
+      reason: `${agent.name} took a job at the ${place.kind} (${place.wage ?? 0} coins/day)`,
+    })
+    return true
+  }
+
+  private vacateJob(agent: AgentState, reason: string): void {
+    if (!agent.employedAt) return
+    const placeId = agent.employedAt
+    const place = this.state.places.find((p) => p.id === placeId)
+    agent.employedAt = null
+    agent.workedTicks = 0
+    agent.daysIdleOnJob = 0
+    agent.workPhase = null
+    agent.haulAmount = 0
+    this.events.append({
+      tick: this.state.tick,
+      type: 'job:vacated',
+      agentId: agent.id,
+      data: {
+        agentName: agent.name,
+        placeId,
+        placeKind: place?.kind,
+      },
+      reason,
+    })
   }
 
   private endAction(agent: AgentState, outcome: string): void {
@@ -806,14 +1134,23 @@ export class Simulation {
       return
     }
 
-    // Don't interrupt eat/drink/forage mid-meal for non-urgent redecide
+    // Don't interrupt eat/drink/forage/buy mid-action for non-urgent redecide
     if (
       (agent.action.kind === 'eat' ||
         agent.action.kind === 'drink' ||
-        agent.action.kind === 'forage') &&
+        agent.action.kind === 'forage' ||
+        agent.action.kind === 'buy') &&
       this.isPerforming(agent) &&
       agent.actionTicks > 0 &&
       !urgent
+    ) {
+      return
+    }
+
+    // Mid-haul: finish the haul leg before redecide (never abandon cargo mid-path)
+    if (
+      agent.action.kind === 'work' &&
+      (agent.workPhase === 'hauling' || agent.workPhase === 'returning')
     ) {
       return
     }
@@ -866,8 +1203,38 @@ export class Simulation {
     if (currentKind !== 'idle') {
       this.endAction(agent, `stopped ${currentKind} to ${intent.kind}`)
     }
+    // Leaving work: return undelivered haul cargo to the farm (no free food)
+    if (currentKind === 'work' && intent.kind !== 'work') {
+      this.returnHaulCargo(agent)
+    }
 
     this.startAction(agent, intent)
+  }
+
+  /** Return undelivered haul food to the employing farm. */
+  private returnHaulCargo(agent: AgentState): void {
+    if (agent.haulAmount <= 0) {
+      agent.workPhase = null
+      agent.haulAmount = 0
+      return
+    }
+    const farmId =
+      agent.employedAt &&
+      this.state.places.find((p) => p.id === agent.employedAt)?.kind === 'farm'
+        ? agent.employedAt
+        : this.state.places.find((p) => p.kind === 'farm')?.id
+    const amt = Math.min(agent.haulAmount, agent.inventory.food ?? 0)
+    if (farmId && amt > 0) {
+      this.transferGoods(
+        { kind: 'agent', id: agent.id },
+        { kind: 'place', id: farmId },
+        'food',
+        amt,
+        `${agent.name} returned undelivered harvest to ${farmId}`,
+      )
+    }
+    agent.workPhase = null
+    agent.haulAmount = 0
   }
 
   /**
@@ -913,9 +1280,38 @@ export class Simulation {
     let targetPlaceId = intent.targetPlaceId
     let reason = intent.reason
 
-    const place = targetPlaceId
+    let place = targetPlaceId
       ? this.state.places.find((p) => p.id === targetPlaceId)
       : undefined
+
+    // Employment: starting work hires unemployed agents when a seat is free
+    if (kind === 'work' && place && (place.jobSlots ?? 0) > 0) {
+      if (!agent.employedAt) {
+        if (!this.hireAgent(agent, place)) {
+          kind = 'wander'
+          targetPlaceId = undefined
+          place = undefined
+          reason = 'No open jobs — wandering'
+          tx = Math.round(agent.x)
+          ty = Math.round(agent.y)
+        }
+      } else if (agent.employedAt !== place.id) {
+        // Already employed elsewhere — redirect to own workplace
+        const own = this.state.places.find((p) => p.id === agent.employedAt)
+        if (own) {
+          place = own
+          targetPlaceId = own.id
+          tx = own.x
+          ty = own.y
+        }
+      }
+      if (kind === 'work') {
+        // Fresh tend shift — return any leftover haul first
+        if (agent.haulAmount > 0) this.returnHaulCargo(agent)
+        agent.workPhase = 'tend'
+        agent.haulAmount = 0
+      }
+    }
 
     // Bed slots: shared-home residents sleep on distinct deterministic tiles
     if (kind === 'sleep' && place && place.kind === 'home') {
@@ -937,6 +1333,9 @@ export class Simulation {
         reason = 'Place was full — wandering nearby'
         tx = Math.round(agent.x)
         ty = Math.round(agent.y)
+        if (intent.kind === 'work') {
+          agent.workPhase = null
+        }
       }
     } else if ((tx === undefined || ty === undefined) && place) {
       tx = place.x
@@ -1012,8 +1411,20 @@ export class Simulation {
       })
     }
 
+    // Wage day at 18:00: treasury → employees (partial if insolvent)
+    if (prev.hour === 17 && next.hour === 18) {
+      this.stepWagePayments()
+    }
+
+    // Hourly: recompute stall price + append economy stats
+    if (next.hour !== prev.hour) {
+      this.stepMarketPrice()
+      this.stepEconomyStats()
+    }
+
     this.stepAgents()
     this.stepBushRegrowth()
+    this.stepFarmGrowth()
 
     if (this.state.tick % SNAPSHOT_INTERVAL === 0) {
       this.snapshots.add(this.makeSnapshot())
@@ -1024,10 +1435,6 @@ export class Simulation {
     }
   }
 
-  /**
-   * Record a finished calendar day, pin its start snapshot, drop fine-grained
-   * snapshots inside the day (reconstruct via start snap + events).
-   */
   /** World process: +1 food per bush every 240 ticks, capped at 6. */
   private stepBushRegrowth(): void {
     if (this.state.tick <= 0) return
@@ -1042,6 +1449,132 @@ export class Simulation {
         1,
         `Berry bush ${place.id} regrew (stock ${stock + 1})`,
       )
+    }
+  }
+
+  /**
+   * World process: farm growth advances only while a worker is actively
+   * tending a farm slot; at growth ≥ 1, mint 10 food (`goods:produced`).
+   */
+  private stepFarmGrowth(): void {
+    for (const place of this.state.places) {
+      if (place.kind !== 'farm') continue
+      let tended = false
+      for (const agent of this.state.agents) {
+        if (agent.action.kind !== 'work') continue
+        if (agent.employedAt !== place.id) continue
+        if (agent.workPhase !== null && agent.workPhase !== 'tend') continue
+        if (!this.isPerforming(agent)) continue
+        if (!isSlotTile(this.state, place, agent.x, agent.y)) continue
+        tended = true
+        break
+      }
+      if (!tended) continue
+      const g = (place.growth ?? 0) + FARM_GROWTH_PER_TICK
+      if (g >= 1) {
+        place.growth = 0
+        this.produceGoods(
+          place.id,
+          'food',
+          FARM_PRODUCE_AMOUNT,
+          `Farm ${place.id} harvested (+${FARM_PRODUCE_AMOUNT} food)`,
+        )
+      } else {
+        place.growth = g
+      }
+    }
+  }
+
+  /** Recompute stall posted price from stock each sim-hour. */
+  private stepMarketPrice(): void {
+    for (const place of this.state.places) {
+      if (place.kind !== 'stall') continue
+      const stock = place.inventory.food ?? 0
+      if (!place.price) place.price = {}
+      place.price.food = marketPriceFromStock(stock)
+    }
+  }
+
+  /** Append hourly economy sample to world.stats (Dispatch L UI later). */
+  private stepEconomyStats(): void {
+    const stall = this.state.places.find((p) => p.kind === 'stall')
+    const stock = stall?.inventory.food ?? 0
+    const price = stall?.price?.food ?? marketPriceFromStock(stock)
+    let employed = 0
+    let sumW = 0
+    let minW = Infinity
+    let maxW = -Infinity
+    for (const a of this.state.agents) {
+      if (a.employedAt) employed++
+      sumW += a.wallet
+      if (a.wallet < minW) minW = a.wallet
+      if (a.wallet > maxW) maxW = a.wallet
+    }
+    const n = this.state.agents.length
+    const sample: EconomyStat = {
+      tick: this.state.tick,
+      price,
+      stallStock: stock,
+      treasury: this.state.treasury,
+      employed,
+      meanWallet: n > 0 ? sumW / n : 0,
+      minWallet: n > 0 ? minW : 0,
+      maxWallet: n > 0 ? maxW : 0,
+    }
+    this.state.stats.push(sample)
+  }
+
+  /**
+   * 18:00 wage day: pay wage × min(1, workedTicks/300) from treasury.
+   * Partial if treasury is short. Idle days accumulate toward job vacation.
+   */
+  private stepWagePayments(): void {
+    for (const agent of this.state.agents) {
+      if (!agent.employedAt) continue
+      const place = this.state.places.find((p) => p.id === agent.employedAt)
+      if (!place) {
+        this.vacateJob(agent, `${agent.name}'s workplace vanished`)
+        continue
+      }
+      const wage = place.wage ?? 0
+      const due = Math.floor(wage * Math.min(1, agent.workedTicks / FULL_WAGE_TICKS))
+      if (due > 0) {
+        const pay = Math.min(due, this.state.treasury)
+        if (pay > 0) {
+          const partial = pay < due
+          this.transferCoins(
+            'treasury',
+            agent.id,
+            pay,
+            partial
+              ? `${agent.name} earned ${pay} coins (partial; treasury short)`
+              : `${agent.name} earned ${pay} coins`,
+            {
+              kind: 'wage',
+              workedTicks: agent.workedTicks,
+              wage,
+              due,
+              partial,
+              placeId: place.id,
+            },
+          )
+        }
+      }
+
+      // Abandonment: 2 consecutive days with zero work frees the seat
+      if (agent.workedTicks === 0) {
+        agent.daysIdleOnJob++
+        if (agent.daysIdleOnJob >= 2) {
+          this.vacateJob(
+            agent,
+            `${agent.name} abandoned their ${place.kind} job after 2 idle days`,
+          )
+          continue
+        }
+      } else {
+        agent.daysIdleOnJob = 0
+      }
+      agent.workedTicks = 0
     }
   }
 

@@ -134,7 +134,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       sim.state.places,
       now,
     )
-    scene.updateBushStock(sim.state.places)
+    scene.updateEconomyVisuals(sim.state.places)
   }
 
   const setSpeed = (n: number) => {

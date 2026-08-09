@@ -1,4 +1,4 @@
-import type { AgentState, SimEvent } from '../sim/types'
+import type { AgentState, Place, SimEvent } from '../sim/types'
 import { toSimTime } from '../sim/time'
 
 function pad2s(n: number): string {
@@ -12,7 +12,7 @@ function needColor(v: number): string {
   return '#e05a5a'
 }
 
-function actionVerb(kind: string): string {
+function actionVerb(kind: string, workPhase?: string | null): string {
   switch (kind) {
     case 'sleep':
       return 'Sleeping'
@@ -20,6 +20,11 @@ function actionVerb(kind: string): string {
       return 'Eating'
     case 'forage':
       return 'Picking berries'
+    case 'buy':
+      return 'Buying food'
+    case 'work':
+      if (workPhase === 'hauling') return 'Hauling the harvest'
+      return 'Working'
     case 'drink':
       return 'Drinking'
     case 'socialize':
@@ -33,6 +38,20 @@ function actionVerb(kind: string): string {
     default:
       return kind.charAt(0).toUpperCase() + kind.slice(1)
   }
+}
+
+function jobLabel(agent: AgentState, places: Place[] | undefined): string {
+  if (!agent.employedAt) return 'Unemployed'
+  const place = places?.find((p) => p.id === agent.employedAt)
+  if (!place) return 'Unemployed'
+  const kind =
+    place.kind === 'farm'
+      ? 'Farm'
+      : place.kind === 'stall'
+        ? 'Stall'
+        : place.kind
+  const wage = place.wage ?? 0
+  return `${kind} · ${wage} coins/day`
 }
 
 function formatLogRow(ev: SimEvent): { tick: number; text: string } {
@@ -101,6 +120,7 @@ export function Inspector(props: {
   replayTick: number
   /** Inclusive lower bound for activity log (loaded day's start). */
   dayStartTick?: number
+  places?: Place[]
   following: boolean
   onToggleFollow: () => void
   onClose: () => void
@@ -121,7 +141,7 @@ export function Inspector(props: {
     .reverse()
     .slice(0, 50)
 
-  const verb = actionVerb(agent.action.kind)
+  const verb = actionVerb(agent.action.kind, agent.workPhase)
 
   return (
     <div
@@ -221,7 +241,7 @@ export function Inspector(props: {
         <NeedBar label="Social" value={agent.needs.social} testId="need-social" />
       </div>
 
-      {/* Inventory & wallet */}
+      {/* Inventory, wallet, job */}
       <div
         style={{
           display: 'flex',
@@ -237,6 +257,9 @@ export function Inspector(props: {
         </div>
         <div data-testid="wallet-row">
           🪙 {agent.wallet ?? 0} coins
+        </div>
+        <div data-testid="job-row">
+          💼 {jobLabel(agent, props.places)}
         </div>
       </div>
 

@@ -14,7 +14,7 @@ export interface Tile {
   path?: boolean
 }
 
-export type PlaceKind = 'home' | 'berry-bush' | 'well' | 'plaza'
+export type PlaceKind = 'home' | 'berry-bush' | 'well' | 'plaza' | 'farm' | 'stall'
 
 /** Extensible goods union — Phase 2 starts with food only. */
 export type Good = 'food'
@@ -29,10 +29,30 @@ export interface Place {
   kind: PlaceKind
   x: number
   y: number
-  /** Concurrent restore capacity (agents using this place). */
+  /** Concurrent restore / interaction capacity (agents using this place). */
   slots: number
-  /** Goods held at this place (bushes stock food here). */
+  /** Goods held at this place (bushes, farms, stall stock food here). */
   inventory: Inventory
+  /** Farm crop progress 0..1 (only on farms). */
+  growth?: number
+  /** Open employment seats (workplaces only). */
+  jobSlots?: number
+  /** Posted daily wage in coins (workplaces only). */
+  wage?: number
+  /** Posted unit prices (stall only). */
+  price?: Partial<Record<Good, number>>
+}
+
+/** Hourly economy sample (Dispatch L UI; collected now). */
+export interface EconomyStat {
+  tick: Tick
+  price: number
+  stallStock: number
+  treasury: number
+  employed: number
+  meanWallet: number
+  minWallet: number
+  maxWallet: number
 }
 
 /** All needs 0..1, where 1 = fully satisfied. */
@@ -47,6 +67,11 @@ export type ActionKind =
   | 'socialize'
   | 'wander'
   | 'forage'
+  | 'work'
+  | 'buy'
+
+/** Mid-work farm haul phases (mechanical, not a brain script). */
+export type WorkPhase = 'tend' | 'hauling' | 'returning'
 
 export interface AgentAction {
   kind: ActionKind
@@ -86,6 +111,16 @@ export interface AgentState {
   wallet: number
   /** Starvation collapse (world rule): slow move, limited restores. */
   collapsed: boolean
+  /** Workplace place id, or null if unemployed. */
+  employedAt: string | null
+  /** Work ticks accrued today at the workplace (wage basis). */
+  workedTicks: number
+  /** Consecutive calendar days with zero work while employed. */
+  daysIdleOnJob: number
+  /** Farm work sub-phase (haul mechanics). */
+  workPhase: WorkPhase | null
+  /** Food units currently hauling farm→stall (0 if none). */
+  haulAmount: number
 }
 
 export interface WorldState {
@@ -100,6 +135,8 @@ export interface WorldState {
   treasury: number
   /** Ownership registry: every place → agent id or 'commons'. */
   owners: Record<string, OwnerId>
+  /** Per-sim-hour economy samples. */
+  stats: EconomyStat[]
 }
 
 export interface SimEvent {

@@ -7,13 +7,22 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   'berry-bush': 1.2,
   well: 1.2,
   home: 1.0,
+  farm: 1.0,
+  stall: 1.5,
 }
 
 /**
- * Actions that occupy a place slot (restore or forage).
+ * Actions that occupy a place slot (restore, forage, work, buy).
  * Eat no longer uses places — food is consumed from inventory anywhere.
  */
-const PLACE_SLOT_KINDS = new Set(['sleep', 'drink', 'socialize', 'forage'])
+const PLACE_SLOT_KINDS = new Set([
+  'sleep',
+  'drink',
+  'socialize',
+  'forage',
+  'work',
+  'buy',
+])
 
 const NEIGHBOR8: Array<[number, number]> = [
   [0, 0],
@@ -58,7 +67,8 @@ export function slotTiles(
   place: Place,
 ): Array<[number, number]> {
   const out: Array<[number, number]> = []
-  if (place.kind === 'home') {
+  // Home + farm use a discrete 3×3 footprint
+  if (place.kind === 'home' || place.kind === 'farm') {
     for (let dy = -1; dy <= 1; dy++) {
       for (let dx = -1; dx <= 1; dx++) {
         const x = place.x + dx
@@ -92,7 +102,7 @@ export function isSlotTile(
 ): boolean {
   const tx = Math.round(x)
   const ty = Math.round(y)
-  if (place.kind === 'home') {
+  if (place.kind === 'home' || place.kind === 'farm') {
     return Math.max(Math.abs(tx - place.x), Math.abs(ty - place.y)) <= 1 &&
       isWalkable(world, tx, ty)
   }
@@ -100,6 +110,43 @@ export function isSlotTile(
   const dy = ty - place.y
   if (Math.sqrt(dx * dx + dy * dy) > PLACE_RADIUS[place.kind] + 1e-9) return false
   return isWalkable(world, tx, ty)
+}
+
+/** True when a workplace still has a free employment seat. */
+export function workplaceHasOpenJob(
+  world: WorldState,
+  place: Place,
+  excludeAgentId?: string,
+): boolean {
+  const seats = place.jobSlots ?? 0
+  if (seats <= 0) return false
+  let employed = 0
+  for (const a of world.agents) {
+    if (excludeAgentId && a.id === excludeAgentId) continue
+    if (a.employedAt === place.id) employed++
+  }
+  return employed < seats
+}
+
+/** Nearest workplace (jobSlots > 0) with a free seat. */
+export function pickOpenWorkplace(
+  world: WorldState,
+  agent: AgentState,
+): Place | null {
+  const list = world.places.filter(
+    (p) => (p.jobSlots ?? 0) > 0 && (p.wage ?? 0) > 0,
+  )
+  if (list.length === 0) return null
+  const sorted = list.slice().sort((a, b) => {
+    const da = (a.x - agent.x) ** 2 + (a.y - agent.y) ** 2
+    const db = (b.x - agent.x) ** 2 + (b.y - agent.y) ** 2
+    if (da !== db) return da - db
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+  for (const place of sorted) {
+    if (workplaceHasOpenJob(world, place, agent.id)) return place
+  }
+  return null
 }
 
 /**
@@ -383,6 +430,19 @@ export function nudgeCandidates(
       if (!isWalkable(world, x, y)) continue
       if (blocked.has(key(x, y))) continue
       out.push([x, y])
+    }
+  }
+  // Widen to Chebyshev r=2 when the ring is packed (farms/stall near plaza)
+  if (out.length === 0) {
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== 2) continue
+        const x = ax + dx
+        const y = ay + dy
+        if (!isWalkable(world, x, y)) continue
+        if (blocked.has(key(x, y))) continue
+        out.push([x, y])
+      }
     }
   }
   return out
