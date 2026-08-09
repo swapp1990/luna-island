@@ -1,0 +1,337 @@
+import { createRng } from './rng'
+import type { Place, TerrainKind, Tile, WorldState } from './types'
+
+const WIDTH = 48
+const HEIGHT = 48
+
+/** Integer hash of (x, y, salt) → [0,1). Seeded via salt mixing. */
+function hash2(x: number, y: number, salt: number): number {
+  let n = (x * 374761393 + y * 668265263 + salt * 1274126177) | 0
+  n = Math.imul(n ^ (n >>> 13), 1274126177)
+  n = (n ^ (n >>> 16)) >>> 0
+  return n / 4294967296
+}
+
+function valueNoise2D(x: number, y: number, salt: number, freq: number): number {
+  const fx = x * freq
+  const fy = y * freq
+  const x0 = Math.floor(fx)
+  const y0 = Math.floor(fy)
+  const x1 = x0 + 1
+  const y1 = y0 + 1
+  const sx = fx - x0
+  const sy = fy - y0
+  // Smoothstep
+  const u = sx * sx * (3 - 2 * sx)
+  const v = sy * sy * (3 - 2 * sy)
+  const a = hash2(x0, y0, salt)
+  const b = hash2(x1, y0, salt)
+  const c = hash2(x0, y1, salt)
+  const d = hash2(x1, y1, salt)
+  const ab = a + (b - a) * u
+  const cd = c + (d - c) * u
+  return ab + (cd - ab) * v
+}
+
+function fbm2(x: number, y: number, salt: number): number {
+  // 2 octaves of value noise
+  const o0 = valueNoise2D(x, y, salt, 0.08)
+  const o1 = valueNoise2D(x, y, salt + 101, 0.16)
+  return o0 * 0.65 + o1 * 0.35
+}
+
+function idx(x: number, y: number): number {
+  return y * WIDTH + x
+}
+
+function classify(elevation: number, forestNoise: number): { kind: TerrainKind; walkable: boolean } {
+  if (elevation < 0.3) return { kind: 'water', walkable: false }
+  if (elevation < 0.36) return { kind: 'sand', walkable: true }
+  if (elevation > 0.78) return { kind: 'rock', walkable: false }
+  if (forestNoise > 0.55) return { kind: 'forest', walkable: true }
+  return { kind: 'grass', walkable: true }
+}
+
+function largestGrassRegion(tiles: Tile[]): Array<[number, number]> {
+  const visited = new Uint8Array(WIDTH * HEIGHT)
+  let best: Array<[number, number]> = []
+
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const i = idx(x, y)
+      if (visited[i]) continue
+      const t = tiles[i]!
+      if (t.kind !== 'grass') {
+        visited[i] = 1
+        continue
+      }
+      const region: Array<[number, number]> = []
+      const stack: Array<[number, number]> = [[x, y]]
+      visited[i] = 1
+      while (stack.length) {
+        const [cx, cy] = stack.pop()!
+        region.push([cx, cy])
+        const neighbors: Array<[number, number]> = [
+          [cx + 1, cy],
+          [cx - 1, cy],
+          [cx, cy + 1],
+          [cx, cy - 1],
+        ]
+        for (const [nx, ny] of neighbors) {
+          if (nx < 0 || ny < 0 || nx >= WIDTH || ny >= HEIGHT) continue
+          const ni = idx(nx, ny)
+          if (visited[ni]) continue
+          if (tiles[ni]!.kind !== 'grass') {
+            visited[ni] = 1
+            continue
+          }
+          visited[ni] = 1
+          stack.push([nx, ny])
+        }
+      }
+      if (region.length > best.length) best = region
+    }
+  }
+  return best
+}
+
+function inBounds(x: number, y: number): boolean {
+  return x >= 0 && y >= 0 && x < WIDTH && y < HEIGHT
+}
+
+function isWalkableGrass(tiles: Tile[], x: number, y: number): boolean {
+  if (!inBounds(x, y)) return false
+  const t = tiles[idx(x, y)]!
+  return t.walkable && t.kind === 'grass'
+}
+
+export function generateWorld(seed: number): WorldState {
+  const rng = createRng(seed)
+  // Derive noise salts from rng so seed fully controls island
+  const elevSalt = (rng.int(0xffffffff) ^ (seed * 0x9e3779b9)) >>> 0
+  const forestSalt = (rng.int(0xffffffff) ^ 0x85ebca6b) >>> 0
+
+  const cx = (WIDTH - 1) / 2
+  const cy = (HEIGHT - 1) / 2
+  const maxDist = Math.sqrt(cx * cx + cy * cy)
+
+  const tiles: Tile[] = new Array(WIDTH * HEIGHT)
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const dx = (x - cx) / maxDist
+      const dy = (y - cy) / maxDist
+      const radial = 1 - Math.sqrt(dx * dx + dy * dy)
+      const noise = fbm2(x, y, elevSalt)
+      // Combine radial falloff with noise
+      const elevation = Math.max(0, Math.min(1, radial * 0.72 + noise * 0.38 - 0.05))
+      const forestNoise = fbm2(x + 50, y + 50, forestSalt)
+      const { kind, walkable } = classify(elevation, forestNoise)
+      tiles[idx(x, y)] = { x, y, kind, walkable, elevation }
+    }
+  }
+
+  // Village placement
+  const grassRegion = largestGrassRegion(tiles)
+  const places: Place[] = []
+  if (grassRegion.length === 0) {
+    return {
+      seed,
+      tick: 0,
+      width: WIDTH,
+      height: HEIGHT,
+      tiles,
+      places,
+      agents: [],
+    }
+  }
+
+  // Centroid of largest grass region
+  let sx = 0
+  let sy = 0
+  for (const [x, y] of grassRegion) {
+    sx += x
+    sy += y
+  }
+  const gcx = Math.round(sx / grassRegion.length)
+  const gcy = Math.round(sy / grassRegion.length)
+
+  // Snap plaza to nearest grass in region
+  let plazaX = gcx
+  let plazaY = gcy
+  {
+    let bestD = Infinity
+    for (const [x, y] of grassRegion) {
+      const d = (x - gcx) * (x - gcx) + (y - gcy) * (y - gcy)
+      if (d < bestD) {
+        bestD = d
+        plazaX = x
+        plazaY = y
+      }
+    }
+  }
+
+  places.push({ id: 'plaza-0', kind: 'plaza', x: plazaX, y: plazaY })
+
+  // Clear 2-tile radius around plaza (force grass walkable, keep non-water)
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      const px = plazaX + dx
+      const py = plazaY + dy
+      if (!inBounds(px, py)) continue
+      const t = tiles[idx(px, py)]!
+      if (t.kind === 'water') continue
+      t.kind = 'grass'
+      t.walkable = true
+    }
+  }
+
+  // Well adjacent to plaza (prefer +1,0 then others)
+  const wellOffsets: Array<[number, number]> = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [-1, 1],
+    [1, -1],
+    [-1, -1],
+  ]
+  let wellPlaced = false
+  for (const [ox, oy] of wellOffsets) {
+    const wx = plazaX + ox
+    const wy = plazaY + oy
+    if (isWalkableGrass(tiles, wx, wy)) {
+      places.push({ id: 'well-0', kind: 'well', x: wx, y: wy })
+      wellPlaced = true
+      break
+    }
+  }
+  if (!wellPlaced) {
+    places.push({ id: 'well-0', kind: 'well', x: plazaX, y: plazaY })
+  }
+
+  // 10 homes in a loose ring radius 3–5
+  const occupied = new Set<string>()
+  occupied.add(`${plazaX},${plazaY}`)
+  for (const p of places) occupied.add(`${p.x},${p.y}`)
+
+  const homeCandidates: Array<[number, number]> = []
+  for (let r = 3; r <= 5; r++) {
+    for (let angle = 0; angle < 32; angle++) {
+      const rad = (angle / 32) * Math.PI * 2
+      const hx = Math.round(plazaX + Math.cos(rad) * r)
+      const hy = Math.round(plazaY + Math.sin(rad) * r)
+      if (!isWalkableGrass(tiles, hx, hy)) continue
+      const key = `${hx},${hy}`
+      if (occupied.has(key)) continue
+      // keep some spacing from plaza clear zone is ok
+      homeCandidates.push([hx, hy])
+    }
+  }
+  // Deterministic order: sort by angle then distance
+  homeCandidates.sort((a, b) => {
+    const aa = Math.atan2(a[1] - plazaY, a[0] - plazaX)
+    const ab = Math.atan2(b[1] - plazaY, b[0] - plazaX)
+    if (aa !== ab) return aa - ab
+    const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
+    const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
+    return da - db
+  })
+  // Dedup
+  const seenHomes = new Set<string>()
+  const uniqueHomes: Array<[number, number]> = []
+  for (const h of homeCandidates) {
+    const key = `${h[0]},${h[1]}`
+    if (seenHomes.has(key)) continue
+    seenHomes.add(key)
+    uniqueHomes.push(h)
+  }
+
+  let homeCount = 0
+  for (const [hx, hy] of uniqueHomes) {
+    if (homeCount >= 10) break
+    // spacing: no home within 1 tile of another home
+    let tooClose = false
+    for (const p of places) {
+      if (p.kind !== 'home') continue
+      if (Math.abs(p.x - hx) + Math.abs(p.y - hy) < 2) {
+        tooClose = true
+        break
+      }
+    }
+    if (tooClose) continue
+    places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
+    occupied.add(`${hx},${hy}`)
+    homeCount++
+  }
+
+  // Fallback: fill remaining homes from grass region via rng
+  if (homeCount < 10) {
+    const shuffled = grassRegion.slice()
+    // Fisher-Yates with sim rng
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = rng.int(i + 1)
+      const tmp = shuffled[i]!
+      shuffled[i] = shuffled[j]!
+      shuffled[j] = tmp
+    }
+    for (const [hx, hy] of shuffled) {
+      if (homeCount >= 10) break
+      const key = `${hx},${hy}`
+      if (occupied.has(key)) continue
+      if (!isWalkableGrass(tiles, hx, hy)) continue
+      const dist = Math.sqrt((hx - plazaX) ** 2 + (hy - plazaY) ** 2)
+      if (dist < 3 || dist > 8) continue
+      places.push({ id: `home-${homeCount}`, kind: 'home', x: hx, y: hy })
+      occupied.add(key)
+      homeCount++
+    }
+  }
+
+  // 8 berry-bushes on grass/forest, 4–12 tiles from plaza
+  const bushCandidates: Array<[number, number]> = []
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const t = tiles[idx(x, y)]!
+      if (t.kind !== 'grass' && t.kind !== 'forest') continue
+      const dist = Math.sqrt((x - plazaX) ** 2 + (y - plazaY) ** 2)
+      if (dist < 4 || dist > 12) continue
+      const key = `${x},${y}`
+      if (occupied.has(key)) continue
+      bushCandidates.push([x, y])
+    }
+  }
+  // Shuffle with rng, pick 8 with spacing
+  for (let i = bushCandidates.length - 1; i > 0; i--) {
+    const j = rng.int(i + 1)
+    const tmp = bushCandidates[i]!
+    bushCandidates[i] = bushCandidates[j]!
+    bushCandidates[j] = tmp
+  }
+  let bushCount = 0
+  for (const [bx, by] of bushCandidates) {
+    if (bushCount >= 8) break
+    let tooClose = false
+    for (const p of places) {
+      if (p.kind !== 'berry-bush') continue
+      if (Math.abs(p.x - bx) + Math.abs(p.y - by) < 2) {
+        tooClose = true
+        break
+      }
+    }
+    if (tooClose) continue
+    places.push({ id: `bush-${bushCount}`, kind: 'berry-bush', x: bx, y: by })
+    occupied.add(`${bx},${by}`)
+    bushCount++
+  }
+
+  return {
+    seed,
+    tick: 0,
+    width: WIDTH,
+    height: HEIGHT,
+    tiles,
+    places,
+    agents: [],
+  }
+}
