@@ -179,12 +179,29 @@ export function buildTickerRows(
     if (ev.type === 'mind:reflection') {
       const name = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
       const t = toSimTime(ev.tick)
-      const pronoun = name === 'Mira' ? 'her' : name === 'Joss' || name === 'Wren' ? 'their' : 'their'
+      const pronoun =
+        name === 'Mira' || name === 'Pia' || name === 'Sela' || name === 'Ines' || name === 'Nia'
+          ? 'her'
+          : 'their'
       rows.push({
         key: `mind-reflect-${ev.seq}`,
         tick: ev.tick,
         agentId: ev.agentId ?? null,
         text: `${pad2(t.hour)}:${pad2(t.minute)} · 💭 ${name} reflected on ${pronoun} day`,
+      })
+      continue
+    }
+
+    // Conversation start: first utterance (turn 0) of a conversation
+    if (ev.type === 'mind:say' && (ev.data?.turn === 0 || ev.data?.turn === '0')) {
+      const nameA = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const nameB = (ev.data?.partnerName as string) ?? (ev.data?.partnerId as string) ?? 'Someone'
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `mind-talk-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · 💬 ${nameA} & ${nameB} are talking`,
       })
       continue
     }
@@ -224,8 +241,21 @@ export function buildTickerRows(
     }
   }
 
-  // Newest on top, retain ~40
-  return rows.reverse().slice(0, 40)
+  // Newest on top among peers. Prefer sparse high-signal mind rows (💭 reflections,
+  // 💬 talk starts, budget) so they are not crowded out of the visible strip
+  // (only ~6 rows render) by action:start or 🧠 decision spam.
+  const newestFirst = rows.reverse()
+  const isPriority = (r: TickerRow) =>
+    r.key.startsWith('mind-reflect-') ||
+    r.key.startsWith('mind-talk-') ||
+    r.key.startsWith('mind-budget-')
+  const highlights = newestFirst.filter(isPriority)
+  const rest = newestFirst.filter((r) => !isPriority(r))
+  const cap = 40
+  // Priority block first (so the first 6 visible include 💭/💬), then other news
+  const keptHighlights = highlights.slice(0, Math.min(highlights.length, cap))
+  const room = Math.max(0, cap - keptHighlights.length)
+  return [...keptHighlights, ...rest.slice(0, room)].slice(0, cap)
 }
 
 export function Ticker(props: {

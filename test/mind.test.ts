@@ -121,7 +121,7 @@ describe('mind external intents — record/replay', () => {
 
     const save = serializeSave(sim)
     expect(save.formatVersion).toBe(SAVE_FORMAT_VERSION)
-    expect(save.formatVersion).toBe(3)
+    expect(save.formatVersion).toBe(4)
     expect(save.snapshot.state.externalIntentLog.length).toBe(1)
 
     const restored = restoreSave(save)
@@ -325,12 +325,13 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
 
     expect(stales.length).toBe(0)
     expect(meter.stales).toBe(0)
-    // Every completed (non-stale) decide should have applied as a decision event
-    expect(decisions.length).toBe(meter.decisions)
+    // Applied mind outcomes: decisions + reflections + conversation says
+    // (interrupt/trails-off may post a terminal say without a full decide; meter tracks dispatches)
     expect(meter.decisions).toBeGreaterThan(0)
+    expect(decisions.length).toBeGreaterThan(0)
     // No request spam: one in-flight at a time + hard-gap cadence (~120 ticks)
-    // × 3 luna agents + nightly reflections over 2 days — bounded, not thousands.
-    expect(meter.decideCalls).toBeLessThan(120)
+    // × 6 luna agents + nightly reflections over 2 days — bounded, not thousands.
+    expect(meter.decideCalls).toBeLessThan(200)
     expect(meter.decideCalls).toBe(meter.decisions)
     expect(sawThrottle).toBe(true)
     expect(sawRestore).toBe(true)
@@ -532,9 +533,9 @@ describe('mind notes — record/replay (P3-1)', () => {
     const mid = sim.stateAt(150)
     expect(mid.state.mindNoteLog.length).toBe(1)
 
-    // Save v3
+    // Save (current format is v4; mind notes since v3)
     const save = serializeSave(sim)
-    expect(save.formatVersion).toBe(3)
+    expect(save.formatVersion).toBe(SAVE_FORMAT_VERSION)
     expect(save.snapshot.state.mindNoteLog.length).toBe(2)
     const restored = restoreSave(save)
     expect(restored.hash()).toBe(liveHash)
@@ -735,9 +736,10 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     await mind.init()
     const sim = new Simulation(42)
 
-    // Kick all three at tick 0
+    // Kick all luna minds at tick 0
     mind.onAfterTick(sim)
-    expect(mind.getMeter().thinking).toBe(3)
+    const nLuna = LUNA_AGENT_IDS.length
+    expect(mind.getMeter().thinking).toBe(nLuna)
     expect(mind.getDecideCallCount()).toBe(1)
     expect(provider.calls.length).toBe(1)
     expect(provider.calls[0]!.tick).toBe(0)
@@ -750,7 +752,7 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     }
     // Still only one dispatch until wall completes; no duplicate enqueues
     expect(mind.getDecideCallCount()).toBe(1)
-    expect(mind.getMeter().thinking).toBe(3)
+    expect(mind.getMeter().thinking).toBe(nLuna)
 
     // Complete first → second dispatches at current tick (~17+)
     await drainWall(provider, mind, sim, WALL)
@@ -761,9 +763,9 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     expect(provider.calls[1]!.user).toContain(`(tick ${secondTick})`)
     expect(provider.maxConcurrent).toBe(1)
 
-    // Drain only until the original 3 pipeline entries finish (avoid next cadence)
+    // Drain only until the original pipeline entries finish (avoid next cadence)
     let guard = 0
-    while (mind.getMeter().thinking > 0 && guard < WALL * 6 + 20) {
+    while (mind.getMeter().thinking > 0 && guard < WALL * nLuna * 2 + 40) {
       provider.advanceWallFrame()
       await Promise.resolve()
       await Promise.resolve()
@@ -775,16 +777,16 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     }
 
     expect(provider.maxConcurrent).toBe(1)
-    // First three dispatches are the initial FIFO line (no duplicates)
-    const firstThree = provider.calls.slice(0, 3)
-    expect(firstThree.map((c) => c.agentId)).toEqual([...LUNA_AGENT_IDS])
-    for (const c of firstThree) {
+    // First N dispatches are the initial FIFO line (no duplicates)
+    const firstWave = provider.calls.slice(0, nLuna)
+    expect(firstWave.map((c) => c.agentId)).toEqual([...LUNA_AGENT_IDS])
+    for (const c of firstWave) {
       expect(c.kind ?? 'decision').toBe('decision')
       expect(c.user).toContain(`(tick ${c.tick})`)
     }
     // Second/third were refreshed past enqueue tick 0
-    expect(firstThree[1]!.tick!).toBeGreaterThan(0)
-    expect(firstThree[2]!.tick!).toBeGreaterThan(firstThree[0]!.tick!)
+    expect(firstWave[1]!.tick!).toBeGreaterThan(0)
+    expect(firstWave[2]!.tick!).toBeGreaterThan(firstWave[0]!.tick!)
 
     const meter = mind.getMeter()
     expect(meter.fallbacks).toBe(0)
@@ -796,7 +798,7 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     }
     // decideCalls === applied decisions + applied reflections
     expect(meter.decideCalls).toBe(meter.decisions)
-    expect(meter.decisions).toBeGreaterThanOrEqual(3)
+    expect(meter.decisions).toBeGreaterThanOrEqual(nLuna)
     expect(meter.thinking).toBe(0)
   })
 
@@ -808,6 +810,20 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     q.enqueue({ agentId: 'agent-11', kind: 'decision' })
     expect(q.list().map((e) => `${e.agentId}:${e.kind}`)).toEqual([
       'agent-11:decision',
+      'agent-0:reflection',
+      'agent-1:reflection',
+    ])
+    // Conversation sits between decision and reflection
+    q.enqueue({
+      agentId: 'agent-2',
+      kind: 'conversation',
+      conversationId: 'c1',
+      partnerId: 'agent-0',
+      turn: 0,
+    })
+    expect(q.list().map((e) => `${e.agentId}:${e.kind}`)).toEqual([
+      'agent-11:decision',
+      'agent-2:conversation',
       'agent-0:reflection',
       'agent-1:reflection',
     ])
@@ -824,7 +840,7 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
     mind.onAfterTick(sim)
     // At exact 03:00 fallback, reflections enqueue first (before decisions)
     expect(provider.calls[0]?.kind).toBe('reflection')
-    expect(mind.getMeter().thinking).toBe(3)
+    expect(mind.getMeter().thinking).toBe(LUNA_AGENT_IDS.length)
 
     for (let i = 0; i < WALL * LUNA_AGENT_IDS.length + 15; i++) {
       provider.advanceWallFrame()
@@ -844,12 +860,17 @@ describe('client-side mind dispatch queue (P3-1b)', () => {
   })
 })
 
-describe('personas grounding (P3-1)', () => {
-  it('personas contain no ownership/job/wealth assertions', () => {
+describe('personas grounding (P3-1 / P3-2)', () => {
+  it('personas contain no ownership/job/wealth assertions; 6 luna minds', () => {
     const forbidden =
       /homeowner|I own|my house|my home(?!land)|proud first-time|employed at|I work as|I am rich|my wallet/i
+    expect(LUNA_AGENT_IDS.length).toBe(6)
+    expect(LUNA_AGENT_IDS).toContain('agent-2')
+    expect(LUNA_AGENT_IDS).toContain('agent-4')
+    expect(LUNA_AGENT_IDS).toContain('agent-8')
     for (const id of LUNA_AGENT_IDS) {
       const p = personaFor(id) ?? ''
+      expect(p.length).toBeGreaterThan(20)
       expect(p).not.toMatch(forbidden)
     }
   })

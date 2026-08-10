@@ -205,6 +205,18 @@ export interface MindNoteRecord {
   meta: MindNoteMeta
 }
 
+/** One applied conversation utterance (recorded for replay; reason-free — text IS content). */
+export interface SayRecord {
+  tick: Tick
+  conversationId: string
+  agentId: string
+  partnerId: string
+  turn: number
+  text: string
+  /** True when this utterance ends the conversation. */
+  done: boolean
+}
+
 /** Per-agent mind counters (snapshots / saves; not read by UtilityBrain). */
 export interface AgentMindStats {
   decisions: number
@@ -247,6 +259,11 @@ export interface WorldState {
    * Part of snapshots, saves, and the state hash (mirrors externalIntentLog).
    */
   mindNoteLog: MindNoteRecord[]
+  /**
+   * Applied conversation utterances — live = record, re-sim = playback.
+   * Part of snapshots, saves, and the state hash.
+   */
+  sayLog: SayRecord[]
   /** Sparse per-agent mind counters (optional; empty object when none). */
   mindStats: Record<string, AgentMindStats>
 }

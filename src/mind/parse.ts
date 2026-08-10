@@ -29,6 +29,10 @@ export type ParseReflectionResult =
   | { ok: true; notes: string[] }
   | { ok: false; error: string }
 
+export type ParseSayResult =
+  | { ok: true; say: string; done: boolean }
+  | { ok: false; error: string }
+
 /** Strip markdown fences and extract first {...} JSON object. */
 export function extractJsonObject(text: string): string | null {
   let s = text.trim()
@@ -92,6 +96,40 @@ export function parseMindJson(text: string): ParseMindResult {
       reasoning: obj.reasoning,
     },
   }
+}
+
+/**
+ * Parse conversation turn: {"say":"…","done":bool} — say ≤140 chars.
+ */
+export function parseSayJson(text: string): ParseSayResult {
+  const jsonStr = extractJsonObject(text)
+  if (!jsonStr) {
+    return { ok: false, error: 'no JSON object in response' }
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(jsonStr)
+  } catch {
+    return { ok: false, error: 'invalid JSON' }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'JSON root must be object' }
+  }
+  const obj = raw as Record<string, unknown>
+  if (typeof obj.say !== 'string') {
+    return { ok: false, error: 'missing say string' }
+  }
+  const say = obj.say.trim()
+  if (say.length === 0) {
+    return { ok: false, error: 'empty say' }
+  }
+  if (say.length > 140) {
+    return { ok: false, error: 'say exceeds 140 chars' }
+  }
+  if (typeof obj.done !== 'boolean') {
+    return { ok: false, error: 'missing done boolean' }
+  }
+  return { ok: true, say, done: obj.done }
 }
 
 /**

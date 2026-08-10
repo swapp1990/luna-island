@@ -1,10 +1,10 @@
 import { ensureMindFields, Simulation, type DayArchiveMeta, type SimSnapshot } from './sim'
 import type { EconomyStat, SimEvent, Tick, WorldState } from './types'
 
-/** Current on-disk save schema version (v3 adds mindNoteLog; v2 had externalIntentLog + mindStats). */
-export const SAVE_FORMAT_VERSION = 3 as const
+/** Current on-disk save schema version (v4 adds sayLog; v3 mindNoteLog; v2 externalIntentLog + mindStats). */
+export const SAVE_FORMAT_VERSION = 4 as const
 
-/** Oldest format we can still load (upgrades to v3 with empty mind fields as needed). */
+/** Oldest format we can still load (upgrades with empty mind fields as needed). */
 export const SAVE_FORMAT_MIN_VERSION = 1 as const
 
 /** Serializable world snapshot at head (reuses SimSnapshot shape without forcing full event copy at top). */
@@ -105,7 +105,7 @@ export function serializeSave(sim: Simulation): SaveGame {
 
 /**
  * Rebuild a Simulation from a save payload.
- * Accepts formatVersion 1–3 (upgrade: empty mind fields as needed).
+ * Accepts formatVersion 1–4 (upgrade: empty mind fields as needed).
  * Rejects other versions / structural invalidity without half-loading.
  */
 export function restoreSave(raw: unknown): Simulation {
@@ -113,7 +113,7 @@ export function restoreSave(raw: unknown): Simulation {
     throw new SaveFormatError('Save is not an object')
   }
   const ver = raw.formatVersion
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== SAVE_FORMAT_VERSION) {
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== SAVE_FORMAT_VERSION) {
     throw new SaveFormatError(
       `Unsupported save format version: ${String(raw.formatVersion)} (expected ${SAVE_FORMAT_MIN_VERSION}–${SAVE_FORMAT_VERSION})`,
     )
@@ -154,10 +154,11 @@ export function restoreSave(raw: unknown): Simulation {
   // Prefer top-level events (full timeline); fall back to head snapshot events
   const events = (raw.events as SimEvent[]).map(cloneEvent)
   const head = cloneSaveSnapshot(raw.snapshot as SaveSnapshot)
-  // v1/v2 → v3: ensure mind fields (cloneSaveSnapshot already does; belt-and-suspenders)
+  // v1–v3 → v4: ensure mind fields (cloneSaveSnapshot already does; belt-and-suspenders)
   ensureMindFields(head.state)
-  // v1/v2 loads: empty note log when missing
+  // Older loads: empty logs when missing
   if (!Array.isArray(head.state.mindNoteLog)) head.state.mindNoteLog = []
+  if (!Array.isArray(head.state.sayLog)) head.state.sayLog = []
   // Ensure head state tick matches declared tick when present
   if (head.state.tick !== raw.tick) {
     head.state.tick = raw.tick as number

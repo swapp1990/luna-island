@@ -14,6 +14,9 @@ const ZZZ_TTL_MS = 2200
 const ZZZ_POOL = 12
 const HEART_TTL_MS = 1800
 const HEART_POOL = 6
+/** Speech bubble readable ~4s real-time (or until next utterance for same agent). */
+const SPEECH_TTL_MS = 4000
+const SPEECH_POOL = 8
 
 const HOME_BILL: Record<'wood' | 'stone', number> = { wood: 12, stone: 6 }
 
@@ -84,8 +87,15 @@ function project(
   return { x, y, behind }
 }
 
-/** Luna agent ids get a subtle 🧠 prefix on the status bubble. */
-const LUNA_BUBBLE_IDS = new Set(['agent-0'])
+/** Luna agent ids get a subtle 🧠 prefix on the status bubble (subset for visual cue). */
+const LUNA_BUBBLE_IDS = new Set([
+  'agent-0',
+  'agent-1',
+  'agent-2',
+  'agent-4',
+  'agent-8',
+  'agent-11',
+])
 
 /** Destination / action micro-status for the selected-agent bubble (derived, no sim state). */
 export function formatStatusBubble(
@@ -363,6 +373,14 @@ interface HeartSlot {
   active: boolean
 }
 
+interface SpeechSlot {
+  el: HTMLElement
+  textEl: HTMLElement
+  agentId: string | null
+  born: number
+  active: boolean
+}
+
 export interface OverlaysHandle {
   /** Every frame: project bubbles to screen. */
   updateFrame: (args: {
@@ -389,6 +407,8 @@ export interface OverlaysHandle {
   ) => void
   /** Twin-hearts float over a pair (relationship:close, live-only). */
   pushHearts: (agentIdA: string, agentIdB: string, now: number) => void
+  /** Chat speech bubble above speaker (~4s or until next say). */
+  pushSpeech: (agentId: string, text: string, now: number) => void
   /** Hover tooltip (HTML, near cursor). */
   setTooltip: (text: string | null, clientX: number, clientY: number) => void
   dispose: () => void
@@ -426,6 +446,27 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
 
   let lastStatusText = ''
   const proj = new THREE.Vector3()
+
+  // Speech bubbles (conversation utterances)
+  const speechPool: SpeechSlot[] = []
+  for (let i = 0; i < SPEECH_POOL; i++) {
+    const el = document.createElement('div')
+    el.dataset.speechBubble = String(i)
+    el.dataset.testid = i === 0 ? 'speech-bubble' : `speech-bubble-${i}`
+    applyBubbleBase(el)
+    el.style.maxWidth = '180px'
+    el.style.whiteSpace = 'normal'
+    el.style.textAlign = 'center'
+    el.style.background = '#2a3550ee'
+    el.style.border = '1px solid rgba(180,200,255,0.28)'
+    const textEl = document.createElement('span')
+    textEl.dataset.content = '1'
+    el.appendChild(textEl)
+    ensureTailStyles(el)
+    el.style.display = 'none'
+    root.appendChild(el)
+    speechPool.push({ el, textEl, agentId: null, born: 0, active: false })
+  }
 
   // Pooled critical bubbles
   const pool: CriticalSlot[] = []
@@ -664,6 +705,39 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     slot.el.style.opacity = '1'
   }
 
+  const pushSpeech = (agentId: string, text: string, now: number) => {
+    // Replace existing speech for this agent (queue-safe: one bubble per speaker)
+    for (const s of speechPool) {
+      if (s.active && s.agentId === agentId) {
+        s.active = false
+        s.agentId = null
+        s.el.style.display = 'none'
+      }
+    }
+    let slot = speechPool.find((s) => !s.active)
+    if (!slot) {
+      let oldest: SpeechSlot | null = null
+      for (const s of speechPool) {
+        if (!s.active) continue
+        if (!oldest || s.born < oldest.born) oldest = s
+      }
+      if (oldest) {
+        oldest.active = false
+        oldest.agentId = null
+        oldest.el.style.display = 'none'
+        slot = oldest
+      }
+    }
+    if (!slot) return
+    slot.active = true
+    slot.agentId = agentId
+    slot.born = now
+    const clipped = text.length > 140 ? `${text.slice(0, 137)}…` : text
+    slot.textEl.textContent = clipped
+    slot.el.style.display = 'block'
+    slot.el.style.opacity = '1'
+  }
+
   const pushHearts = (agentIdA: string, agentIdB: string, now: number) => {
     let slot: HeartSlot | undefined = heartPool.find((s) => !s.active)
     if (!slot) {
@@ -731,11 +805,52 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       args
     const time = args.time ?? null
 
-    // Status bubble
+    // Speech bubbles (before status — may hide status for speaker)
+    const byId = new Map(agents.map((a) => [a.id, a]))
+    const speechActiveIds = new Set<string>()
+    for (const slot of speechPool) {
+      if (!slot.active || !slot.agentId) continue
+      const age = now - slot.born
+      if (age >= SPEECH_TTL_MS) {
+        slot.active = false
+        slot.agentId = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      const agent = byId.get(slot.agentId)
+      if (!agent) {
+        slot.active = false
+        slot.agentId = null
+        slot.el.style.display = 'none'
+        continue
+      }
+      speechActiveIds.add(slot.agentId)
+      const pos = interpPos(agent, prev, alpha)
+      const screen = project(
+        pos.x,
+        HEAD_Y + BUBBLE_LIFT * 1.05,
+        pos.z,
+        camera,
+        width,
+        height,
+        proj,
+      )
+      if (screen.behind) {
+        slot.el.style.opacity = '0'
+        continue
+      }
+      const fadeStart = SPEECH_TTL_MS - 500
+      const opacity = age > fadeStart ? 1 - (age - fadeStart) / 500 : 1
+      slot.el.style.display = 'block'
+      slot.el.style.opacity = String(Math.max(0, opacity))
+      slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
+    }
+
+    // Status bubble (hidden while this agent has a speech bubble)
     const selected = selectedId
       ? agents.find((a) => a.id === selectedId)
       : undefined
-    if (!selected) {
+    if (!selected || (selectedId && speechActiveIds.has(selectedId))) {
       statusEl.style.opacity = '0'
       statusEl.style.display = 'none'
     } else {
@@ -765,7 +880,6 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     }
 
     // Critical bubbles
-    const byId = new Map(agents.map((a) => [a.id, a]))
     for (const slot of pool) {
       if (!slot.active || !slot.agentId) continue
       const age = now - slot.born
@@ -1037,5 +1151,13 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     if (tooltipEl.parentElement) tooltipEl.parentElement.removeChild(tooltipEl)
   }
 
-  return { updateFrame, pushCritical, pushToast, pushHearts, setTooltip, dispose }
+  return {
+    updateFrame,
+    pushCritical,
+    pushToast,
+    pushHearts,
+    pushSpeech,
+    setTooltip,
+    dispose,
+  }
 }

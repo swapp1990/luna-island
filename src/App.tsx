@@ -116,6 +116,7 @@ export function App() {
   const [mindNoteLog, setMindNoteLog] = useState<
     import('./sim/types').MindNoteRecord[]
   >([])
+  const [sayLog, setSayLog] = useState<import('./sim/types').SayRecord[]>([])
   const [stats, setStats] = useState<EconomyStat[]>([])
   const [following, setFollowing] = useState(false)
   const [scrubMin, setScrubMin] = useState(0)
@@ -155,6 +156,17 @@ export function App() {
           agentId: r.agentId,
           notes: r.notes.slice(),
           meta: { ...r.meta },
+        })),
+      )
+      setSayLog(
+        (sim.state.sayLog ?? []).map((r) => ({
+          tick: r.tick,
+          conversationId: r.conversationId,
+          agentId: r.agentId,
+          partnerId: r.partnerId,
+          turn: r.turn,
+          text: r.text,
+          done: r.done,
         })),
       )
       setStats(sim.state.stats.map((st) => ({ ...st })))
@@ -346,6 +358,86 @@ export function App() {
             setHud(loop.getState())
             apiRef.current?.syncFromLoop()
           },
+          /**
+           * E2e helper: pin two luna agents in socialize-standing proximity and
+           * advance until a conversation produces at least one mind:say (or maxTicks).
+           */
+          /** E2e/dev: count event types on the current view sim. */
+          countEventTypes: () => {
+            const loop = loopRef.current
+            if (!loop) return {} as Record<string, number>
+            const events = loop.getViewSim().getEvents()
+            const out: Record<string, number> = {}
+            for (const e of events) {
+              out[e.type] = (out[e.type] ?? 0) + 1
+            }
+            return out
+          },
+          seedConversation: (opts?: {
+            agentIdA?: string
+            agentIdB?: string
+            maxTicks?: number
+          }) => {
+            const live = liveRef.current
+            const loop = loopRef.current
+            if (!live || !loop) return { ok: false, says: 0 }
+            const idA = opts?.agentIdA ?? 'agent-0'
+            const idB = opts?.agentIdB ?? 'agent-1'
+            const maxTicks = opts?.maxTicks ?? 120
+            const plaza = live.state.places.find((p) => p.kind === 'plaza')
+            if (!plaza) return { ok: false, says: 0 }
+            const pin = () => {
+              const a = live.state.agents.find((x) => x.id === idA)
+              const b = live.state.agents.find((x) => x.id === idB)
+              if (!a || !b) return
+              a.x = plaza.x
+              a.y = plaza.y
+              b.x = plaza.x + 1
+              b.y = plaza.y
+              a.action = {
+                kind: 'socialize',
+                targetPlaceId: plaza.id,
+                targetX: plaza.x,
+                targetY: plaza.y,
+                reason: 'e2e socialize',
+              }
+              b.action = {
+                kind: 'socialize',
+                targetPlaceId: plaza.id,
+                targetX: plaza.x + 1,
+                targetY: plaza.y,
+                reason: 'e2e socialize',
+              }
+              a.action.path = undefined
+              b.action.path = undefined
+              a.pathIndex = 0
+              b.pathIndex = 0
+            }
+            for (let i = 0; i < maxTicks; i++) {
+              pin()
+              loop.ffwd(1)
+              pin()
+              const says = live.getEvents().filter((e) => e.type === 'mind:say').length
+              if (says >= 1) {
+                // Drain a few more ticks so transcript can grow + bubble applies
+                for (let j = 0; j < 12; j++) {
+                  pin()
+                  loop.ffwd(1)
+                  pin()
+                }
+                apiRef.current?.syncFromLoop()
+                return {
+                  ok: true,
+                  says: live.getEvents().filter((e) => e.type === 'mind:say').length,
+                }
+              }
+            }
+            apiRef.current?.syncFromLoop()
+            return {
+              ok: false,
+              says: live.getEvents().filter((e) => e.type === 'mind:say').length,
+            }
+          },
         },
       )
 
@@ -371,6 +463,17 @@ export function App() {
           agentId: r.agentId,
           notes: r.notes.slice(),
           meta: { ...r.meta },
+        })),
+      )
+      setSayLog(
+        (live.state.sayLog ?? []).map((r) => ({
+          tick: r.tick,
+          conversationId: r.conversationId,
+          agentId: r.agentId,
+          partnerId: r.partnerId,
+          turn: r.turn,
+          text: r.text,
+          done: r.done,
         })),
       )
       setStats(live.state.stats.map((st) => ({ ...st })))
@@ -651,6 +754,7 @@ export function App() {
               : null
           }
           mindNoteLog={mindNoteLog}
+          sayLog={sayLog}
           onToggleFollow={() => {
             const loop = loopRef.current
             if (!loop) return

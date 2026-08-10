@@ -5,6 +5,8 @@ import { SlotGrid } from './SlotGrid'
 import type { MindExchange } from '../mind/lunaBrain'
 import { isLunaAgent } from '../mind/personas'
 import { episodicMemories, reflectionMemories } from '../mind/memory'
+import { conversationsForAgent } from '../mind/conversation'
+import type { SayRecord } from '../sim/types'
 
 type TabId = 'status' | 'life' | 'people' | 'work' | 'mind'
 
@@ -104,6 +106,9 @@ function formatLogRow(ev: SimEvent): { tick: number; text: string } {
   } else if (ev.type === 'need:critical') {
     const need = (ev.data?.need as string) ?? 'need'
     what = `Critical ${need}`
+  } else if (ev.type === 'mind:say') {
+    const text = (ev.data?.text as string) ?? ''
+    what = `💬 "${text}"`
   }
   const reason = ev.reason && ev.type === 'action:start' ? ` — ${ev.reason}` : ''
   return { tick: ev.tick, text: `${when} — ${what}${reason}` }
@@ -202,16 +207,20 @@ export function Inspector(props: {
   lastExchange?: MindExchange | null
   /** Applied mind reflections (for Memories section). */
   mindNoteLog?: readonly MindNoteRecord[]
+  /** Applied conversation utterances (for Conversations section). */
+  sayLog?: readonly SayRecord[]
 }) {
   const { agent, events, replayTick, following, onToggleFollow, onClose } = props
   const dayStart = props.dayStartTick ?? 0
   const [tab, setTab] = useState<TabId>('status')
   const [exchangeOpen, setExchangeOpen] = useState(false)
+  const [openConvId, setOpenConvId] = useState<string | null>(null)
 
   // Reset to Status when selecting a different villager
   useEffect(() => {
     setTab('status')
     setExchangeOpen(false)
+    setOpenConvId(null)
   }, [agent?.id])
 
   const memoryRows = useMemo(() => {
@@ -233,10 +242,14 @@ export function Inspector(props: {
   const logEvents = events
     .filter(
       (e) =>
-        e.agentId === agent.id &&
         e.tick >= dayStart &&
         e.tick <= replayTick &&
-        (e.type === 'action:start' || e.type === 'action:end' || e.type === 'need:critical'),
+        (e.type === 'action:start' ||
+          e.type === 'action:end' ||
+          e.type === 'need:critical' ||
+          e.type === 'mind:say') &&
+        (e.agentId === agent.id ||
+          (e.type === 'mind:say' && e.data?.partnerId === agent.id)),
     )
     .slice()
     .reverse()
@@ -705,6 +718,107 @@ export function Inspector(props: {
                           ))}
                       </>
                     )}
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      opacity: 0.55,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Conversations
+                  </div>
+                  <div
+                    data-testid="mind-conversations"
+                    style={{
+                      maxHeight: 160,
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      marginBottom: 12,
+                    }}
+                  >
+                    {(() => {
+                      const convs = conversationsForAgent(
+                        agent.id,
+                        (props.sayLog ?? []).filter((r) => r.tick <= replayTick),
+                        props.agents ?? [],
+                      )
+                      if (convs.length === 0) {
+                        return (
+                          <div data-testid="mind-conversations-empty" style={{ opacity: 0.5 }}>
+                            No conversations yet
+                          </div>
+                        )
+                      }
+                      return convs.map((c) => {
+                        const t = toSimTime(c.startedTick)
+                        const when = `D${t.day} ${pad2s(t.hour)}:${pad2s(t.minute)}`
+                        const open = openConvId === c.conversationId
+                        return (
+                          <div
+                            key={c.conversationId}
+                            data-testid="mind-conversation-row"
+                            data-conversation-id={c.conversationId}
+                            style={{
+                              fontSize: 11,
+                              borderRadius: 6,
+                              background: 'rgba(255,255,255,0.04)',
+                              border: '1px solid rgba(255,255,255,0.06)',
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <button
+                              type="button"
+                              data-testid="mind-conversation-toggle"
+                              onClick={() =>
+                                setOpenConvId(open ? null : c.conversationId)
+                              }
+                              style={{
+                                display: 'block',
+                                width: '100%',
+                                textAlign: 'left',
+                                padding: '5px 7px',
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#e8ecf4',
+                                cursor: 'pointer',
+                                fontSize: 11,
+                              }}
+                            >
+                              {open ? '▾' : '▸'} 💬 {c.partnerName} · {when}
+                            </button>
+                            {open && (
+                              <div
+                                data-testid="mind-conversation-transcript"
+                                style={{
+                                  padding: '4px 8px 8px',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: 3,
+                                  borderTop: '1px solid rgba(255,255,255,0.06)',
+                                }}
+                              >
+                                {c.turns.map((turn, i) => (
+                                  <div
+                                    key={`${turn.turn}-${i}`}
+                                    data-testid="mind-conversation-line"
+                                    style={{ opacity: 0.9, lineHeight: 1.35 }}
+                                  >
+                                    <strong>{turn.name}:</strong> {turn.text}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })
+                    })()}
                   </div>
 
                   <div

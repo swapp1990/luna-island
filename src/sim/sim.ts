@@ -40,6 +40,7 @@ import type {
   OwnerId,
   Place,
   Rng,
+  SayRecord,
   SimEvent,
   Tick,
   WorldState,
@@ -217,6 +218,23 @@ function cloneMindNoteLog(log: MindNoteRecord[] | undefined): MindNoteRecord[] {
   }))
 }
 
+function cloneSayRecord(r: SayRecord): SayRecord {
+  return {
+    tick: r.tick,
+    conversationId: r.conversationId,
+    agentId: r.agentId,
+    partnerId: r.partnerId,
+    turn: r.turn,
+    text: r.text,
+    done: r.done,
+  }
+}
+
+function cloneSayLog(log: SayRecord[] | undefined): SayRecord[] {
+  if (!log || log.length === 0) return []
+  return log.map(cloneSayRecord)
+}
+
 function cloneMindStats(
   stats: Record<string, AgentMindStats> | undefined,
 ): Record<string, AgentMindStats> {
@@ -251,14 +269,16 @@ function deepCloneWorld(state: WorldState): WorldState {
     sympathyMet: { ...(state.sympathyMet ?? {}) },
     externalIntentLog: cloneExternalIntentLog(state.externalIntentLog),
     mindNoteLog: cloneMindNoteLog(state.mindNoteLog),
+    sayLog: cloneSayLog(state.sayLog),
     mindStats: cloneMindStats(state.mindStats),
   }
 }
 
-/** Ensure older snapshots / v1–v2 saves have the Phase-3 mind fields. */
+/** Ensure older snapshots / v1–v3 saves have the Phase-3 mind fields. */
 export function ensureMindFields(state: WorldState): void {
   if (!state.externalIntentLog) state.externalIntentLog = []
   if (!state.mindNoteLog) state.mindNoteLog = []
+  if (!state.sayLog) state.sayLog = []
   if (!state.mindStats) state.mindStats = {}
 }
 
@@ -409,6 +429,17 @@ export class Simulation {
     meta: MindNoteMeta
   }> = []
   /**
+   * Live inbox: conversation utterances posted mid-tick, applied next step.
+   */
+  private sayInbox: Array<{
+    conversationId: string
+    agentId: string
+    partnerId: string
+    turn: number
+    text: string
+    done: boolean
+  }> = []
+  /**
    * Full intent log for re-sim playback (set on forks via stateAt).
    * When non-null, intents at the current tick are re-applied from this list
    * instead of consulting the brain for that agent.
@@ -420,6 +451,10 @@ export class Simulation {
    * instead of consulting any provider.
    */
   private notePlayback: MindNoteRecord[] | null = null
+  /**
+   * Full say log for re-sim playback (set on forks via stateAt).
+   */
+  private sayPlayback: SayRecord[] | null = null
   /** Agents who received an external intent this tick (skip brain redecide). */
   private externalAppliedThisTick = new Set<string>()
 
@@ -435,6 +470,7 @@ export class Simulation {
       skipInitEvents?: boolean
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
+      sayPlayback?: SayRecord[] | null
     },
   )
   constructor(
@@ -448,6 +484,7 @@ export class Simulation {
       skipInitEvents?: boolean
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
+      sayPlayback?: SayRecord[] | null
     },
   ) {
     this.snapshots = opts?.snapshots ?? new SnapshotStore()
@@ -455,6 +492,7 @@ export class Simulation {
     this.rng = createRng(seed)
     this.intentPlayback = opts?.intentPlayback ?? null
     this.notePlayback = opts?.notePlayback ?? null
+    this.sayPlayback = opts?.sayPlayback ?? null
     if (opts?.dayArchives) {
       this.dayArchives = opts.dayArchives.map((a) => ({
         day: a.day,
@@ -519,6 +557,28 @@ export class Simulation {
       agentId,
       notes: notes.map((n) => String(n)),
       meta: cloneMindNoteMeta(meta),
+    })
+  }
+
+  /**
+   * Queue a conversation utterance for application at the start of the next step.
+   * Live path only — replays use sayPlayback / sayLog.
+   */
+  postSay(
+    conversationId: string,
+    agentId: string,
+    partnerId: string,
+    turn: number,
+    text: string,
+    done: boolean,
+  ): void {
+    this.sayInbox.push({
+      conversationId,
+      agentId,
+      partnerId,
+      turn,
+      text: String(text),
+      done: !!done,
     })
   }
 
@@ -604,6 +664,11 @@ export class Simulation {
     this.notePlayback = log ? cloneMindNoteLog(log) : null
   }
 
+  /** Install say-log playback for re-sim (stateAt / forks). */
+  setSayPlayback(log: SayRecord[] | null): void {
+    this.sayPlayback = log ? cloneSayLog(log) : null
+  }
+
   getExternalIntentLog(): readonly ExternalIntentRecord[] {
     ensureMindFields(this.state)
     return this.state.externalIntentLog
@@ -614,6 +679,11 @@ export class Simulation {
     return this.state.mindNoteLog
   }
 
+  getSayLog(): readonly SayRecord[] {
+    ensureMindFields(this.state)
+    return this.state.sayLog
+  }
+
   /** Pending live-inbox size (not yet applied). */
   getExternalInboxSize(): number {
     return this.externalInbox.length
@@ -622,6 +692,11 @@ export class Simulation {
   /** Pending mind-note inbox size (not yet applied). */
   getMindNoteInboxSize(): number {
     return this.mindNoteInbox.length
+  }
+
+  /** Pending say inbox size (not yet applied). */
+  getSayInboxSize(): number {
+    return this.sayInbox.length
   }
 
   getEvents(): readonly SimEvent[] {
@@ -2044,9 +2119,10 @@ export class Simulation {
       this.stepEconomyStats()
     }
 
-    // External (mind) intents + reflection notes: live inbox + replay playback
+    // External (mind) intents + reflection notes + says: live inbox + replay playback
     this.applyExternalIntentsForTick()
     this.applyMindNotesForTick()
+    this.applySaysForTick()
 
     this.stepAgents()
     this.stepSympathy()
@@ -2200,6 +2276,96 @@ export class Simulation {
         agentName: agent?.name,
       },
       reason: `${agent?.name ?? agentId} reflected on the day`,
+    })
+  }
+
+  /**
+   * Apply conversation utterances for the current tick.
+   * Live: drain inbox (sorted agentId). Replay: re-apply from sayPlayback.
+   */
+  private applySaysForTick(): void {
+    const tick = this.state.tick
+
+    if (this.sayPlayback) {
+      const atTick = this.sayPlayback
+        .filter((r) => r.tick === tick)
+        .slice()
+        .sort((a, b) =>
+          a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : a.turn - b.turn,
+        )
+      for (const rec of atTick) {
+        const already = this.state.sayLog.some(
+          (r) =>
+            r.tick === rec.tick &&
+            r.conversationId === rec.conversationId &&
+            r.agentId === rec.agentId &&
+            r.turn === rec.turn &&
+            r.text === rec.text,
+        )
+        if (!already) {
+          this.state.sayLog.push(cloneSayRecord(rec))
+        }
+        this.forceSay(rec, { recordLog: false })
+      }
+      return
+    }
+
+    if (this.sayInbox.length === 0) return
+    const batch = this.sayInbox.splice(0, this.sayInbox.length)
+    batch.sort((a, b) =>
+      a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : a.turn - b.turn,
+    )
+    for (const item of batch) {
+      this.forceSay(
+        {
+          tick: this.state.tick,
+          conversationId: item.conversationId,
+          agentId: item.agentId,
+          partnerId: item.partnerId,
+          turn: item.turn,
+          text: item.text,
+          done: item.done,
+        },
+        { recordLog: true },
+      )
+    }
+  }
+
+  /**
+   * Apply one utterance: emit mind:say (reason-free), optionally append sayLog.
+   * Does not change agent action.
+   */
+  private forceSay(rec: SayRecord, opts: { recordLog: boolean }): void {
+    const agent = this.state.agents.find((a) => a.id === rec.agentId)
+    const partner = this.state.agents.find((a) => a.id === rec.partnerId)
+    const text = String(rec.text)
+
+    if (opts.recordLog) {
+      this.state.sayLog.push({
+        tick: this.state.tick,
+        conversationId: rec.conversationId,
+        agentId: rec.agentId,
+        partnerId: rec.partnerId,
+        turn: rec.turn,
+        text,
+        done: !!rec.done,
+      })
+    }
+
+    this.events.append({
+      tick: this.state.tick,
+      type: 'mind:say',
+      agentId: rec.agentId,
+      data: {
+        partnerId: rec.partnerId,
+        conversationId: rec.conversationId,
+        turn: rec.turn,
+        text,
+        done: !!rec.done,
+        source: 'luna',
+        agentName: agent?.name,
+        partnerName: partner?.name,
+      },
     })
   }
 
@@ -2801,6 +2967,7 @@ export class Simulation {
     opts?: {
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
+      sayPlayback?: SayRecord[] | null
     },
   ): Simulation {
     const ev = new EventTrace()
@@ -2818,6 +2985,7 @@ export class Simulation {
       skipInitEvents: true,
       intentPlayback: opts?.intentPlayback ?? null,
       notePlayback: opts?.notePlayback ?? null,
+      sayPlayback: opts?.sayPlayback ?? null,
     })
     // Rebuild snapshot ring from restored position for further seeks on this fork
     sim.snapshots.add(sim.makeSnapshot())
@@ -2865,7 +3033,7 @@ export class Simulation {
   /**
    * Returns a FORKED sim at the given tick. Never mutates the live sim.
    * Fork gets its own event trace (copy-on-fork).
-   * Re-sim plays back externalIntentLog + mindNoteLog so mind calls are never re-requested.
+   * Re-sim plays back externalIntentLog + mindNoteLog + sayLog so mind calls are never re-requested.
    */
   stateAt(tick: Tick): Simulation {
     const target = Math.max(0, Math.min(tick, this.state.tick))
@@ -2873,12 +3041,14 @@ export class Simulation {
     // Full logs up to live head — re-sim applies entries at their recorded ticks
     const playback = cloneExternalIntentLog(this.state.externalIntentLog)
     const notePlayback = cloneMindNoteLog(this.state.mindNoteLog)
+    const sayPlayback = cloneSayLog(this.state.sayLog)
     const nearest = this.snapshots.nearestAtOrBefore(target)
     if (!nearest) {
       // Fallback: re-sim from scratch with playback
       const fresh = new Simulation(this.state.seed, {
         intentPlayback: playback,
         notePlayback,
+        sayPlayback,
       })
       if (target > 0) fresh.advanceTicks(target)
       return fresh
@@ -2886,6 +3056,7 @@ export class Simulation {
     const fork = Simulation.fromSnapshot(nearest, undefined, {
       intentPlayback: playback,
       notePlayback,
+      sayPlayback,
     })
     const remaining = target - fork.state.tick
     if (remaining > 0) fork.advanceTicks(remaining)

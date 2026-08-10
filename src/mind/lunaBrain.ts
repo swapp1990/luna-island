@@ -9,7 +9,12 @@ import {
   buildSystemPrompt,
   buildUserPrompt,
 } from './prompt'
-import { parseMindJson, parseReflectionJson, resolveMindIntent } from './parse'
+import {
+  parseMindJson,
+  parseReflectionJson,
+  parseSayJson,
+  resolveMindIntent,
+} from './parse'
 import {
   BudgetExhaustedProvider,
   CodexProvider,
@@ -21,6 +26,18 @@ import {
   type MindProvider,
 } from './providers'
 import { MindDispatchQueue } from './dispatchQueue'
+import {
+  applyCooldowns,
+  buildConversationSystemPrompt,
+  buildConversationUserPrompt,
+  findEligiblePair,
+  MAX_CONVERSATION_TURNS,
+  partnerOf,
+  participantConversationOk,
+  startConversation,
+  TRAILS_OFF,
+  type ActiveConversation,
+} from './conversation'
 
 /** Cadence: min gap after a decision before the soft path. */
 export const MIND_MIN_GAP_TICKS = 30
@@ -119,13 +136,28 @@ interface PendingNoteHold {
   nightKey: number
 }
 
+interface PendingSayHold {
+  agentId: string
+  partnerId: string
+  conversationId: string
+  turn: number
+  readyTick: number
+  text: string
+  done: boolean
+  exchange: MindExchange
+  requestTick: number
+}
+
 interface InFlight {
   agentId: string
   startedTick: number
   startedWall: number
   abort?: AbortController
-  kind: 'decision' | 'reflection'
+  kind: 'decision' | 'conversation' | 'reflection'
   nightKey?: number
+  conversationId?: string
+  partnerId?: string
+  turn?: number
 }
 
 /**
@@ -180,6 +212,7 @@ export class LunaBrainService {
   private activeDispatch: InFlight | null = null
   private holds: PendingHold[] = []
   private noteHolds: PendingNoteHold[] = []
+  private sayHolds: PendingSayHold[] = []
   private lastExchange = new Map<string, MindExchange>()
   private decideCallCount = 0
   private totalLatency = 0
@@ -201,6 +234,10 @@ export class LunaBrainService {
   private reflectedNights = new Map<string, Set<number>>()
   /** Latest live sim (for prompt rebuild at dispatch). */
   private latestSim: Simulation | null = null
+  /** At most one active conversation island-wide (P3-2). */
+  private activeConv: ActiveConversation | null = null
+  private pairLastEnd = new Map<string, number>()
+  private agentLastEnd = new Map<string, number>()
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
@@ -260,7 +297,14 @@ export class LunaBrainService {
     this.activeDispatch = null
     this.holds = []
     this.noteHolds = []
+    this.sayHolds = []
+    this.activeConv = null
     this.latestSim = null
+  }
+
+  /** Test/e2e: active conversation snapshot (null if none). */
+  getActiveConversation(): ActiveConversation | null {
+    return this.activeConv
   }
 
   getMode(): BrainMode {
@@ -302,7 +346,8 @@ export class LunaBrainService {
   getMeter(): MindMeter {
     // Breathe through the whole line: queued waiters + the one in-flight fetch
     const thinking = this.queue.size() + (this.activeDispatch ? 1 : 0)
-    const pending = thinking + this.holds.length + this.noteHolds.length
+    const pending =
+      thinking + this.holds.length + this.noteHolds.length + this.sayHolds.length
     return {
       enabled: this.isEnabled(),
       agentIds: [...LUNA_AGENT_IDS],
@@ -397,7 +442,7 @@ export class LunaBrainService {
 
   /**
    * Call after each live sim tick (or after each tick inside ffwd).
-   * Posts ready holds; may kick off new async decisions / reflections.
+   * Posts ready holds; may kick off new async decisions / conversations / reflections.
    */
   onAfterTick(sim: Simulation): void {
     if (!this.isEnabled() || this.disposed) return
@@ -423,6 +468,16 @@ export class LunaBrainService {
       this.applyReflectionNotes(sim, h.agentId, h.notes, h.meta, h.exchange, h.nightKey)
     }
 
+    // Flush conversation say holds
+    const readySays = this.sayHolds.filter((h) => h.readyTick <= tick)
+    this.sayHolds = this.sayHolds.filter((h) => h.readyTick > tick)
+    for (const h of readySays) {
+      this.applySayHold(sim, h)
+    }
+
+    // Interrupt / advance active conversation after holds applied
+    this.tickConversation(sim)
+
     // Wall-timeout only for the dispatched request (queue wait does not consume it)
     const now = Date.now()
     const flight = this.activeDispatch
@@ -431,16 +486,27 @@ export class LunaBrainService {
       if (flight.kind === 'reflection' && flight.nightKey != null) {
         this.reflectedNights.get(flight.agentId)?.delete(flight.nightKey)
       }
-      this.fallbacks += 1
-      sim.postMindFallback(
-        flight.agentId,
-        {
-          reason: 'wall timeout',
-          latencyMs: MIND_WALL_TIMEOUT_MS,
-          variant: flight.kind === 'reflection' ? 'reflection' : 'decision',
-        },
-        'Mind request timed out — continuing on instinct',
-      )
+      if (flight.kind === 'conversation' && this.activeConv) {
+        // Graceful trails-off end — not a fallback storm
+        this.finishConversationTrailsOff(
+          sim,
+          flight.agentId,
+          flight.partnerId ?? partnerOf(this.activeConv, flight.agentId),
+          flight.conversationId ?? this.activeConv.id,
+          flight.turn ?? this.activeConv.nextTurn,
+        )
+      } else if (flight.kind !== 'conversation') {
+        this.fallbacks += 1
+        sim.postMindFallback(
+          flight.agentId,
+          {
+            reason: 'wall timeout',
+            latencyMs: MIND_WALL_TIMEOUT_MS,
+            variant: flight.kind === 'reflection' ? 'reflection' : 'decision',
+          },
+          'Mind request timed out — continuing on instinct',
+        )
+      }
       // Next waiter may proceed
       this.pumpDispatch(sim)
     }
@@ -450,6 +516,10 @@ export class LunaBrainService {
     for (const e of this.queue.pruneInvalid(valid)) {
       if (e.kind === 'reflection' && e.nightKey != null) {
         this.reflectedNights.get(e.agentId)?.delete(e.nightKey)
+      }
+      if (e.kind === 'conversation') {
+        const ac = this.activeConv
+        if (ac && ac.id === e.conversationId) ac.turnInFlight = false
       }
     }
 
@@ -461,6 +531,7 @@ export class LunaBrainService {
       if (this.isPipelineBusy(agentId)) continue
       if (this.holds.some((h) => h.agentId === agentId)) continue
       if (this.noteHolds.some((h) => h.agentId === agentId)) continue
+      if (this.sayHolds.some((h) => h.agentId === agentId)) continue
       if (!isLunaAgent(agentId)) continue
       if (!sim.state.agents.find((a) => a.id === agentId)) continue
 
@@ -476,11 +547,40 @@ export class LunaBrainService {
       this.requestReflection(sim, agentId, dueNight)
     }
 
-    // Cadence: request decisions for luna agents
+    // Conversation turns (participants' decision cadence is suspended while active)
+    if (this.activeConv && !this.activeConv.turnInFlight) {
+      const speakerId = this.activeConv.nextSpeakerId
+      if (
+        !this.isPipelineBusy(speakerId) &&
+        !this.holds.some((h) => h.agentId === speakerId) &&
+        !this.noteHolds.some((h) => h.agentId === speakerId) &&
+        !this.sayHolds.some((h) => h.agentId === speakerId)
+      ) {
+        if (!this.providerPrefersSync()) {
+          const lastWall = this.lastDispatchWall.get(speakerId) ?? 0
+          if (now - lastWall >= MIND_WALL_FLOOR_MS) {
+            this.requestConversationTurn(sim)
+          }
+        } else {
+          this.requestConversationTurn(sim)
+        }
+      }
+    } else if (!this.activeConv) {
+      // Try to start a new conversation (max one island-wide)
+      const pair = findEligiblePair(sim.state, this.pairLastEnd, this.agentLastEnd)
+      if (pair) {
+        this.activeConv = startConversation(sim, pair.a, pair.b)
+        this.requestConversationTurn(sim)
+      }
+    }
+
+    // Cadence: request decisions for luna agents (skip conversation participants)
     for (const agentId of LUNA_AGENT_IDS) {
+      if (this.isInActiveConversation(agentId)) continue
       if (this.isPipelineBusy(agentId)) continue
       if (this.holds.some((h) => h.agentId === agentId)) continue
       if (this.noteHolds.some((h) => h.agentId === agentId)) continue
+      if (this.sayHolds.some((h) => h.agentId === agentId)) continue
       const agent = sim.state.agents.find((a) => a.id === agentId)
       if (!agent || !isLunaAgent(agentId)) continue
 
@@ -504,6 +604,212 @@ export class LunaBrainService {
     }
 
     // Ensure the single dispatcher is running if anything is waiting
+    this.pumpDispatch(sim)
+  }
+
+  private isInActiveConversation(agentId: string): boolean {
+    const c = this.activeConv
+    if (!c) return false
+    return c.agentIdA === agentId || c.agentIdB === agentId
+  }
+
+  /** Interrupt if participants leave socialize/stationary; no-op otherwise. */
+  private tickConversation(sim: Simulation): void {
+    const c = this.activeConv
+    if (!c) return
+    const a = sim.state.agents.find((x) => x.id === c.agentIdA)
+    const b = sim.state.agents.find((x) => x.id === c.agentIdB)
+    if (!a || !b || !participantConversationOk(a) || !participantConversationOk(b)) {
+      this.endConversationInterrupted(sim)
+    }
+  }
+
+  private endConversationInterrupted(sim: Simulation): void {
+    const c = this.activeConv
+    if (!c) return
+    // Capture + drop pending holds for this conversation
+    const pending = this.sayHolds.filter((h) => h.conversationId === c.id)
+    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== c.id)
+
+    if (!c.closed) {
+      // Prefer applying a dropped hold as the terminal done say; else re-mark last line
+      const hold = pending[pending.length - 1]
+      if (hold) {
+        sim.postSay(
+          hold.conversationId,
+          hold.agentId,
+          hold.partnerId,
+          hold.turn,
+          hold.text,
+          true,
+        )
+        c.closed = true
+      } else if (c.transcript.length > 0 && c.lastText) {
+        const speaker = c.transcript[c.transcript.length - 1]!.agentId
+        const partner = partnerOf(c, speaker)
+        sim.postSay(
+          c.id,
+          speaker,
+          partner,
+          Math.max(0, c.nextTurn - 1),
+          c.lastText,
+          true,
+        )
+        c.closed = true
+      }
+    }
+    applyCooldowns(this.pairLastEnd, this.agentLastEnd, c.agentIdA, c.agentIdB, sim.state.tick)
+    this.activeConv = null
+  }
+
+  private endConversationClean(
+    sim: Simulation,
+    _lastSpeaker: string,
+  ): void {
+    const c = this.activeConv
+    if (!c) return
+    c.closed = true
+    c.turnInFlight = false
+    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== c.id)
+    applyCooldowns(this.pairLastEnd, this.agentLastEnd, c.agentIdA, c.agentIdB, sim.state.tick)
+    this.activeConv = null
+  }
+
+  private finishConversationTrailsOff(
+    sim: Simulation,
+    agentId: string,
+    partnerId: string,
+    conversationId: string,
+    turn: number,
+  ): void {
+    const c = this.activeConv
+    if (c && c.id === conversationId && c.closed) return
+    sim.postSay(conversationId, agentId, partnerId, turn, TRAILS_OFF, true)
+    this.decisions += 1
+    if (c && c.id === conversationId) {
+      c.lastText = TRAILS_OFF
+      c.transcript.push({
+        agentId,
+        name: sim.state.agents.find((a) => a.id === agentId)?.name ?? agentId,
+        text: TRAILS_OFF,
+      })
+      c.closed = true
+      this.endConversationClean(sim, agentId)
+    }
+  }
+
+  private applySayHold(sim: Simulation, h: PendingSayHold): void {
+    const c = this.activeConv
+    if (!c || c.id !== h.conversationId || c.closed) return
+    sim.postSay(
+      h.conversationId,
+      h.agentId,
+      h.partnerId,
+      h.turn,
+      h.text,
+      h.done,
+    )
+    this.lastExchange.set(h.agentId, h.exchange)
+    this.decisions += 1
+    this.onSayApplied(sim, h.agentId, h.partnerId, h.conversationId, h.turn, h.text, h.done)
+  }
+
+  private onSayApplied(
+    sim: Simulation,
+    agentId: string,
+    partnerId: string,
+    conversationId: string,
+    turn: number,
+    text: string,
+    done: boolean,
+  ): void {
+    const c = this.activeConv
+    if (!c || c.id !== conversationId || c.closed) return
+    const name = sim.state.agents.find((a) => a.id === agentId)?.name ?? agentId
+    c.transcript.push({ agentId, name, text })
+    c.lastText = text
+    c.turnInFlight = false
+    c.nextTurn = turn + 1
+    c.nextSpeakerId = partnerId
+    if (done || c.nextTurn >= MAX_CONVERSATION_TURNS) {
+      c.closed = true
+      this.endConversationClean(sim, agentId)
+    }
+  }
+
+  private requestConversationTurn(sim: Simulation): void {
+    if (!this.provider || !this.activeConv) return
+    if (this.isBudgetCooldown()) return
+    const c = this.activeConv
+    if (c.turnInFlight) return
+    if (c.nextTurn >= MAX_CONVERSATION_TURNS) {
+      this.endConversationClean(sim, c.nextSpeakerId)
+      return
+    }
+
+    const agentId = c.nextSpeakerId
+    const partnerId = partnerOf(c, agentId)
+    const turn = c.nextTurn
+    const provider = this.provider
+
+    c.turnInFlight = true
+
+    if (provider instanceof MockProvider && provider.preferSync()) {
+      const speaker = sim.state.agents.find((a) => a.id === agentId)
+      const partner = sim.state.agents.find((a) => a.id === partnerId)
+      if (!speaker || !partner) {
+        c.turnInFlight = false
+        this.endConversationInterrupted(sim)
+        return
+      }
+      const tick = sim.state.tick
+      const events: readonly SimEvent[] = sim.getEvents()
+      const system = buildConversationSystemPrompt(agentId)
+      const user = buildConversationUserPrompt(
+        speaker,
+        partner,
+        sim.state,
+        events,
+        c.transcript,
+      )
+      this.decideCallCount += 1
+      const result = provider.decideSync({
+        system,
+        user,
+        agentId,
+        tick,
+        kind: 'conversation',
+      })
+      this.finishConversationTurn(
+        sim,
+        agentId,
+        partnerId,
+        c.id,
+        turn,
+        system,
+        user,
+        result,
+        provider.name,
+        tick,
+      )
+      return
+    }
+
+    if (this.isPipelineBusy(agentId)) {
+      c.turnInFlight = false
+      return
+    }
+    const enq = this.queue.enqueue({
+      agentId,
+      kind: 'conversation',
+      conversationId: c.id,
+      partnerId,
+      turn,
+    })
+    if (enq !== 'enqueued') {
+      c.turnInFlight = false
+      return
+    }
     this.pumpDispatch(sim)
   }
 
@@ -672,6 +978,23 @@ export class LunaBrainService {
       const day = reflectionDayForNightKey(nightKey)
       system = buildReflectionSystemPrompt(entry.agentId)
       user = buildReflectionUserPrompt(entry.agentId, events, day)
+    } else if (entry.kind === 'conversation') {
+      const conv = this.activeConv
+      const partnerId = entry.partnerId ?? (conv ? partnerOf(conv, entry.agentId) : '')
+      const partner = sim.state.agents.find((a) => a.id === partnerId)
+      if (!conv || conv.id !== entry.conversationId || !partner) {
+        if (conv) conv.turnInFlight = false
+        this.pumpDispatch(sim)
+        return
+      }
+      system = buildConversationSystemPrompt(entry.agentId)
+      user = buildConversationUserPrompt(
+        agent,
+        partner,
+        sim.state,
+        events,
+        conv.transcript,
+      )
     } else {
       system = buildSystemPrompt(entry.agentId)
       user = buildUserPrompt(agent, sim.state, events, sim.state.mindNoteLog)
@@ -685,6 +1008,9 @@ export class LunaBrainService {
       startedWall: Date.now(),
       kind: entry.kind,
       nightKey: entry.nightKey,
+      conversationId: entry.conversationId,
+      partnerId: entry.partnerId,
+      turn: entry.turn,
     }
     this.activeDispatch = flight
     this.lastDispatchWall.set(entry.agentId, flight.startedWall)
@@ -694,6 +1020,9 @@ export class LunaBrainService {
     const agentId = entry.agentId
     const nightKey = entry.nightKey
     const kind = entry.kind
+    const partnerId = entry.partnerId
+    const conversationId = entry.conversationId
+    const turn = entry.turn
 
     const run = async () => {
       for (;;) {
@@ -722,6 +1051,19 @@ export class LunaBrainService {
               providerName,
               tick,
               nightKey,
+            )
+          } else if (kind === 'conversation') {
+            this.finishConversationTurn(
+              applySim,
+              agentId,
+              partnerId ?? '',
+              conversationId ?? '',
+              turn ?? 0,
+              system,
+              user,
+              result,
+              providerName,
+              tick,
             )
           } else {
             this.finishDecision(
@@ -754,6 +1096,9 @@ export class LunaBrainService {
             if (kind === 'reflection' && nightKey != null) {
               this.reflectedNights.get(agentId)?.delete(nightKey)
             }
+            if (kind === 'conversation' && this.activeConv) {
+              this.activeConv.turnInFlight = false
+            }
             // Drop the rest of the line; no dispatches during cooldown
             this.clearQueueUnmarkReflections()
             const resetsInSec =
@@ -767,6 +1112,18 @@ export class LunaBrainService {
           this.activeDispatch = null
           if (kind === 'reflection' && nightKey != null) {
             this.reflectedNights.get(agentId)?.delete(nightKey)
+          }
+          if (kind === 'conversation') {
+            // Invalid provider error → trails off, no fallback storm
+            this.finishConversationTrailsOff(
+              this.latestSim ?? sim,
+              agentId,
+              partnerId ?? '',
+              conversationId ?? '',
+              turn ?? 0,
+            )
+            this.pumpDispatch(this.latestSim ?? sim)
+            return
           }
           this.fallbacks += 1
           const msg = err instanceof Error ? err.message : String(err)
@@ -789,6 +1146,76 @@ export class LunaBrainService {
     }
 
     void run()
+  }
+
+  private finishConversationTurn(
+    sim: Simulation,
+    agentId: string,
+    partnerId: string,
+    conversationId: string,
+    turn: number,
+    system: string,
+    user: string,
+    result: { text: string; latencyMs: number; approxChars: number },
+    providerName: string,
+    requestTick: number,
+  ): void {
+    this.totalLatency += result.latencyMs
+    this.latencySamples += 1
+    this.totalApproxChars += result.approxChars
+
+    const parsed = parseSayJson(result.text)
+    const exchange: MindExchange = {
+      agentId,
+      tick: requestTick,
+      system,
+      user,
+      rawResponse: result.text,
+      ok: parsed.ok,
+    }
+    this.lastExchange.set(agentId, exchange)
+
+    if (!parsed.ok) {
+      // Graceful end — no mind:fallback
+      this.finishConversationTrailsOff(sim, agentId, partnerId, conversationId, turn)
+      return
+    }
+
+    let done = parsed.done
+    if (turn + 1 >= MAX_CONVERSATION_TURNS) done = true
+
+    const delay =
+      providerName === 'mock' &&
+      this.provider instanceof MockProvider &&
+      this.provider.preferSync()
+        ? MOCK_DELAY_TICKS
+        : 0
+
+    if (delay <= 0) {
+      sim.postSay(conversationId, agentId, partnerId, turn, parsed.say, done)
+      this.decisions += 1
+      this.onSayApplied(
+        sim,
+        agentId,
+        partnerId,
+        conversationId,
+        turn,
+        parsed.say,
+        done,
+      )
+    } else {
+      this.sayHolds.push({
+        agentId,
+        partnerId,
+        conversationId,
+        turn,
+        readyTick: sim.state.tick + delay,
+        text: parsed.say,
+        done,
+        exchange,
+        requestTick,
+      })
+    }
   }
 
   private applyReflectionNotes(

@@ -6,8 +6,8 @@ export interface MindPrompt {
   /** For MockProvider seeding only. */
   agentId?: string
   tick?: number
-  /** Decision (default) or nightly reflection. */
-  kind?: 'decision' | 'reflection'
+  /** Decision (default), conversation turn, or nightly reflection. */
+  kind?: 'decision' | 'conversation' | 'reflection'
 }
 
 export interface MindBudgetInfo {
@@ -126,7 +126,31 @@ export class MockProvider implements MindProvider {
       return { text, latencyMs: 1, approxChars }
     }
 
-    const action = ACTION_CYCLE[Math.abs(h) % ACTION_CYCLE.length]!
+    if (prompt.kind === 'conversation') {
+      const canned = [
+        'Hey — good to see you out here.',
+        'How are you holding up today?',
+        'I keep thinking about the plaza lately.',
+        'We should trade stories sometime.',
+        'Stay safe out there, friend.',
+        'The village feels alive when we talk.',
+      ]
+      const say = canned[Math.abs(h) % canned.length]!
+      // End after ~2–3 turns: done when hash says so or user shows long transcript
+      const transcriptLines = (prompt.user.match(/\n[A-Za-z]+: "/g) ?? []).length
+      const done = transcriptLines >= 2 || Math.abs(h) % 5 === 0
+      const text = JSON.stringify({ say, done })
+      const approxChars = prompt.system.length + prompt.user.length + text.length
+      return { text, latencyMs: 1, approxChars }
+    }
+
+    // Bias toward socialize so conversations can emerge in mock/e2e
+    let action: (typeof ACTION_CYCLE)[number]
+    if (Math.abs(h) % 5 < 2) {
+      action = 'socialize'
+    } else {
+      action = ACTION_CYCLE[Math.abs(h) % ACTION_CYCLE.length]!
+    }
     const reasoning = `I should ${action} now — needs and the island clock say so.`
     const payload: { action: string; target?: string; reasoning: string } = {
       action,

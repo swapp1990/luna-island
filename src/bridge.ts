@@ -86,6 +86,17 @@ export interface SimControlBridge {
    * Does not hit the sidecar.
    */
   forceMindBudgetCooldown?: (resetsInSec?: number) => void
+  /**
+   * Additive (e2e): pin two luna agents in socialize proximity and advance
+   * until a conversation say lands (mock canned).
+   */
+  seedConversation?: (opts?: {
+    agentIdA?: string
+    agentIdB?: string
+    maxTicks?: number
+  }) => { ok: boolean; says: number }
+  /** E2e/dev: event type histogram on the view sim. */
+  countEventTypes?: () => Record<string, number>
 }
 
 declare global {

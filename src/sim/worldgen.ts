@@ -233,6 +233,7 @@ export function generateWorld(seed: number): WorldState {
       sympathyMet: {},
       externalIntentLog: [],
       mindNoteLog: [],
+      sayLog: [],
       mindStats: {},
     }
   }
@@ -794,6 +795,7 @@ export function generateWorld(seed: number): WorldState {
     sympathyMet: {},
     externalIntentLog: [],
     mindNoteLog: [],
+    sayLog: [],
     mindStats: {},
   }
 }

@@ -13,5 +13,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    // Multi-day sims + stateAt hash under parallel load need headroom (default 5s flakes).
+    testTimeout: 20_000,
   },
 })

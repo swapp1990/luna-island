@@ -119,6 +119,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let lastToastEventCount = 0
   /** Live-only celebration FX scanner cursor. */
   let lastCelebrateEventCount = 0
+  /** Live-only speech bubble scanner cursor. */
+  let lastSpeechEventCount = 0
   /**
    * Calendar day scoped in the timeline. null = follow live head day.
    * Set when loadDay / scrub into a day; cleared on goLive.
@@ -220,6 +222,28 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       }
     }
     lastCriticalEventCount = events.length
+  }
+
+  /** Speech bubbles from mind:say — live path prefers new events only. */
+  const scanSpeech = (sim: Simulation, now: number, liveMode: boolean) => {
+    if (!liveMode) {
+      lastSpeechEventCount = sim.getEventCount()
+      return
+    }
+    const events = sim.getEvents()
+    const start = lastSpeechEventCount
+    if (start >= events.length) {
+      lastSpeechEventCount = events.length
+      return
+    }
+    for (let i = start; i < events.length; i++) {
+      const ev = events[i]!
+      if (ev.type === 'mind:say' && ev.agentId) {
+        const text = String(ev.data?.text ?? '')
+        if (text) scene.overlays.pushSpeech(ev.agentId, text, now)
+      }
+    }
+    lastSpeechEventCount = events.length
   }
 
   /** Pickup / coin toasts — live path only, new events only (no replay backfill). */
@@ -525,6 +549,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     scanCriticals(sim, ts)
     scanToasts(sim, ts, mode === 'live')
     scanCelebrations(sim, ts, mode === 'live')
+    scanSpeech(sim, ts, mode === 'live')
     applyScene(ts)
     scene.render()
     refreshBridge(getState())

@@ -50,7 +50,9 @@ export function episodicMemories(
     if (!e.agentId && !relationshipInvolves(e, agentId)) continue
     const mine =
       e.agentId === agentId ||
-      (e.type.startsWith('relationship:') && relationshipInvolves(e, agentId))
+      (e.type.startsWith('relationship:') && relationshipInvolves(e, agentId)) ||
+      (e.type === 'mind:say' &&
+        (e.agentId === agentId || e.data?.partnerId === agentId))
     if (!mine) continue
 
     const when = stamp(e.tick)
@@ -71,6 +73,23 @@ export function episodicMemories(
 
     let line: string | null = null
     switch (e.type) {
+      case 'mind:say': {
+        // One episodic per participant on conversation end (done:true)
+        if (e.data?.done !== true) break
+        const otherName =
+          e.agentId === agentId
+            ? String(e.data?.partnerName ?? e.data?.partnerId ?? 'someone')
+            : String(e.data?.agentName ?? e.agentId ?? 'someone')
+        const raw = String(e.data?.text ?? '')
+        const clip = raw.length > 60 ? `${raw.slice(0, 57)}…` : raw
+        // Full line includes emoji + stamp (spec format)
+        salient.push({
+          text: `💬 ${when} — talked with ${otherName}: "${clip}"`,
+          kind: 'episodic',
+          tick: e.tick,
+        })
+        break
+      }
       case 'job:hired': {
         const placeKind = String(e.data?.placeKind ?? 'workplace')
         const wage = e.data?.wage

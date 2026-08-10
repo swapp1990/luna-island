@@ -141,7 +141,7 @@ You are reflecting on your day before sleep. Reply ONLY with one JSON object, no
 Rules: 1–3 notes; each ≤120 characters; first person ("I"); concrete facts from today's events and intentions for tomorrow. No invented possessions or numbers.`
 }
 
-/** Compact day-trace lines for reflection (agent's own events that day). */
+/** Compact day-trace lines for reflection (agent's own events that day, incl. mind:say as partner). */
 export function buildReflectionUserPrompt(
   agentId: string,
   events: readonly SimEvent[],
@@ -149,9 +149,20 @@ export function buildReflectionUserPrompt(
 ): string {
   const dayLines: string[] = []
   for (const e of events) {
-    if (e.agentId !== agentId) continue
+    const asPartner =
+      e.type === 'mind:say' && e.data?.partnerId === agentId
+    if (e.agentId !== agentId && !asPartner) continue
     const t = toSimTime(e.tick)
     if (t.day !== day) continue
+    if (e.type === 'mind:say') {
+      const text = String(e.data?.text ?? '')
+      const who =
+        e.agentId === agentId
+          ? 'I said'
+          : `${String(e.data?.agentName ?? e.agentId)} said`
+      dayLines.push(`${pad2(t.hour)}:${pad2(t.minute)} 💬 ${who}: "${text}"`)
+      continue
+    }
     const reason = e.reason ? ` — ${e.reason}` : ''
     dayLines.push(
       `${pad2(t.hour)}:${pad2(t.minute)} ${e.type}${reason}`,
