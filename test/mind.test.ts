@@ -9,9 +9,11 @@ import {
 import type { ExternalIntentMeta, Intent } from '../src/sim/types'
 import { parseMindJson, resolveMindIntent } from '../src/mind/parse'
 import {
+  BudgetExhaustedProvider,
   LunaBrainService,
   MIND_MIN_GAP_TICKS,
   MIND_STALE_TICKS,
+  MIND_WALL_TIMEOUT_MS,
 } from '../src/mind/lunaBrain'
 import { MockProvider } from '../src/mind/providers'
 
@@ -350,6 +352,76 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
     expect(mind.getMeter().decisions).toBe(0)
     expect(mind.getMeter().fallbacks).toBe(0)
     expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(0)
+  })
+})
+
+describe('mind budget cooldown (P3-0c)', () => {
+  it('402-style budget: one mind:budget event, cooldown blocks further dispatches, agent keeps living', async () => {
+    const provider = new BudgetExhaustedProvider({
+      failCount: 99,
+      resetsInSec: 3600,
+      usedHour: 60,
+      maxHour: 60,
+    })
+    const mind = new LunaBrainService('mock', { provider })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    // Kick first dispatch (async provider path)
+    mind.onAfterTick(sim)
+    expect(mind.getDecideCallCount()).toBe(1)
+    // Drain provider rejection + cooldown entry
+    await Promise.resolve()
+    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+    await Promise.resolve()
+
+    const budgetEvents = sim.getEvents().filter((e) => e.type === 'mind:budget')
+    expect(budgetEvents.length).toBe(1)
+    expect(budgetEvents[0]!.reason).toMatch(/mind budget exhausted — running on instinct until \d{2}:\d{2}/)
+    expect(mind.getMeter().budgetCooldown).toBe(true)
+    expect(mind.getMeter().budgetUsedHour).toBe(60)
+    expect(mind.getMeter().budgetMaxHour).toBe(60)
+    // Not counted as a generic fallback
+    expect(mind.getMeter().fallbacks).toBe(0)
+
+    const callsAfterBudget = mind.getDecideCallCount()
+    const invAfter = provider.decideInvocations
+
+    // Advance many ticks / hard gaps — no further dispatches while cooldown holds
+    for (let i = 0; i < 400; i++) {
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mind.getDecideCallCount()).toBe(callsAfterBudget)
+    expect(provider.decideInvocations).toBe(invAfter)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:budget').length).toBe(1)
+
+    // Agent keeps living on UtilityBrain — actions still fire
+    const actions = sim.getEvents().filter((e) => e.type === 'action:start')
+    expect(actions.length).toBeGreaterThan(0)
+    expect(sim.state.agents.length).toBeGreaterThan(0)
+    // Needs still evolve (not frozen)
+    const a0 = sim.state.agents[0]!
+    expect(a0.needs.hunger).toBeGreaterThan(0)
+  })
+
+  it('MIND_WALL_TIMEOUT_MS is 75s (above sidecar 60s kill)', () => {
+    expect(MIND_WALL_TIMEOUT_MS).toBe(75_000)
+  })
+
+  it('forceBudgetCooldown emits one event and sets meter flag', () => {
+    const mind = new LunaBrainService('mock')
+    const sim = new Simulation(1)
+    mind.forceBudgetCooldown(sim, 120)
+    expect(mind.getMeter().budgetCooldown).toBe(true)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:budget').length).toBe(1)
+    mind.forceBudgetCooldown(sim, 120)
+    // Still one event for the same episode
+    expect(sim.getEvents().filter((e) => e.type === 'mind:budget').length).toBe(1)
   })
 })
 

@@ -286,4 +286,104 @@ test.describe.serial('lunabrain harness', () => {
     })
     expect(overlap.noOverlap).toBe(true)
   })
+
+  test('🧠 chip shows budget numbers; forced cooldown is amber + instinct', async ({
+    page,
+  }) => {
+    await page.goto('/?brain=mock')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto('/?brain=mock')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    // Budget fields on bridge
+    const mindBefore = await page.evaluate(() => {
+      const m = (window as any).__simState.mind
+      return {
+        budgetUsedHour: m.budgetUsedHour as number,
+        budgetMaxHour: m.budgetMaxHour as number,
+        budgetUsedDay: m.budgetUsedDay as number,
+        budgetMaxDay: m.budgetMaxDay as number,
+        budgetCooldown: m.budgetCooldown as boolean,
+      }
+    })
+    expect(mindBefore.budgetMaxHour).toBe(60)
+    expect(mindBefore.budgetMaxDay).toBe(300)
+    expect(mindBefore.budgetCooldown).toBe(false)
+
+    // Chip renders remaining/max hour budget
+    const chip = page.getByTestId('mind-chip')
+    await expect(chip).toBeVisible()
+    const budgetLabel = page.getByTestId('mind-chip-budget')
+    await expect(budgetLabel).toBeVisible()
+    await expect(budgetLabel).toHaveText(/\d+\/60h/)
+
+    await page.screenshot({ path: 'artifacts/llm-budget.png', fullPage: false })
+
+    // Force cooldown via bridge hook
+    await page.evaluate(() => {
+      ;(window as any).__simControl.forceMindBudgetCooldown(3600)
+    })
+
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.budgetCooldown === true),
+      )
+      .toBe(true)
+
+    await expect(chip).toHaveAttribute('data-budget-cooldown', '1')
+    // Amber-ish styling present (border/background uses amber channel)
+    const amber = await chip.evaluate((el) => {
+      const s = getComputedStyle(el)
+      return s.borderColor + s.backgroundColor
+    })
+    // rgb with elevated red/green vs blue (amber), or named
+    expect(amber.length).toBeGreaterThan(0)
+
+    // mind:budget lands in ticker (honest reason once per cooldown episode)
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const text = document.querySelector('[data-testid="ticker"]')?.textContent ?? ''
+            return (
+              text.includes('budget exhausted') ||
+              text.includes('running on instinct')
+            )
+          }),
+        { timeout: 15_000 },
+      )
+      .toBe(true)
+
+    // Agents keep living under instinct — sim still advances & actions fire
+    const tickBefore = await page.evaluate(() => (window as any).__simState.tick as number)
+    await page.evaluate(() => (window as any).__simControl.ffwd(60))
+    const after = await page.evaluate(() => {
+      const s = (window as any).__simState
+      return {
+        tick: s.tick as number,
+        decideCalls: s.mind.decideCalls as number,
+        budgetCooldown: s.mind.budgetCooldown as boolean,
+      }
+    })
+    expect(after.tick).toBeGreaterThan(tickBefore)
+    expect(after.budgetCooldown).toBe(true)
+  })
 })

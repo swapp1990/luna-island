@@ -5,9 +5,13 @@ import { isLunaAgent, LUNA_AGENT_IDS } from './personas'
 import { buildSystemPrompt, buildUserPrompt } from './prompt'
 import { parseMindJson, resolveMindIntent } from './parse'
 import {
+  BudgetExhaustedProvider,
   CodexProvider,
+  DEFAULT_BUDGET_MAX_DAY,
+  DEFAULT_BUDGET_MAX_HOUR,
   MockProvider,
   probeSidecarHealth,
+  type MindBudgetInfo,
   type MindProvider,
 } from './providers'
 
@@ -17,8 +21,12 @@ export const MIND_MIN_GAP_TICKS = 30
 export const MIND_HARD_GAP_TICKS = 120
 /** Mock artificial delay (sim ticks) before posting a ready decision. */
 export const MOCK_DELAY_TICKS = 3
-/** Wall-clock timeout for a mind request → fallback. */
-export const MIND_WALL_TIMEOUT_MS = 10_000
+/**
+ * Wall-clock timeout for a mind request → fallback.
+ * Aligned above sidecar kill (60s) + CodexProvider (75s) so healthy round-trips
+ * are never cut short by the service-level timer.
+ */
+export const MIND_WALL_TIMEOUT_MS = 75_000
 /**
  * Backstop: discard intents older than this many sim minutes after requestTick.
  * With auto-breathe this should rarely fire; ages > 45 mean the world raced ahead.
@@ -26,6 +34,11 @@ export const MIND_WALL_TIMEOUT_MS = 10_000
 export const MIND_STALE_TICKS = 45
 /** Brief pause before retrying a 429 "still thinking" without a new decideCall. */
 const LUNA_BUSY_RETRY_MS = 250
+/**
+ * Wall-floor: never dispatch two async/sidecar requests for the same agent
+ * closer than this many wall-seconds (belt to breathe-throttle suspenders).
+ */
+export const MIND_WALL_FLOOR_MS = 15_000
 
 export type BrainMode = 'codex' | 'mock' | 'off'
 
@@ -57,6 +70,13 @@ export interface MindMeter {
   provider: string
   /** Actual dispatched decide requests (not cadence skips / 429 re-checks). */
   decideCalls: number
+  /** Sidecar-authoritative budget (health probe + decide responses). */
+  budgetUsedHour: number
+  budgetMaxHour: number
+  budgetUsedDay: number
+  budgetMaxDay: number
+  /** True while client-side cooldown after 402 (no further dispatches). */
+  budgetCooldown: boolean
 }
 
 export interface LunaBrainOptions {
@@ -87,6 +107,15 @@ interface InFlight {
   abort?: AbortController
 }
 
+function pad2(n: number): string {
+  return n.toString().padStart(2, '0')
+}
+
+function formatUntilClock(resetsInSec: number, now = Date.now()): string {
+  const until = new Date(now + Math.max(0, resetsInSec) * 1000)
+  return `${pad2(until.getHours())}:${pad2(until.getMinutes())}`
+}
+
 export function parseBrainQuery(search: string): BrainMode {
   const q = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
   const v = (q.get('brain') ?? '').toLowerCase()
@@ -103,6 +132,8 @@ export class LunaBrainService {
   private mode: BrainModeOrAuto
   private provider: MindProvider | null = null
   private lastDecisionTick = new Map<string, number>()
+  /** Wall-ms of last async dispatch per agent (15s floor). */
+  private lastDispatchWall = new Map<string, number>()
   private inFlight = new Map<string, InFlight>()
   private holds: PendingHold[] = []
   private lastExchange = new Map<string, MindExchange>()
@@ -114,6 +145,14 @@ export class LunaBrainService {
   private fallbacks = 0
   private stales = 0
   private disposed = false
+  private budgetUsedHour = 0
+  private budgetMaxHour = DEFAULT_BUDGET_MAX_HOUR
+  private budgetUsedDay = 0
+  private budgetMaxDay = DEFAULT_BUDGET_MAX_DAY
+  /** Wall-ms when budget cooldown ends; 0 = not in cooldown. */
+  private budgetCooldownUntil = 0
+  /** True once we've emitted mind:budget for the current cooldown episode. */
+  private budgetEventEmitted = false
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
@@ -147,14 +186,18 @@ export class LunaBrainService {
     }
     if (this.mode === 'codex') {
       this.provider = this.provider ?? new CodexProvider()
+      // Best-effort budget from health
+      const health = await probeSidecarHealth()
+      if (health.budget) this.applyBudgetSnapshot(health.budget)
       return
     }
     // auto
-    const ok = await probeSidecarHealth()
+    const health = await probeSidecarHealth()
     if (this.disposed) return
-    if (ok) {
+    if (health.ok) {
       this.mode = 'codex'
       this.provider = new CodexProvider()
+      if (health.budget) this.applyBudgetSnapshot(health.budget)
     } else {
       this.mode = 'mock'
       this.provider = new MockProvider()
@@ -185,6 +228,24 @@ export class LunaBrainService {
     return this.lastExchange.get(agentId)
   }
 
+  isBudgetCooldown(now = Date.now()): boolean {
+    if (this.budgetCooldownUntil <= 0) return false
+    if (now >= this.budgetCooldownUntil) {
+      this.budgetCooldownUntil = 0
+      this.budgetEventEmitted = false
+      return false
+    }
+    return true
+  }
+
+  /**
+   * Dev/e2e hook: force client budget cooldown + one mind:budget event.
+   * Does not call the sidecar.
+   */
+  forceBudgetCooldown(sim: Simulation, resetsInSec = 3600): void {
+    this.enterBudgetCooldown(sim, LUNA_AGENT_IDS[0] ?? 'agent-0', resetsInSec)
+  }
+
   getMeter(): MindMeter {
     const thinking = this.inFlight.size
     const pending = thinking + this.holds.length
@@ -203,7 +264,54 @@ export class LunaBrainService {
       approxChars: this.totalApproxChars,
       provider: this.provider?.name ?? 'off',
       decideCalls: this.decideCallCount,
+      budgetUsedHour: this.budgetUsedHour,
+      budgetMaxHour: this.budgetMaxHour,
+      budgetUsedDay: this.budgetUsedDay,
+      budgetMaxDay: this.budgetMaxDay,
+      budgetCooldown: this.isBudgetCooldown(),
     }
+  }
+
+  private applyBudgetSnapshot(b: MindBudgetInfo): void {
+    if (typeof b.usedHour === 'number') this.budgetUsedHour = b.usedHour
+    if (typeof b.maxHour === 'number') this.budgetMaxHour = b.maxHour
+    if (typeof b.usedDay === 'number') this.budgetUsedDay = b.usedDay
+    if (typeof b.maxDay === 'number') this.budgetMaxDay = b.maxDay
+  }
+
+  private enterBudgetCooldown(
+    sim: Simulation,
+    agentId: string,
+    resetsInSec: number,
+    budget?: MindBudgetInfo,
+  ): void {
+    if (budget) this.applyBudgetSnapshot(budget)
+    // Force remaining hour display to 0 when exhausted
+    if (this.budgetUsedHour < this.budgetMaxHour) {
+      this.budgetUsedHour = this.budgetMaxHour
+    }
+    const sec = Math.max(1, Math.floor(resetsInSec))
+    const now = Date.now()
+    // Only extend / set; do not re-emit if already in cooldown
+    const already = this.isBudgetCooldown(now)
+    this.budgetCooldownUntil = Math.max(this.budgetCooldownUntil, now + sec * 1000)
+    if (already || this.budgetEventEmitted) return
+    this.budgetEventEmitted = true
+    const until = formatUntilClock(sec, now)
+    const reason = `mind budget exhausted — running on instinct until ${until}`
+    sim.postMindBudget(
+      agentId,
+      {
+        reason: 'budget',
+        resetsInSec: sec,
+        until,
+        usedHour: this.budgetUsedHour,
+        maxHour: this.budgetMaxHour,
+        usedDay: this.budgetUsedDay,
+        maxDay: this.budgetMaxDay,
+      },
+      reason,
+    )
   }
 
   /**
@@ -240,6 +348,9 @@ export class LunaBrainService {
       }
     }
 
+    // Hard client cooldown: no further dispatches until resetsInSec elapses
+    if (this.isBudgetCooldown(now)) return
+
     // Cadence: request decisions for luna agents
     for (const agentId of LUNA_AGENT_IDS) {
       if (this.inFlight.has(agentId)) continue
@@ -257,12 +368,25 @@ export class LunaBrainService {
       const hardOk = since >= MIND_HARD_GAP_TICKS
       if (!softOk && !hardOk) continue
 
+      // Wall-floor for async/sidecar path only
+      if (!this.providerPrefersSync()) {
+        const lastWall = this.lastDispatchWall.get(agentId) ?? 0
+        if (now - lastWall < MIND_WALL_FLOOR_MS) continue
+      }
+
       this.requestDecision(sim, agentId)
     }
   }
 
+  private providerPrefersSync(): boolean {
+    return (
+      this.provider instanceof MockProvider && this.provider.preferSync()
+    )
+  }
+
   private requestDecision(sim: Simulation, agentId: string): void {
     if (!this.provider) return
+    if (this.isBudgetCooldown()) return
     const agent = sim.state.agents.find((a) => a.id === agentId)
     if (!agent) return
 
@@ -287,6 +411,7 @@ export class LunaBrainService {
       startedWall: Date.now(),
     }
     this.inFlight.set(agentId, flight)
+    this.lastDispatchWall.set(agentId, flight.startedWall)
     // Count only the initial dispatch of a logical decision (429 retries reuse it)
     this.decideCallCount += 1
 
@@ -304,6 +429,7 @@ export class LunaBrainService {
           })
           if (this.disposed) return
           if (this.inFlight.get(agentId) !== flight) return
+          if (result.budget) this.applyBudgetSnapshot(result.budget)
           this.inFlight.delete(agentId)
           this.finishDecision(sim, agentId, system, user, result, providerName, tick)
           return
@@ -315,6 +441,16 @@ export class LunaBrainService {
             // Stay in-flight; re-check without counting a new decideCall
             await new Promise<void>((r) => setTimeout(r, LUNA_BUSY_RETRY_MS))
             continue
+          }
+          if (code === 'LUNA_BUDGET') {
+            this.inFlight.delete(agentId)
+            const resetsInSec =
+              typeof (err as { resetsInSec?: number }).resetsInSec === 'number'
+                ? (err as { resetsInSec: number }).resetsInSec
+                : 3600
+            const budget = (err as { budget?: MindBudgetInfo }).budget
+            this.enterBudgetCooldown(sim, agentId, resetsInSec, budget)
+            return
           }
           this.inFlight.delete(agentId)
           this.fallbacks += 1
@@ -444,6 +580,9 @@ export class LunaBrainService {
     }
   }
 }
+
+/** Re-export for tests that inject 402-style providers. */
+export { BudgetExhaustedProvider }
 
 /** Read ?brain= from window location (browser). */
 export function brainModeFromLocation(): BrainModeOrAuto {

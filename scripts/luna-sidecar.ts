@@ -5,20 +5,65 @@
  *
  * Spawns `codex exec -s read-only -` with cwd = empty scratch dir.
  * One in-flight request; extras get 429.
+ * Hard budget gates (hour + day) → 402 before any codex spawn.
  */
 import type { Plugin, Connect } from 'vite'
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import {
+  BudgetTracker,
+  DEFAULT_MAX_PER_DAY,
+  DEFAULT_MAX_PER_HOUR,
+  handleDecide,
+  healthPayload,
+  type BudgetSnapshot,
+  type CodexRunner,
+  type SidecarDeps,
+} from './luna-budget'
+
+export {
+  BudgetTracker,
+  DEFAULT_MAX_PER_DAY,
+  DEFAULT_MAX_PER_HOUR,
+  handleDecide,
+  healthPayload,
+}
+export type { BudgetSnapshot, CodexRunner, SidecarDeps }
 
 const SCRATCH = path.join(os.tmpdir(), 'luna-mind')
 // Measured: a cold `codex exec` round-trip takes ~30s on this machine — the
 // original 25s ceiling killed healthy calls. The sim never blocks on a mind.
 const KILL_MS = 60_000
 
+function parseEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw == null || raw === '') return fallback
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return fallback
+  return Math.floor(n)
+}
+
 function ensureScratch(): void {
   fs.mkdirSync(SCRATCH, { recursive: true })
+}
+
+function filePersist(scratchDir: string) {
+  const p = path.join(scratchDir, 'budget.json')
+  return {
+    load(): string | null {
+      try {
+        return fs.readFileSync(p, 'utf8')
+      } catch {
+        return null
+      }
+    },
+    save(json: string): void {
+      fs.mkdirSync(scratchDir, { recursive: true })
+      fs.writeFileSync(p, json, 'utf8')
+    },
+  }
 }
 
 function extractJsonObject(text: string): string | null {
@@ -53,7 +98,7 @@ function readBody(req: Connect.IncomingMessage): Promise<string> {
   })
 }
 
-function runCodex(system: string, user: string): Promise<{ text: string; latencyMs: number }> {
+export function runCodex(system: string, user: string): Promise<{ text: string; latencyMs: number }> {
   const prompt = `${system}\n\n---\n\n${user}\n`
   const t0 = Date.now()
   return new Promise((resolve, reject) => {
@@ -113,24 +158,20 @@ function runCodex(system: string, user: string): Promise<{ text: string; latency
 
 function attachMiddleware(
   middlewares: Connect.Server,
-  busy: { current: boolean },
+  deps: SidecarDeps,
+  scratchDir: string,
 ): void {
   middlewares.use(async (req, res, next) => {
     const url = req.url?.split('?')[0] ?? ''
     if (url === '/api/luna/health' && req.method === 'GET') {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify({ ok: true, scratch: SCRATCH }))
+      res.end(JSON.stringify(healthPayload(deps.budget, scratchDir)))
       return
     }
     if (url === '/api/luna/decide' && req.method === 'POST') {
-      if (busy.current) {
-        res.statusCode = 429
-        res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: 'busy' }))
-        return
-      }
       try {
+        // Budget is the first gate inside handleDecide — before busy / runner.
         const raw = await readBody(req)
         let body: { system?: string; user?: string }
         try {
@@ -141,28 +182,19 @@ function attachMiddleware(
           res.end(JSON.stringify({ error: 'invalid JSON body' }))
           return
         }
-        const system = body.system ?? ''
-        const user = body.user ?? ''
-        busy.current = true
-        try {
-          const { text, latencyMs } = await runCodex(system, user)
-          // eslint-disable-next-line no-console
-          console.log(`[luna-sidecar] decide ${latencyMs}ms chars=${text.length}`)
-          res.statusCode = 200
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ text, latencyMs }))
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          // eslint-disable-next-line no-console
-          console.error(`[luna-sidecar] error: ${msg}`)
-          res.statusCode = 502
-          res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify({ error: msg }))
-        } finally {
-          busy.current = false
+        const result = await handleDecide(deps, body)
+        res.statusCode = result.status
+        res.setHeader('Content-Type', 'application/json')
+        const b = result.json.budget as BudgetSnapshot | undefined
+        if (b) {
+          res.setHeader('X-Luna-Budget-Used-Hour', String(b.usedHour))
+          res.setHeader('X-Luna-Budget-Max-Hour', String(b.maxHour))
+          res.setHeader('X-Luna-Budget-Used-Day', String(b.usedDay))
+          res.setHeader('X-Luna-Budget-Max-Day', String(b.maxDay))
         }
+        res.end(JSON.stringify(result.json))
       } catch (err) {
-        busy.current = false
+        deps.busy.current = false
         next(err)
       }
       return
@@ -173,14 +205,26 @@ function attachMiddleware(
 
 export function lunaSidecarPlugin(): Plugin {
   ensureScratch()
+  const limits = {
+    maxPerHour: parseEnvInt('LUNA_MAX_PER_HOUR', DEFAULT_MAX_PER_HOUR),
+    maxPerDay: parseEnvInt('LUNA_MAX_PER_DAY', DEFAULT_MAX_PER_DAY),
+  }
+  const budget = new BudgetTracker(limits, {
+    persist: filePersist(SCRATCH),
+  })
   const busy = { current: false }
+  const deps: SidecarDeps = {
+    busy,
+    budget,
+    runner: runCodex,
+  }
   return {
     name: 'luna-sidecar',
     configureServer(server) {
-      attachMiddleware(server.middlewares, busy)
+      attachMiddleware(server.middlewares, deps, SCRATCH)
     },
     configurePreviewServer(server) {
-      attachMiddleware(server.middlewares, busy)
+      attachMiddleware(server.middlewares, deps, SCRATCH)
     },
   }
 }

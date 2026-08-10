@@ -176,6 +176,21 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'mind:budget') {
+      const t = toSimTime(ev.tick)
+      const reason =
+        (ev.reason && ev.reason.length > 0
+          ? ev.reason
+          : 'mind budget exhausted — running on instinct')
+      rows.push({
+        key: `mind-budget-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · 🧠 ${reason}`,
+      })
+      continue
+    }
+
     if (ev.type === 'action:start') {
       const agentId = ev.agentId
       if (!agentId) continue
@@ -216,9 +231,11 @@ export function Ticker(props: {
   const [userCollapsed, setUserCollapsed] = useState(false)
   const collapsed = props.collapsed === true ? true : userCollapsed
   const bottom = props.bottomOffset ?? 72
+  // Depend on length too: EventLog mutates one array in place, so reference alone
+  // won't recompute when a same-tick event (e.g. mind:budget) is appended.
   const rows = useMemo(
     () => buildTickerRows(events, replayTick, dayStart),
-    [events, replayTick, dayStart],
+    [events, events.length, replayTick, dayStart],
   )
   const visible = rows.slice(0, 6)
 

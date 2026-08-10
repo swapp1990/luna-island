@@ -8,16 +8,29 @@ export interface MindPrompt {
   tick?: number
 }
 
+export interface MindBudgetInfo {
+  usedHour: number
+  maxHour: number
+  usedDay: number
+  maxDay: number
+}
+
 export interface MindDecisionResult {
   text: string
   latencyMs: number
   approxChars: number
+  /** Sidecar budget snapshot when available. */
+  budget?: MindBudgetInfo
 }
 
 export interface MindProvider {
   readonly name: string
   decide(prompt: MindPrompt): Promise<MindDecisionResult>
 }
+
+/** Default ceiling mirrors sidecar defaults (display when no health yet). */
+export const DEFAULT_BUDGET_MAX_HOUR = 60
+export const DEFAULT_BUDGET_MAX_DAY = 300
 
 const ACTION_CYCLE = [
   'forage',
@@ -136,6 +149,61 @@ export class MockProvider implements MindProvider {
 }
 
 /**
+ * Test / harness provider that returns 402-style budget exhaustion.
+ * Configurable: fail first N decides with budget, then optionally succeed.
+ */
+export class BudgetExhaustedProvider implements MindProvider {
+  readonly name = 'budget-mock'
+  private remainingFails: number
+  private readonly resetsInSec: number
+  private readonly maxHour: number
+  private readonly maxDay: number
+  private usedHour: number
+  private usedDay: number
+  /** Count of decide() invocations (including budget failures). */
+  decideInvocations = 0
+
+  constructor(opts?: {
+    failCount?: number
+    resetsInSec?: number
+    maxHour?: number
+    maxDay?: number
+    usedHour?: number
+    usedDay?: number
+  }) {
+    this.remainingFails = opts?.failCount ?? 999
+    this.resetsInSec = opts?.resetsInSec ?? 3600
+    this.maxHour = opts?.maxHour ?? DEFAULT_BUDGET_MAX_HOUR
+    this.maxDay = opts?.maxDay ?? DEFAULT_BUDGET_MAX_DAY
+    this.usedHour = opts?.usedHour ?? this.maxHour
+    this.usedDay = opts?.usedDay ?? 0
+  }
+
+  async decide(_prompt: MindPrompt): Promise<MindDecisionResult> {
+    this.decideInvocations += 1
+    if (this.remainingFails > 0) {
+      this.remainingFails -= 1
+      const err = new Error('LUNA_BUDGET') as Error & {
+        code?: string
+        resetsInSec?: number
+        budget?: MindBudgetInfo
+      }
+      err.code = 'LUNA_BUDGET'
+      err.resetsInSec = this.resetsInSec
+      err.budget = {
+        usedHour: this.usedHour,
+        maxHour: this.maxHour,
+        usedDay: this.usedDay,
+        maxDay: this.maxDay,
+      }
+      throw err
+    }
+    const mock = new MockProvider()
+    return mock.decideSync(_prompt)
+  }
+}
+
+/**
  * Real mind via Vite sidecar → local codex CLI.
  * Browser: POST /api/luna/decide { system, user } → { text }.
  */
@@ -169,10 +237,44 @@ export class CodexProvider implements MindProvider {
         err.code = 'LUNA_BUSY'
         throw err
       }
+      if (res.status === 402) {
+        let body: {
+          error?: string
+          remainingHour?: number
+          remainingDay?: number
+          resetsInSec?: number
+          budget?: MindBudgetInfo
+        } = {}
+        try {
+          body = (await res.json()) as typeof body
+        } catch {
+          /* empty */
+        }
+        const err = new Error('LUNA_BUDGET') as Error & {
+          code?: string
+          resetsInSec?: number
+          budget?: MindBudgetInfo
+          remainingHour?: number
+          remainingDay?: number
+        }
+        err.code = 'LUNA_BUDGET'
+        err.resetsInSec =
+          typeof body.resetsInSec === 'number' && body.resetsInSec > 0
+            ? body.resetsInSec
+            : 3600
+        err.budget = body.budget
+        err.remainingHour = body.remainingHour
+        err.remainingDay = body.remainingDay
+        throw err
+      }
       if (!res.ok) {
         throw new Error(`Luna sidecar HTTP ${res.status}`)
       }
-      const body = (await res.json()) as { text?: string; error?: string }
+      const body = (await res.json()) as {
+        text?: string
+        error?: string
+        budget?: MindBudgetInfo
+      }
       if (body.error && !body.text) {
         throw new Error(body.error)
       }
@@ -185,6 +287,7 @@ export class CodexProvider implements MindProvider {
         text,
         latencyMs: Math.round(t1 - t0),
         approxChars: prompt.system.length + prompt.user.length + text.length,
+        budget: body.budget,
       }
     } finally {
       clearTimeout(timer)
@@ -192,15 +295,30 @@ export class CodexProvider implements MindProvider {
   }
 }
 
-/** Probe sidecar health (browser). */
-export async function probeSidecarHealth(timeoutMs = 1500): Promise<boolean> {
+export interface SidecarHealthResult {
+  ok: boolean
+  budget?: MindBudgetInfo
+}
+
+/** Probe sidecar health (browser). Returns budget snapshot when present. */
+export async function probeSidecarHealth(
+  timeoutMs = 1500,
+): Promise<SidecarHealthResult> {
   try {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     const res = await fetch('/api/luna/health', { signal: controller.signal })
     clearTimeout(timer)
-    return res.ok
+    if (!res.ok) return { ok: false }
+    const body = (await res.json()) as {
+      ok?: boolean
+      budget?: MindBudgetInfo
+    }
+    return {
+      ok: true,
+      budget: body.budget,
+    }
   } catch {
-    return false
+    return { ok: false }
   }
 }

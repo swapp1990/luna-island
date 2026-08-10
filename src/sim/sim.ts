@@ -518,6 +518,26 @@ export class Simulation {
     })
   }
 
+  /**
+   * Record a mind:budget event (sidecar hourly/daily ceiling hit).
+   * Once per exhaustion episode — client cooldown suppresses further dispatches.
+   * Does not bump fallback counters; agents keep living on UtilityBrain instinct.
+   */
+  postMindBudget(
+    agentId: string,
+    data: Record<string, unknown>,
+    reason: string,
+  ): void {
+    ensureMindFields(this.state)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'mind:budget',
+      agentId,
+      data: { ...data, source: 'luna' },
+      reason,
+    })
+  }
+
   /** Install full-log playback for re-sim (stateAt / forks). */
   setIntentPlayback(log: ExternalIntentRecord[] | null): void {
     this.intentPlayback = log ? cloneExternalIntentLog(log) : null

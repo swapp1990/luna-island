@@ -196,6 +196,11 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             approxChars: 0,
             provider: 'off',
             decideCalls: 0,
+            budgetUsedHour: 0,
+            budgetMaxHour: 60,
+            budgetUsedDay: 0,
+            budgetMaxDay: 300,
+            budgetCooldown: false,
           },
     }
   }

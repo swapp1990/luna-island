@@ -140,7 +140,8 @@ export function App() {
       setScrubMin(bounds.startTick)
       setScrubMax(bounds.endTick)
       const sim = loop.getViewSim()
-      const events = sim.getEvents()
+      // Slice: EventLog mutates one array; same ref would skip React updates
+      const events = sim.getEvents().slice()
       setAllEvents(events)
       setPlaces(sim.state.places.map(clonePlace))
       setOwners({ ...sim.state.owners })
@@ -323,6 +324,16 @@ export function App() {
               await clearAutosave()
               apiRef.current?.mountWorld(new Simulation(seed))
             })()
+          },
+          forceMindBudgetCooldown: (resetsInSec = 3600) => {
+            const m = mindRef.current
+            const live = liveRef.current
+            if (!m || !live) return
+            m.forceBudgetCooldown(live, resetsInSec)
+            // Fresh slice so React/ticker see the same-tick mind:budget append
+            setAllEvents(live.getEvents().slice())
+            setHud(loop.getState())
+            apiRef.current?.syncFromLoop()
           },
         },
       )

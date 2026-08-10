@@ -80,34 +80,52 @@ function MindChip(props: { mind: MindBridgeState }) {
   const { mind } = props
   // Wall-bound thinking only (not short mock holds)
   const showThinking = (mind.thinking ?? 0) > 0
+  const cooldown = !!mind.budgetCooldown
+  const maxHour = mind.budgetMaxHour ?? 60
+  const usedHour = mind.budgetUsedHour ?? 0
+  const remainingHour = Math.max(0, maxHour - usedHour)
+  // Amber while budget cooldown; purple thinking; default purple idle
+  const bg = cooldown
+    ? 'rgba(255, 180, 80, 0.22)'
+    : showThinking
+      ? 'rgba(160, 140, 255, 0.22)'
+      : 'rgba(160, 140, 255, 0.12)'
+  const border = cooldown
+    ? '1px solid rgba(255, 190, 100, 0.7)'
+    : showThinking
+      ? '1px solid rgba(190, 170, 255, 0.65)'
+      : '1px solid rgba(160, 140, 255, 0.35)'
   return (
     <div
       data-testid="mind-chip"
       data-thinking={showThinking ? '1' : '0'}
+      data-budget-cooldown={cooldown ? '1' : '0'}
       title={
-        showThinking
-          ? `LunaBrain (${mind.provider}) — thinking…`
-          : `LunaBrain (${mind.provider}) — ${mind.decisions} decisions, ${mind.fallbacks} fallbacks`
+        cooldown
+          ? `LunaBrain budget exhausted — instinct until reset (${remainingHour}/${maxHour}h left)`
+          : showThinking
+            ? `LunaBrain (${mind.provider}) — thinking…`
+            : `LunaBrain (${mind.provider}) — ${mind.decisions} decisions · ${remainingHour}/${maxHour}h`
       }
       style={{
         ...chipBase,
-        background: showThinking
-          ? 'rgba(160, 140, 255, 0.22)'
-          : 'rgba(160, 140, 255, 0.12)',
-        border: showThinking
-          ? '1px solid rgba(190, 170, 255, 0.65)'
-          : '1px solid rgba(160, 140, 255, 0.35)',
-        transform: showThinking ? 'scale(1.06)' : 'scale(1)',
-        boxShadow: showThinking
-          ? '0 0 14px rgba(160, 140, 255, 0.55)'
+        background: bg,
+        border,
+        transform: showThinking || cooldown ? 'scale(1.06)' : 'scale(1)',
+        boxShadow: cooldown
+          ? '0 0 12px rgba(255, 180, 80, 0.45)'
+          : showThinking
+            ? '0 0 14px rgba(160, 140, 255, 0.55)'
+            : 'none',
+        animation: showThinking && !cooldown
+          ? 'luna-mind-pulse 1.1s ease-in-out infinite'
           : 'none',
-        animation: showThinking ? 'luna-mind-pulse 1.1s ease-in-out infinite' : 'none',
       }}
     >
       <span style={{ fontSize: 14, lineHeight: 1 }} aria-hidden>
         🧠
       </span>
-      {showThinking ? (
+      {showThinking && !cooldown ? (
         <span
           data-testid="mind-chip-thinking"
           style={{
@@ -128,13 +146,31 @@ function MindChip(props: { mind: MindBridgeState }) {
               fontWeight: 700,
               fontSize: 13,
               minWidth: 12,
+              color: cooldown ? '#ffd59a' : undefined,
             }}
           >
             {mind.decisions}
           </span>
+          <span style={{ opacity: 0.45, fontSize: 10 }}>·</span>
+          <span
+            data-testid="mind-chip-budget"
+            style={{
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+              fontWeight: 700,
+              fontSize: 11,
+              color: cooldown ? '#ffcc80' : 'rgba(220, 210, 255, 0.9)',
+            }}
+          >
+            {remainingHour}/{maxHour}h
+          </span>
           <span
             data-testid="mind-chip-provider"
-            style={{ fontSize: 10, opacity: 0.7, fontWeight: 600 }}
+            style={{
+              fontSize: 10,
+              opacity: 0.7,
+              fontWeight: 600,
+              color: cooldown ? '#ffd59a' : undefined,
+            }}
           >
             {mind.provider}
           </span>

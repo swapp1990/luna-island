@@ -17,6 +17,13 @@ export interface MindBridgeState {
   provider: string
   /** Actual dispatched decide requests (scrub must not increase; 429 retries don't count). */
   decideCalls: number
+  /** Sidecar budget (defaults 0/60h · 0/300d when unknown). */
+  budgetUsedHour?: number
+  budgetMaxHour?: number
+  budgetUsedDay?: number
+  budgetMaxDay?: number
+  /** Client cooldown after HTTP 402 — no further mind dispatches. */
+  budgetCooldown?: boolean
 }
 
 export interface SimStateBridge {
@@ -74,6 +81,11 @@ export interface SimControlBridge {
   saveNow: () => Promise<boolean>
   /** Additive: wipe autosave and start a fresh world with the given seed. */
   newWorld: (seed: number) => void
+  /**
+   * Additive (e2e/dev): force mind budget cooldown + one mind:budget event.
+   * Does not hit the sidecar.
+   */
+  forceMindBudgetCooldown?: (resetsInSec?: number) => void
 }
 
 declare global {
