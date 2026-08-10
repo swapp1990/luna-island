@@ -387,6 +387,123 @@ test.describe.serial('lunabrain harness', () => {
     expect(after.budgetCooldown).toBe(true)
   })
 
+  test('P3-1b queue: 3 minds @64× wall-delay → all decide, 0 fallbacks, breathe drains line', async ({
+    page,
+  }) => {
+    // Async mock path; short delay so 3 sequential dispatches finish quickly
+    const url = '/?brain=mock&mindWallMs=400'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    // 64× — breathe should drop effective speed to 1 while queue/in-flight
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+
+    let sawBreathe = false
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            const thinking = (s.mind?.thinking ?? 0) as number
+            return {
+              thinking,
+              speed: s.speed as number,
+              userSpeed: (s.userSpeed ?? 0) as number,
+            }
+          }),
+        { timeout: 30_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          speed: 1,
+          userSpeed: 64,
+        }),
+      )
+    sawBreathe = true
+    expect(sawBreathe).toBe(true)
+
+    // Wall-clock run: let the queue drain and decisions apply (no ffwd — that skips breathe)
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            return {
+              decisions: (s.mind?.decisions ?? 0) as number,
+              fallbacks: (s.mind?.fallbacks ?? 0) as number,
+              thinking: (s.mind?.thinking ?? 0) as number,
+            }
+          }),
+        { timeout: 90_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          fallbacks: 0,
+        }),
+      )
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => (window as any).__simState?.mind?.decisions as number),
+        { timeout: 90_000 },
+      )
+      .toBeGreaterThanOrEqual(3)
+
+    // Each of the three luna minds must have a decision in the Mind tab
+    for (const agentId of ['agent-0', 'agent-1', 'agent-11']) {
+      await page.evaluate(
+        (id) => (window as any).__simControl.selectAgent(id),
+        agentId,
+      )
+      await page.getByTestId('tab-mind').click()
+      await expect(page.getByTestId('mind-tab')).toBeVisible()
+      await expect
+        .poll(
+          async () => {
+            const t = await page.getByTestId('mind-last-reasoning').textContent()
+            return !!(t && t.length > 0 && t !== 'No mind decision yet')
+          },
+          { timeout: 60_000 },
+        )
+        .toBe(true)
+    }
+
+    const final = await page.evaluate(() => {
+      const s = (window as any).__simState
+      return {
+        decisions: s.mind.decisions as number,
+        fallbacks: s.mind.fallbacks as number,
+        decideCalls: s.mind.decideCalls as number,
+        tick: s.tick as number,
+      }
+    })
+    expect(final.fallbacks).toBe(0)
+    expect(final.decisions).toBeGreaterThanOrEqual(3)
+    expect(final.decideCalls).toBe(final.decisions)
+    expect(final.tick).toBeGreaterThan(10)
+  })
+
   test('memory & reflection (P3-1): 2 sim-days → Mind tab 💭; prompt has Your memories:; auto brain; off clean', async ({
     page,
   }) => {

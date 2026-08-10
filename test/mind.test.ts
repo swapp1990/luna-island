@@ -15,13 +15,19 @@ import {
   MIND_STALE_TICKS,
   MIND_WALL_TIMEOUT_MS,
 } from '../src/mind/lunaBrain'
-import { MockProvider } from '../src/mind/providers'
+import {
+  MockProvider,
+  type MindDecisionResult,
+  type MindPrompt,
+  type MindProvider,
+} from '../src/mind/providers'
 import { LUNA_AGENT_IDS, personaFor } from '../src/mind/personas'
 import {
   episodicMemories,
   reflectionMemories,
 } from '../src/mind/memory'
 import { buildUserPrompt } from '../src/mind/prompt'
+import { MindDispatchQueue } from '../src/mind/dispatchQueue'
 
 const meta = (reasoning: string): ExternalIntentMeta => ({
   reasoning,
@@ -339,29 +345,40 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
     const sim = new Simulation(42)
     const nLuna = LUNA_AGENT_IDS.length
 
-    // Kick decisions at tick 0 (one per luna agent)
+    // Kick decisions at tick 0 — all 3 pipeline, only 1 actually dispatched
     mind.onAfterTick(sim)
     expect(mind.getMeter().pending).toBe(nLuna)
-    expect(mind.getDecideCallCount()).toBe(nLuna)
+    expect(mind.getMeter().thinking).toBe(nLuna)
+    expect(mind.getDecideCallCount()).toBe(1)
     const requestTick = sim.state.tick
 
-    // Race sim far ahead while the answer is still wall-waiting (no breathe)
+    // Race sim far ahead while the head request is wall-waiting (no breathe).
+    // Queued agents rebuild prompts at their later dispatch tick, so only the
+    // already-dispatched head goes stale; waiters stay fresh by design.
     sim.advanceTicks(MIND_STALE_TICKS + 10)
     expect(sim.state.tick - requestTick).toBeGreaterThan(MIND_STALE_TICKS)
-    provider.advanceWallFrame()
-    // Drain microtasks + macrotask so async decide continuation runs
-    await Promise.resolve()
-    await Promise.resolve()
-    await new Promise((r) => setTimeout(r, 0))
-    await Promise.resolve()
+
+    // Complete head → stale; then complete remaining waiters (they apply fresh)
+    for (let i = 0; i < nLuna; i++) {
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((r) => setTimeout(r, 0))
+      await Promise.resolve()
+    }
 
     const stales = sim.getEvents().filter((e) => e.type === 'mind:stale')
-    expect(stales.length).toBe(nLuna)
+    expect(stales.length).toBe(1)
     expect(stales[0]!.reason).toMatch(/sim-min/)
-    expect(mind.getMeter().stales).toBe(nLuna)
-    expect(mind.getMeter().decisions).toBe(0)
+    expect(mind.getMeter().stales).toBe(1)
     expect(mind.getMeter().fallbacks).toBe(0)
-    expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(0)
+    // Waiters dispatched after the race post intents (apply on next sim step)
+    expect(mind.getMeter().decisions).toBe(nLuna - 1)
+    sim.advanceTicks(2)
+    mind.onAfterTick(sim)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(
+      nLuna - 1,
+    )
   })
 })
 
@@ -378,18 +395,18 @@ describe('mind budget cooldown (P3-0c)', () => {
     const sim = new Simulation(42)
     const nLuna = LUNA_AGENT_IDS.length
 
-    // Kick first dispatch (async provider path) — one per luna agent
+    // Kick first dispatch (async provider path) — single dispatcher: 1 call, rest queued
     mind.onAfterTick(sim)
-    expect(mind.getDecideCallCount()).toBe(nLuna)
-    // Drain provider rejection + cooldown entry
+    expect(mind.getDecideCallCount()).toBe(1)
+    expect(mind.getMeter().thinking).toBe(nLuna)
+    // Drain provider rejection + cooldown entry (clears remaining queue)
     await Promise.resolve()
     await Promise.resolve()
     await new Promise((r) => setTimeout(r, 0))
     await Promise.resolve()
 
     const budgetEvents = sim.getEvents().filter((e) => e.type === 'mind:budget')
-    // First 402 enters cooldown and emits once; other in-flight may also 402 but
-    // only one mind:budget event per cooldown episode.
+    // First 402 enters cooldown, drops the queue, emits once
     expect(budgetEvents.length).toBe(1)
     expect(budgetEvents[0]!.reason).toMatch(/mind budget exhausted — running on instinct until \d{2}:\d{2}/)
     expect(mind.getMeter().budgetCooldown).toBe(true)
@@ -637,6 +654,193 @@ describe('memory purity (P3-1)', () => {
     expect(LUNA_AGENT_IDS).toContain('agent-0')
     expect(LUNA_AGENT_IDS).toContain('agent-1')
     expect(LUNA_AGENT_IDS).toContain('agent-11')
+  })
+})
+
+describe('mind dispatch queue unit (P3-1b)', () => {
+  it('FIFO decisions, reflections low priority, no duplicate agents, cap drops reflection first', () => {
+    const q = new MindDispatchQueue(3)
+    expect(q.enqueue({ agentId: 'a', kind: 'reflection', nightKey: 1 })).toBe(
+      'enqueued',
+    )
+    expect(q.enqueue({ agentId: 'b', kind: 'decision' })).toBe('enqueued')
+    expect(q.enqueue({ agentId: 'c', kind: 'decision' })).toBe('enqueued')
+    // Decision jumps ahead of queued reflection
+    expect(q.list().map((e) => e.agentId)).toEqual(['b', 'c', 'a'])
+    // Duplicate agent rejected
+    expect(q.enqueue({ agentId: 'b', kind: 'decision' })).toBe('duplicate')
+    // Cap: drop oldest reflection when full
+    expect(q.enqueue({ agentId: 'd', kind: 'decision' })).toBe('enqueued')
+    expect(q.list().map((e) => `${e.agentId}:${e.kind}`)).toEqual([
+      'b:decision',
+      'c:decision',
+      'd:decision',
+    ])
+    expect(q.dequeue()?.agentId).toBe('b')
+    expect(q.dequeue()?.agentId).toBe('c')
+  })
+})
+
+/**
+ * Recording mock: wall-frame delay + concurrency / prompt-tick capture.
+ */
+class RecordingMockProvider implements MindProvider {
+  readonly name = 'mock'
+  private inner: MockProvider
+  calls: MindPrompt[] = []
+  private concurrent = 0
+  maxConcurrent = 0
+
+  constructor(wallDelayFrames: number) {
+    this.inner = new MockProvider({ wallDelayFrames })
+  }
+
+  advanceWallFrame(): void {
+    this.inner.advanceWallFrame()
+  }
+
+  async decide(prompt: MindPrompt): Promise<MindDecisionResult> {
+    this.calls.push({ ...prompt })
+    this.concurrent += 1
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent)
+    try {
+      return await this.inner.decide(prompt)
+    } finally {
+      this.concurrent -= 1
+    }
+  }
+}
+
+describe('client-side mind dispatch queue (P3-1b)', () => {
+  async function drainWall(
+    provider: RecordingMockProvider,
+    mind: LunaBrainService,
+    sim: Simulation,
+    frames: number,
+  ): Promise<void> {
+    for (let i = 0; i < frames; i++) {
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((r) => setTimeout(r, 0))
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+  }
+
+  it('3 minds same cadence window: all apply, zero fallbacks, FIFO, single concurrent, refresh at dispatch', async () => {
+    const WALL = 5
+    const provider = new RecordingMockProvider(WALL)
+    const mind = new LunaBrainService('mock', { provider })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    // Kick all three at tick 0
+    mind.onAfterTick(sim)
+    expect(mind.getMeter().thinking).toBe(3)
+    expect(mind.getDecideCallCount()).toBe(1)
+    expect(provider.calls.length).toBe(1)
+    expect(provider.calls[0]!.tick).toBe(0)
+    expect(provider.maxConcurrent).toBe(1)
+
+    // World races ahead while first is in flight — later agents rebuild at dispatch
+    for (let i = 0; i < 17; i++) {
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+    // Still only one dispatch until wall completes; no duplicate enqueues
+    expect(mind.getDecideCallCount()).toBe(1)
+    expect(mind.getMeter().thinking).toBe(3)
+
+    // Complete first → second dispatches at current tick (~17+)
+    await drainWall(provider, mind, sim, WALL)
+    expect(provider.calls.length).toBe(2)
+    expect(provider.calls[1]!.agentId).not.toBe(provider.calls[0]!.agentId)
+    const secondTick = provider.calls[1]!.tick!
+    expect(secondTick).toBeGreaterThan(0)
+    expect(provider.calls[1]!.user).toContain(`(tick ${secondTick})`)
+    expect(provider.maxConcurrent).toBe(1)
+
+    // Drain only until the original 3 pipeline entries finish (avoid next cadence)
+    let guard = 0
+    while (mind.getMeter().thinking > 0 && guard < WALL * 6 + 20) {
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((r) => setTimeout(r, 0))
+      // Advance at most 1 tick so soft-gap does not re-fire mid-drain
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+      guard++
+    }
+
+    expect(provider.maxConcurrent).toBe(1)
+    // First three dispatches are the initial FIFO line (no duplicates)
+    const firstThree = provider.calls.slice(0, 3)
+    expect(firstThree.map((c) => c.agentId)).toEqual([...LUNA_AGENT_IDS])
+    for (const c of firstThree) {
+      expect(c.kind ?? 'decision').toBe('decision')
+      expect(c.user).toContain(`(tick ${c.tick})`)
+    }
+    // Second/third were refreshed past enqueue tick 0
+    expect(firstThree[1]!.tick!).toBeGreaterThan(0)
+    expect(firstThree[2]!.tick!).toBeGreaterThan(firstThree[0]!.tick!)
+
+    const meter = mind.getMeter()
+    expect(meter.fallbacks).toBe(0)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:fallback').length).toBe(0)
+    const decisions = sim.getEvents().filter((e) => e.type === 'mind:decision')
+    const agentsWithDecision = new Set(decisions.map((e) => e.agentId))
+    for (const id of LUNA_AGENT_IDS) {
+      expect(agentsWithDecision.has(id)).toBe(true)
+    }
+    // decideCalls === applied decisions + applied reflections
+    expect(meter.decideCalls).toBe(meter.decisions)
+    expect(meter.decisions).toBeGreaterThanOrEqual(3)
+    expect(meter.thinking).toBe(0)
+  })
+
+  it('reflection+decision priority: decisions jump ahead of queued reflections; single concurrent', async () => {
+    const q = new MindDispatchQueue(4)
+    q.enqueue({ agentId: 'agent-0', kind: 'reflection', nightKey: 1 })
+    q.enqueue({ agentId: 'agent-1', kind: 'reflection', nightKey: 1 })
+    // Decision inserts before reflections
+    q.enqueue({ agentId: 'agent-11', kind: 'decision' })
+    expect(q.list().map((e) => `${e.agentId}:${e.kind}`)).toEqual([
+      'agent-11:decision',
+      'agent-0:reflection',
+      'agent-1:reflection',
+    ])
+
+    // Integration: tick 0 is Day1 06:00; Day2 03:00 = abs 1620 → tick 1260
+    // (world epoch offset MINUTES_AT_TICK0 = 360)
+    const WALL = 3
+    const provider = new RecordingMockProvider(WALL)
+    const mind = new LunaBrainService('mock', { provider })
+    await mind.init()
+    const sim = new Simulation(42)
+    const day2_03_00 = 1260
+    sim.advanceTicks(day2_03_00)
+    mind.onAfterTick(sim)
+    // At exact 03:00 fallback, reflections enqueue first (before decisions)
+    expect(provider.calls[0]?.kind).toBe('reflection')
+    expect(mind.getMeter().thinking).toBe(3)
+
+    for (let i = 0; i < WALL * LUNA_AGENT_IDS.length + 15; i++) {
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+      await new Promise((r) => setTimeout(r, 0))
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+
+    expect(provider.maxConcurrent).toBe(1)
+    expect(mind.getMeter().fallbacks).toBe(0)
+    const reflections = sim.getEvents().filter((e) => e.type === 'mind:reflection')
+    expect(reflections.length).toBe(LUNA_AGENT_IDS.length)
+    const meter = mind.getMeter()
+    expect(meter.decideCalls).toBe(meter.decisions)
   })
 })
 

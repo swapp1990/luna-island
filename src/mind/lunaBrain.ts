@@ -20,6 +20,7 @@ import {
   type MindBudgetInfo,
   type MindProvider,
 } from './providers'
+import { MindDispatchQueue } from './dispatchQueue'
 
 /** Cadence: min gap after a decision before the soft path. */
 export const MIND_MIN_GAP_TICKS = 30
@@ -63,8 +64,9 @@ export interface MindMeter {
   /** inFlight + holds (inbox not yet applied). */
   pending: number
   /**
-   * Wall-bound requests only (sidecar / delayed mock). Auto-breathe keys off this —
-   * short mock holds do not throttle the sim.
+   * Wall-bound pipeline: queue depth + the single in-flight fetch.
+   * Auto-breathe keys off this so the world stays at 1× while the whole line drains.
+   * Short mock holds do not count.
    */
   thinking: number
   decisions: number
@@ -169,7 +171,13 @@ export class LunaBrainService {
   private lastDecisionTick = new Map<string, number>()
   /** Wall-ms of last async dispatch per agent (15s floor). */
   private lastDispatchWall = new Map<string, number>()
-  private inFlight = new Map<string, InFlight>()
+  /**
+   * Local FIFO for async/sidecar work. Exactly one provider.decide is in flight;
+   * the rest wait here without contacting the sidecar.
+   */
+  private readonly queue = new MindDispatchQueue(LUNA_AGENT_IDS.length)
+  /** The single currently dispatched (provider-facing) request, if any. */
+  private activeDispatch: InFlight | null = null
   private holds: PendingHold[] = []
   private noteHolds: PendingNoteHold[] = []
   private lastExchange = new Map<string, MindExchange>()
@@ -191,6 +199,8 @@ export class LunaBrainService {
   private budgetEventEmitted = false
   /** Night keys already reflected (or in-flight/hold) per agent — one reflection per night. */
   private reflectedNights = new Map<string, Set<number>>()
+  /** Latest live sim (for prompt rebuild at dispatch). */
+  private latestSim: Simulation | null = null
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
@@ -246,9 +256,11 @@ export class LunaBrainService {
 
   dispose(): void {
     this.disposed = true
-    this.inFlight.clear()
+    this.clearQueueUnmarkReflections()
+    this.activeDispatch = null
     this.holds = []
     this.noteHolds = []
+    this.latestSim = null
   }
 
   getMode(): BrainMode {
@@ -288,7 +300,8 @@ export class LunaBrainService {
   }
 
   getMeter(): MindMeter {
-    const thinking = this.inFlight.size
+    // Breathe through the whole line: queued waiters + the one in-flight fetch
+    const thinking = this.queue.size() + (this.activeDispatch ? 1 : 0)
     const pending = thinking + this.holds.length + this.noteHolds.length
     return {
       enabled: this.isEnabled(),
@@ -310,6 +323,20 @@ export class LunaBrainService {
       budgetUsedDay: this.budgetUsedDay,
       budgetMaxDay: this.budgetMaxDay,
       budgetCooldown: this.isBudgetCooldown(),
+    }
+  }
+
+  /** Agent is queued or has the single in-flight provider call. */
+  private isPipelineBusy(agentId: string): boolean {
+    if (this.activeDispatch?.agentId === agentId) return true
+    return this.queue.has(agentId)
+  }
+
+  private clearQueueUnmarkReflections(): void {
+    for (const e of this.queue.clear()) {
+      if (e.kind === 'reflection' && e.nightKey != null) {
+        this.reflectedNights.get(e.agentId)?.delete(e.nightKey)
+      }
     }
   }
 
@@ -376,6 +403,7 @@ export class LunaBrainService {
     if (!this.isEnabled() || this.disposed) return
     if (this.mode === 'off' || !this.provider) return
 
+    this.latestSim = sim
     const tick = sim.state.tick
 
     // Flush decision holds whose readyTick has arrived
@@ -395,30 +423,42 @@ export class LunaBrainService {
       this.applyReflectionNotes(sim, h.agentId, h.notes, h.meta, h.exchange, h.nightKey)
     }
 
-    // Wall-timeout in-flight
+    // Wall-timeout only for the dispatched request (queue wait does not consume it)
     const now = Date.now()
-    for (const [agentId, flight] of [...this.inFlight.entries()]) {
-      if (now - flight.startedWall >= MIND_WALL_TIMEOUT_MS) {
-        this.inFlight.delete(agentId)
-        this.fallbacks += 1
-        sim.postMindFallback(
-          agentId,
-          {
-            reason: 'wall timeout',
-            latencyMs: MIND_WALL_TIMEOUT_MS,
-            variant: flight.kind === 'reflection' ? 'reflection' : 'decision',
-          },
-          'Mind request timed out — continuing on instinct',
-        )
+    const flight = this.activeDispatch
+    if (flight && now - flight.startedWall >= MIND_WALL_TIMEOUT_MS) {
+      this.activeDispatch = null
+      if (flight.kind === 'reflection' && flight.nightKey != null) {
+        this.reflectedNights.get(flight.agentId)?.delete(flight.nightKey)
+      }
+      this.fallbacks += 1
+      sim.postMindFallback(
+        flight.agentId,
+        {
+          reason: 'wall timeout',
+          latencyMs: MIND_WALL_TIMEOUT_MS,
+          variant: flight.kind === 'reflection' ? 'reflection' : 'decision',
+        },
+        'Mind request timed out — continuing on instinct',
+      )
+      // Next waiter may proceed
+      this.pumpDispatch(sim)
+    }
+
+    // Drop queue entries for agents that no longer exist (world reset mid-line)
+    const valid = new Set(sim.state.agents.map((a) => a.id))
+    for (const e of this.queue.pruneInvalid(valid)) {
+      if (e.kind === 'reflection' && e.nightKey != null) {
+        this.reflectedNights.get(e.agentId)?.delete(e.nightKey)
       }
     }
 
-    // Hard client cooldown: no further dispatches until resetsInSec elapses
+    // Hard client cooldown: no further enqueues / dispatches until reset
     if (this.isBudgetCooldown(now)) return
 
     // Nightly reflections take priority over routine decisions when due
     for (const agentId of LUNA_AGENT_IDS) {
-      if (this.inFlight.has(agentId)) continue
+      if (this.isPipelineBusy(agentId)) continue
       if (this.holds.some((h) => h.agentId === agentId)) continue
       if (this.noteHolds.some((h) => h.agentId === agentId)) continue
       if (!isLunaAgent(agentId)) continue
@@ -427,7 +467,7 @@ export class LunaBrainService {
       const dueNight = this.reflectionDueNightKey(sim, agentId)
       if (dueNight == null) continue
 
-      // Wall-floor for async/sidecar path only
+      // Wall-floor for async/sidecar path only (checked again at actual dispatch)
       if (!this.providerPrefersSync()) {
         const lastWall = this.lastDispatchWall.get(agentId) ?? 0
         if (now - lastWall < MIND_WALL_FLOOR_MS) continue
@@ -438,7 +478,7 @@ export class LunaBrainService {
 
     // Cadence: request decisions for luna agents
     for (const agentId of LUNA_AGENT_IDS) {
-      if (this.inFlight.has(agentId)) continue
+      if (this.isPipelineBusy(agentId)) continue
       if (this.holds.some((h) => h.agentId === agentId)) continue
       if (this.noteHolds.some((h) => h.agentId === agentId)) continue
       const agent = sim.state.agents.find((a) => a.id === agentId)
@@ -462,6 +502,9 @@ export class LunaBrainService {
 
       this.requestDecision(sim, agentId)
     }
+
+    // Ensure the single dispatcher is running if anything is waiting
+    this.pumpDispatch(sim)
   }
 
   /**
@@ -515,15 +558,14 @@ export class LunaBrainService {
     const agent = sim.state.agents.find((a) => a.id === agentId)
     if (!agent) return
 
-    const tick = sim.state.tick
-    const events: readonly SimEvent[] = sim.getEvents()
-    const system = buildSystemPrompt(agentId)
-    const user = buildUserPrompt(agent, sim.state, events, sim.state.mindNoteLog)
     const provider = this.provider
-    const providerName = provider.name
 
     // Mock sync: fully synchronous so ffwd interleaves decide → 3-tick hold → apply
     if (provider instanceof MockProvider && provider.preferSync()) {
+      const tick = sim.state.tick
+      const events: readonly SimEvent[] = sim.getEvents()
+      const system = buildSystemPrompt(agentId)
+      const user = buildUserPrompt(agent, sim.state, events, sim.state.mindNoteLog)
       this.decideCallCount += 1
       const result = provider.decideSync({
         system,
@@ -532,73 +574,14 @@ export class LunaBrainService {
         tick,
         kind: 'decision',
       })
-      this.finishDecision(sim, agentId, system, user, result, providerName, tick)
+      this.finishDecision(sim, agentId, system, user, result, provider.name, tick)
       return
     }
 
-    const flight: InFlight = {
-      agentId,
-      startedTick: tick,
-      startedWall: Date.now(),
-      kind: 'decision',
-    }
-    this.inFlight.set(agentId, flight)
-    this.lastDispatchWall.set(agentId, flight.startedWall)
-    // Count only the initial dispatch of a logical decision (429 retries reuse it)
-    this.decideCallCount += 1
-
-    const run = async () => {
-      // Retry loop for 429 "still thinking" — same flight, no extra decideCalls
-      for (;;) {
-        if (this.disposed) return
-        if (this.inFlight.get(agentId) !== flight) return
-        try {
-          const result = await provider.decide({
-            system,
-            user,
-            agentId,
-            tick,
-            kind: 'decision',
-          })
-          if (this.disposed) return
-          if (this.inFlight.get(agentId) !== flight) return
-          if (result.budget) this.applyBudgetSnapshot(result.budget)
-          this.inFlight.delete(agentId)
-          this.finishDecision(sim, agentId, system, user, result, providerName, tick)
-          return
-        } catch (err) {
-          if (this.disposed) return
-          if (this.inFlight.get(agentId) !== flight) return
-          const code = (err as { code?: string })?.code
-          if (code === 'LUNA_BUSY') {
-            // Stay in-flight; re-check without counting a new decideCall
-            await new Promise<void>((r) => setTimeout(r, LUNA_BUSY_RETRY_MS))
-            continue
-          }
-          if (code === 'LUNA_BUDGET') {
-            this.inFlight.delete(agentId)
-            const resetsInSec =
-              typeof (err as { resetsInSec?: number }).resetsInSec === 'number'
-                ? (err as { resetsInSec: number }).resetsInSec
-                : 3600
-            const budget = (err as { budget?: MindBudgetInfo }).budget
-            this.enterBudgetCooldown(sim, agentId, resetsInSec, budget)
-            return
-          }
-          this.inFlight.delete(agentId)
-          this.fallbacks += 1
-          const msg = err instanceof Error ? err.message : String(err)
-          sim.postMindFallback(
-            agentId,
-            { reason: 'provider error', error: msg },
-            `Mind provider error: ${msg}`,
-          )
-          return
-        }
-      }
-    }
-
-    void run()
+    // Async/sidecar: enqueue only — do not contact provider until pump dispatches
+    if (this.isPipelineBusy(agentId)) return
+    this.queue.enqueue({ agentId, kind: 'decision' })
+    this.pumpDispatch(sim)
   }
 
   private requestReflection(
@@ -608,18 +591,17 @@ export class LunaBrainService {
   ): void {
     if (!this.provider) return
     if (this.isBudgetCooldown()) return
-    // Reserve the night immediately so we don't double-dispatch while in-flight
-    this.markReflected(agentId, nightKey)
 
-    const tick = sim.state.tick
-    const day = reflectionDayForNightKey(nightKey)
-    const events: readonly SimEvent[] = sim.getEvents()
-    const system = buildReflectionSystemPrompt(agentId)
-    const user = buildReflectionUserPrompt(agentId, events, day)
     const provider = this.provider
-    const providerName = provider.name
 
     if (provider instanceof MockProvider && provider.preferSync()) {
+      // Reserve the night immediately so we don't double-dispatch
+      this.markReflected(agentId, nightKey)
+      const tick = sim.state.tick
+      const day = reflectionDayForNightKey(nightKey)
+      const events: readonly SimEvent[] = sim.getEvents()
+      const system = buildReflectionSystemPrompt(agentId)
+      const user = buildReflectionUserPrompt(agentId, events, day)
       this.decideCallCount += 1
       const result = provider.decideSync({
         system,
@@ -634,80 +616,173 @@ export class LunaBrainService {
         system,
         user,
         result,
-        providerName,
+        provider.name,
         tick,
         nightKey,
       )
       return
     }
 
-    const flight: InFlight = {
+    // Async: reserve night + enqueue (no provider contact until pump)
+    if (this.isPipelineBusy(agentId)) return
+    this.markReflected(agentId, nightKey)
+    const result = this.queue.enqueue({
       agentId,
-      startedTick: tick,
-      startedWall: Date.now(),
       kind: 'reflection',
       nightKey,
+    })
+    if (result === 'dropped' || result === 'duplicate') {
+      // Unmark so a later cadence can retry
+      this.reflectedNights.get(agentId)?.delete(nightKey)
+      return
     }
-    this.inFlight.set(agentId, flight)
-    this.lastDispatchWall.set(agentId, flight.startedWall)
+    this.pumpDispatch(sim)
+  }
+
+  /**
+   * Single-flight dispatcher: at most one provider.decide in flight app-wide.
+   * Observation/prompts are built at dispatch time (not enqueue) so the prompt
+   * tick matches the world when the request actually leaves.
+   */
+  private pumpDispatch(sim: Simulation): void {
+    if (this.disposed || !this.provider) return
+    if (this.activeDispatch) return
+    if (this.isBudgetCooldown()) return
+
+    const entry = this.queue.dequeue()
+    if (!entry) return
+
+    const agent = sim.state.agents.find((a) => a.id === entry.agentId)
+    if (!agent) {
+      if (entry.kind === 'reflection' && entry.nightKey != null) {
+        this.reflectedNights.get(entry.agentId)?.delete(entry.nightKey)
+      }
+      // Try next waiter
+      this.pumpDispatch(sim)
+      return
+    }
+
+    // Build prompts NOW — refresh observation at dispatch, not enqueue
+    const tick = sim.state.tick
+    const events: readonly SimEvent[] = sim.getEvents()
+    let system: string
+    let user: string
+    if (entry.kind === 'reflection') {
+      const nightKey = entry.nightKey!
+      const day = reflectionDayForNightKey(nightKey)
+      system = buildReflectionSystemPrompt(entry.agentId)
+      user = buildReflectionUserPrompt(entry.agentId, events, day)
+    } else {
+      system = buildSystemPrompt(entry.agentId)
+      user = buildUserPrompt(agent, sim.state, events, sim.state.mindNoteLog)
+    }
+
+    const provider = this.provider
+    const providerName = provider.name
+    const flight: InFlight = {
+      agentId: entry.agentId,
+      startedTick: tick,
+      startedWall: Date.now(),
+      kind: entry.kind,
+      nightKey: entry.nightKey,
+    }
+    this.activeDispatch = flight
+    this.lastDispatchWall.set(entry.agentId, flight.startedWall)
+    // Count only the initial dispatch of a logical request (429 retries reuse it)
     this.decideCallCount += 1
+
+    const agentId = entry.agentId
+    const nightKey = entry.nightKey
+    const kind = entry.kind
 
     const run = async () => {
       for (;;) {
         if (this.disposed) return
-        if (this.inFlight.get(agentId) !== flight) return
+        if (this.activeDispatch !== flight) return
         try {
           const result = await provider.decide({
             system,
             user,
             agentId,
             tick,
-            kind: 'reflection',
+            kind,
           })
           if (this.disposed) return
-          if (this.inFlight.get(agentId) !== flight) return
+          if (this.activeDispatch !== flight) return
           if (result.budget) this.applyBudgetSnapshot(result.budget)
-          this.inFlight.delete(agentId)
-          this.finishReflection(
-            sim,
-            agentId,
-            system,
-            user,
-            result,
-            providerName,
-            tick,
-            nightKey,
-          )
+          this.activeDispatch = null
+          const applySim = this.latestSim ?? sim
+          if (kind === 'reflection' && nightKey != null) {
+            this.finishReflection(
+              applySim,
+              agentId,
+              system,
+              user,
+              result,
+              providerName,
+              tick,
+              nightKey,
+            )
+          } else {
+            this.finishDecision(
+              applySim,
+              agentId,
+              system,
+              user,
+              result,
+              providerName,
+              tick,
+            )
+          }
+          this.pumpDispatch(this.latestSim ?? sim)
           return
         } catch (err) {
           if (this.disposed) return
-          if (this.inFlight.get(agentId) !== flight) return
+          if (this.activeDispatch !== flight) return
           const code = (err as { code?: string })?.code
           if (code === 'LUNA_BUSY') {
+            // Defensive: single dispatcher should make this unreachable.
+            // Means another app instance shares the sidecar.
+            console.warn(
+              '[luna] LUNA_BUSY from sidecar — another app instance may share the slot',
+            )
             await new Promise<void>((r) => setTimeout(r, LUNA_BUSY_RETRY_MS))
             continue
           }
           if (code === 'LUNA_BUDGET') {
-            this.inFlight.delete(agentId)
-            // Allow retry next night (unmark so 03:00 / next sleep can try)
-            this.reflectedNights.get(agentId)?.delete(nightKey)
+            this.activeDispatch = null
+            if (kind === 'reflection' && nightKey != null) {
+              this.reflectedNights.get(agentId)?.delete(nightKey)
+            }
+            // Drop the rest of the line; no dispatches during cooldown
+            this.clearQueueUnmarkReflections()
             const resetsInSec =
               typeof (err as { resetsInSec?: number }).resetsInSec === 'number'
                 ? (err as { resetsInSec: number }).resetsInSec
                 : 3600
             const budget = (err as { budget?: MindBudgetInfo }).budget
-            this.enterBudgetCooldown(sim, agentId, resetsInSec, budget)
+            this.enterBudgetCooldown(this.latestSim ?? sim, agentId, resetsInSec, budget)
             return
           }
-          this.inFlight.delete(agentId)
-          this.reflectedNights.get(agentId)?.delete(nightKey)
+          this.activeDispatch = null
+          if (kind === 'reflection' && nightKey != null) {
+            this.reflectedNights.get(agentId)?.delete(nightKey)
+          }
           this.fallbacks += 1
           const msg = err instanceof Error ? err.message : String(err)
-          sim.postMindFallback(
+          const applySim = this.latestSim ?? sim
+          applySim.postMindFallback(
             agentId,
-            { reason: 'provider error', error: msg, variant: 'reflection' },
-            `Mind reflection error: ${msg}`,
+            {
+              reason: 'provider error',
+              error: msg,
+              ...(kind === 'reflection' ? { variant: 'reflection' as const } : {}),
+            },
+            kind === 'reflection'
+              ? `Mind reflection error: ${msg}`
+              : `Mind provider error: ${msg}`,
           )
+          this.pumpDispatch(applySim)
           return
         }
       }
