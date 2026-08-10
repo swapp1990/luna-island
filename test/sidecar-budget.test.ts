@@ -39,7 +39,7 @@ describe('sidecar hard budget gates (P3-0c)', () => {
       { now: () => clock, persist: makeMemoryPersist(bag) },
     )
     deps = {
-      busy: { current: false },
+      busy: { count: 0, max: 3 },
       budget,
       runner,
     }
@@ -80,7 +80,7 @@ describe('sidecar hard budget gates (P3-0c)', () => {
     expect(budget2.snapshot().usedDay).toBe(7)
 
     const deps2: SidecarDeps = {
-      busy: { current: false },
+      busy: { count: 0, max: 3 },
       budget: budget2,
       runner,
     }
@@ -147,7 +147,7 @@ describe('sidecar hard budget gates (P3-0c)', () => {
       { maxPerHour: 1000, maxPerDay: 2 },
       { now: () => clock, persist: makeMemoryPersist(bag) },
     )
-    const d: SidecarDeps = { busy: { current: false }, budget: tight, runner }
+    const d: SidecarDeps = { busy: { count: 0, max: 3 }, budget: tight, runner }
     expect((await handleDecide(d, {})).status).toBe(200)
     expect((await handleDecide(d, {})).status).toBe(200)
     const before = runnerCalls
@@ -157,15 +157,59 @@ describe('sidecar hard budget gates (P3-0c)', () => {
     expect(runnerCalls).toBe(before)
   })
 
-  it('budget check is first gate: 402 even when busy is true', async () => {
+  it('budget check is first gate: 402 even when pool is full', async () => {
     for (let i = 0; i < 60; i++) {
       await handleDecide(deps, {})
     }
-    deps.busy.current = true
+    deps.busy.count = deps.busy.max
     const before = runnerCalls
     const blocked = await handleDecide(deps, {})
     expect(blocked.status).toBe(402)
     expect(blocked.json.error).toBe('budget')
     expect(runnerCalls).toBe(before)
+  })
+
+  it('concurrency pool: up to K in flight, K+1 → 429', async () => {
+    const held: Array<() => void> = []
+    const slowRunner: CodexRunner = () =>
+      new Promise((resolve) => {
+        held.push(() =>
+          resolve({ text: '{"action":"wander","reasoning":"ok"}', latencyMs: 1 }),
+        )
+      })
+    const pool: SidecarDeps = {
+      busy: { count: 0, max: 3 },
+      budget: new BudgetTracker(
+        { maxPerHour: 60, maxPerDay: 300 },
+        { now: () => clock, persist: makeMemoryPersist(bag), skipLoad: true },
+      ),
+      runner: slowRunner,
+    }
+
+    const p1 = handleDecide(pool, { system: 's', user: 'u' })
+    const p2 = handleDecide(pool, { system: 's', user: 'u' })
+    const p3 = handleDecide(pool, { system: 's', user: 'u' })
+    // Yield so all three enter the runner
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(pool.busy.count).toBe(3)
+
+    const blocked = await handleDecide(pool, { system: 's', user: 'u' })
+    expect(blocked.status).toBe(429)
+    expect(blocked.json.error).toBe('busy')
+    expect(pool.busy.count).toBe(3)
+
+    // Release one → fourth may proceed
+    held.shift()?.()
+    await p1
+    expect(pool.busy.count).toBe(2)
+    const p4 = handleDecide(pool, { system: 's', user: 'u' })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(pool.busy.count).toBe(3)
+
+    for (const release of held) release()
+    await Promise.all([p2, p3, p4])
+    expect(pool.busy.count).toBe(0)
   })
 })

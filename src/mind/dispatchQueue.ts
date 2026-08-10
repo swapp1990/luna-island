@@ -2,6 +2,10 @@
  * App-wide mind dispatch queue: one logical line for sidecar/async calls.
  * Priority: decisions > conversation turns > reflections.
  * Never preempts an in-flight item.
+ *
+ * Concurrency (K) is owned by LunaBrain's worker pool; this structure is the
+ * waiting line only. resolveLunaConcurrency() is the shared client/sidecar
+ * source of the K default (1–4).
  */
 
 export type MindQueueKind = 'decision' | 'conversation' | 'reflection'
@@ -18,6 +22,68 @@ export interface MindQueueEntry {
 }
 
 export type EnqueueResult = 'enqueued' | 'duplicate' | 'dropped'
+
+export const LUNA_CONCURRENCY_DEFAULT = 3
+export const LUNA_CONCURRENCY_MIN = 1
+export const LUNA_CONCURRENCY_MAX = 4
+
+/** Clamp to the legal worker-pool size [1, 4]. */
+export function clampLunaConcurrency(n: number): number {
+  if (!Number.isFinite(n)) return LUNA_CONCURRENCY_DEFAULT
+  return Math.max(
+    LUNA_CONCURRENCY_MIN,
+    Math.min(LUNA_CONCURRENCY_MAX, Math.floor(n)),
+  )
+}
+
+/**
+ * Resolve pool size K: explicit opt > `?mindConcurrency=` > localStorage
+ * `luna.concurrency` > default 3. Always clamped 1–4.
+ */
+export function resolveLunaConcurrency(opts?: {
+  explicit?: number
+  search?: string
+  localStorageGet?: (key: string) => string | null
+}): number {
+  if (opts?.explicit != null) return clampLunaConcurrency(opts.explicit)
+
+  let n = LUNA_CONCURRENCY_DEFAULT
+
+  const lsGet =
+    opts?.localStorageGet ??
+    (typeof localStorage !== 'undefined'
+      ? (key: string) => {
+          try {
+            return localStorage.getItem(key)
+          } catch {
+            return null
+          }
+        }
+      : undefined)
+  if (lsGet) {
+    const raw = lsGet('luna.concurrency')
+    if (raw != null && raw !== '') {
+      const parsed = Number(raw)
+      if (Number.isFinite(parsed)) n = parsed
+    }
+  }
+
+  const search =
+    opts?.search ??
+    (typeof window !== 'undefined' ? window.location.search : '')
+  if (search) {
+    const q = new URLSearchParams(
+      search.startsWith('?') ? search.slice(1) : search,
+    )
+    const raw = q.get('mindConcurrency')
+    if (raw != null && raw !== '') {
+      const parsed = Number(raw)
+      if (Number.isFinite(parsed)) n = parsed
+    }
+  }
+
+  return clampLunaConcurrency(n)
+}
 
 function kindRank(kind: MindQueueKind): number {
   if (kind === 'decision') return 0
@@ -118,6 +184,17 @@ export class MindDispatchQueue {
 
   dequeue(): MindQueueEntry | undefined {
     return this.entries.shift()
+  }
+
+  /**
+   * Remove and return the first entry matching `pred` (priority order preserved).
+   * Used so a blocked conversation lane does not stall later decisions.
+   */
+  takeFirst(pred: (e: MindQueueEntry) => boolean): MindQueueEntry | undefined {
+    const idx = this.entries.findIndex(pred)
+    if (idx < 0) return undefined
+    const [entry] = this.entries.splice(idx, 1)
+    return entry
   }
 
   /** Drop oldest reflection, else oldest conversation. @returns true if dropped. */

@@ -231,7 +231,9 @@ test.describe.serial('lunabrain harness', () => {
     await expect(page.getByTestId('mind-chip-thinking')).toBeVisible()
     await page.screenshot({ path: 'artifacts/mind-pacing.png', fullPage: false })
 
-    // After decision applies: thinking clears, speed restores to 64, decisions++
+    // After the whole line drains (incl. rate-floor wait between K-batches):
+    // thinking clears, speed restores to 64, decisions++. 15s rolling floor +
+    // wall delay can exceed 20s when 6 minds fill two batches.
     await expect
       .poll(
         async () =>
@@ -246,7 +248,7 @@ test.describe.serial('lunabrain harness', () => {
               fallbacks: s.mind?.fallbacks as number,
             }
           }),
-        { timeout: 20_000 },
+        { timeout: 90_000 },
       )
       .toEqual(
         expect.objectContaining({
@@ -506,6 +508,160 @@ test.describe.serial('lunabrain harness', () => {
     expect(final.decideCalls - final.decisions).toBeLessThanOrEqual(2)
     // Breathe keeps the world at 1× while the queue drains — tick may stay modest
     expect(final.tick).toBeGreaterThanOrEqual(5)
+  })
+
+  test('P3-2b: 6 minds @64× wall-delay → all apply, 0 stale; speed 1 while pending incl. between dispatches', async ({
+    page,
+  }) => {
+    // Async mock; concurrency 3; wall delay so breathe windows are observable.
+    // mindWallFloorMs not set — production 15s rolling floor; 6 minds ≈ 2 batches.
+    const url = '/?brain=mock&mindWallMs=500&mindConcurrency=3'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+
+    // Observe breathe: speed 1 while mind line is non-empty (queue / in-flight / floor)
+    let sawBreatheWithPending = false
+    let sawSpeed1Between = false
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            const thinking = (s.mind?.thinking ?? 0) as number
+            const pending = (s.mind?.pending ?? 0) as number
+            return {
+              thinking,
+              pending,
+              speed: s.speed as number,
+              userSpeed: (s.userSpeed ?? 0) as number,
+            }
+          }),
+        { timeout: 30_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          speed: 1,
+          userSpeed: 64,
+        }),
+      )
+    sawBreatheWithPending = true
+
+    // Sample while line drains: whenever pending/thinking > 0, speed must stay 1
+    const samples: Array<{ thinking: number; pending: number; speed: number }> = []
+    const sampleUntil = Date.now() + 45_000
+    while (Date.now() < sampleUntil) {
+      const snap = await page.evaluate(() => {
+        const s = (window as any).__simState
+        return {
+          thinking: (s.mind?.thinking ?? 0) as number,
+          pending: (s.mind?.pending ?? 0) as number,
+          speed: s.speed as number,
+          decisions: (s.mind?.decisions ?? 0) as number,
+          stales: (s.mind?.stales ?? 0) as number,
+        }
+      })
+      samples.push(snap)
+      if (snap.thinking > 0 || snap.pending > 0) {
+        expect(snap.speed).toBe(1)
+        if (snap.thinking > 0) sawSpeed1Between = true
+      }
+      if (snap.decisions >= 6 && snap.thinking === 0) break
+      await page.waitForTimeout(200)
+    }
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            return {
+              decisions: (s.mind?.decisions ?? 0) as number,
+              stales: (s.mind?.stales ?? 0) as number,
+              thinking: (s.mind?.thinking ?? 0) as number,
+              speed: s.speed as number,
+              userSpeed: (s.userSpeed ?? 0) as number,
+              fallbacks: (s.mind?.fallbacks ?? 0) as number,
+            }
+          }),
+        { timeout: 120_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          thinking: 0,
+          speed: 64,
+          userSpeed: 64,
+          stales: 0,
+          fallbacks: 0,
+        }),
+      )
+
+    const final = await page.evaluate(() => {
+      const s = (window as any).__simState
+      const counts =
+        typeof (window as any).__simControl.countEventTypes === 'function'
+          ? (window as any).__simControl.countEventTypes()
+          : {}
+      return {
+        decisions: s.mind.decisions as number,
+        stales: (s.mind.stales ?? 0) as number,
+        decideCalls: s.mind.decideCalls as number,
+        speed: s.speed as number,
+        eventStale: (counts['mind:stale'] as number) ?? 0,
+      }
+    })
+
+    expect(sawBreatheWithPending).toBe(true)
+    expect(sawSpeed1Between).toBe(true)
+    expect(final.stales).toBe(0)
+    expect(final.eventStale).toBe(0)
+    expect(final.decisions).toBeGreaterThanOrEqual(6)
+    expect(final.speed).toBe(64)
+    // All six luna minds should show a decision
+    for (const agentId of [
+      'agent-0',
+      'agent-1',
+      'agent-2',
+      'agent-4',
+      'agent-8',
+      'agent-11',
+    ]) {
+      await page.evaluate(
+        (id) => (window as any).__simControl.selectAgent(id),
+        agentId,
+      )
+      await page.getByTestId('tab-mind').click()
+      await expect
+        .poll(
+          async () => {
+            const t = await page.getByTestId('mind-last-reasoning').textContent()
+            return !!(t && t.length > 0 && t !== 'No mind decision yet')
+          },
+          { timeout: 30_000 },
+        )
+        .toBe(true)
+    }
   })
 
   test('memory & reflection (P3-1): 2 sim-days → Mind tab 💭; prompt has Your memories:; auto brain; off clean', async ({

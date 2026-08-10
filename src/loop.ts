@@ -56,7 +56,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let userSpeed = 1
   /**
    * Effective sim speed for the frame accumulator / bridge.
-   * While a mind is pending and user is not paused, this is 1 (auto-breathe).
+   * While mind work is queued / in flight / rate-floor waiting and user is not
+   * paused, this is 1 (auto-breathe for the whole line drain).
    */
   let speed = 1
   let mode: SimMode = 'live'
@@ -73,14 +74,17 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let mindHook: MindTickHook | null = null
   let prevPositions = capturePositions(live)
 
-  /** Wall-bound mind requests only — holds do not throttle (mock apply lag). */
+  /**
+   * Whole mind line: queue + in-flight + rate-floor wait (meter.thinking).
+   * Holds do not throttle (mock apply lag only).
+   */
   const mindThinking = (): number => {
     const m = mindHook?.getMeter()
     if (!m) return 0
     return m.thinking ?? 0
   }
 
-  /** Recompute effective speed from user intent + wall-bound mind thinking. */
+  /** Recompute effective speed from user intent + whole-line mind work. */
   const applyBreathe = () => {
     if (userSpeed === 0) {
       // Manual pause always wins — never auto-unpause

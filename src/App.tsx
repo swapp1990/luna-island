@@ -22,6 +22,7 @@ import { PortraitDock } from './ui/PortraitDock'
 import {
   brainModeFromLocation,
   LunaBrainService,
+  mindConcurrencyFromLocation,
   mockWallDelayMsFromLocation,
 } from './mind/lunaBrain'
 import { isLunaAgent } from './mind/personas'
@@ -262,6 +263,7 @@ export function App() {
       const mode = brainModeFromLocation()
       const mind = new LunaBrainService(mode, {
         mockWallDelayMs: mode === 'mock' ? mockWallDelayMsFromLocation() : 0,
+        concurrency: mindConcurrencyFromLocation(),
       })
       mindRef.current = mind
       if (mode === 'auto') {

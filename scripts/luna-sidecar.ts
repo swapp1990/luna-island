@@ -4,8 +4,8 @@
  * POST /api/luna/decide  { system, user } → { text }
  *
  * Spawns `codex exec -s read-only -` with cwd = empty scratch dir.
- * One in-flight request; extras get 429.
- * Hard budget gates (hour + day) → 402 before any codex spawn.
+ * Up to K concurrent in-flight requests (LUNA_CONCURRENCY, default 3, clamp 1–4);
+ * extras get 429. Hard budget gates (hour + day) → 402 before any codex spawn.
  */
 import type { Plugin, Connect } from 'vite'
 import { spawn } from 'node:child_process'
@@ -43,6 +43,12 @@ function parseEnvInt(name: string, fallback: number): number {
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0) return fallback
   return Math.floor(n)
+}
+
+/** Sidecar worker pool size: LUNA_CONCURRENCY env, default 3, clamp 1–4. */
+function resolveSidecarConcurrency(): number {
+  const n = parseEnvInt('LUNA_CONCURRENCY', 3)
+  return Math.max(1, Math.min(4, n))
 }
 
 function ensureScratch(): void {
@@ -194,7 +200,7 @@ function attachMiddleware(
         }
         res.end(JSON.stringify(result.json))
       } catch (err) {
-        deps.busy.current = false
+        // handleDecide always releases its lane in finally; nothing to clear here.
         next(err)
       }
       return
@@ -212,7 +218,10 @@ export function lunaSidecarPlugin(): Plugin {
   const budget = new BudgetTracker(limits, {
     persist: filePersist(SCRATCH),
   })
-  const busy = { current: false }
+  const concurrency = resolveSidecarConcurrency()
+  const busy = { count: 0, max: concurrency }
+  // eslint-disable-next-line no-console
+  console.log(`[luna-sidecar] concurrency=${concurrency}`)
   const deps: SidecarDeps = {
     busy,
     budget,

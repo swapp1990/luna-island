@@ -25,7 +25,11 @@ import {
   type MindBudgetInfo,
   type MindProvider,
 } from './providers'
-import { MindDispatchQueue } from './dispatchQueue'
+import {
+  MindDispatchQueue,
+  resolveLunaConcurrency,
+  type MindQueueEntry,
+} from './dispatchQueue'
 import {
   applyCooldowns,
   buildConversationSystemPrompt,
@@ -59,8 +63,9 @@ export const MIND_STALE_TICKS = 45
 /** Brief pause before retrying a 429 "still thinking" without a new decideCall. */
 const LUNA_BUSY_RETRY_MS = 250
 /**
- * Wall-floor: never dispatch two async/sidecar requests for the same agent
- * closer than this many wall-seconds (belt to breathe-throttle suspenders).
+ * Rolling rate window (ms): at most K dispatches may start within this window
+ * (token-bucket / timestamp window). Same spam protection as the old 15 s gap,
+ * but batch-aware for the concurrency-K pool.
  */
 export const MIND_WALL_FLOOR_MS = 15_000
 
@@ -81,9 +86,10 @@ export interface MindMeter {
   /** inFlight + holds (inbox not yet applied). */
   pending: number
   /**
-   * Wall-bound pipeline: queue depth + the single in-flight fetch.
-   * Auto-breathe keys off this so the world stays at 1× while the whole line drains.
-   * Short mock holds do not count.
+   * Wall-bound pipeline: queue depth + in-flight workers + rate-floor wait.
+   * Auto-breathe keys off this so the world stays at 1× for the ENTIRE line drain
+   * (including windows where nothing is in flight but work is still waiting out
+   * the rolling rate floor). Short mock holds do not count.
    */
   thinking: number
   decisions: number
@@ -114,6 +120,15 @@ export interface LunaBrainOptions {
   mockWallDelayFrames?: number
   /** Mock-only: wall-clock ms delay (browser breathe e2e). */
   mockWallDelayMs?: number
+  /** Worker pool size K (1–4). Default from resolveLunaConcurrency(). */
+  concurrency?: number
+  /**
+   * Rolling rate-window length in ms (default MIND_WALL_FLOOR_MS).
+   * Set 0 to disable the rate floor (tests that only care about pool size).
+   */
+  wallFloorMs?: number
+  /** Injectable clock for rate-window tests. */
+  now?: () => number
 }
 
 interface PendingHold {
@@ -201,15 +216,18 @@ export class LunaBrainService {
   private mode: BrainModeOrAuto
   private provider: MindProvider | null = null
   private lastDecisionTick = new Map<string, number>()
-  /** Wall-ms of last async dispatch per agent (15s floor). */
-  private lastDispatchWall = new Map<string, number>()
   /**
-   * Local FIFO for async/sidecar work. Exactly one provider.decide is in flight;
+   * Local FIFO for async/sidecar work. Up to K provider.decide calls in flight;
    * the rest wait here without contacting the sidecar.
    */
   private readonly queue = new MindDispatchQueue(LUNA_AGENT_IDS.length)
-  /** The single currently dispatched (provider-facing) request, if any. */
-  private activeDispatch: InFlight | null = null
+  /** Currently dispatched (provider-facing) requests — at most `concurrency`. */
+  private activeDispatches = new Map<string, InFlight>()
+  /**
+   * Wall timestamps of recent dispatch starts (rolling rate window).
+   * At most `concurrency` starts within `wallFloorMs`.
+   */
+  private dispatchWallTimes: number[] = []
   private holds: PendingHold[] = []
   private noteHolds: PendingNoteHold[] = []
   private sayHolds: PendingSayHold[] = []
@@ -238,9 +256,22 @@ export class LunaBrainService {
   private activeConv: ActiveConversation | null = null
   private pairLastEnd = new Map<string, number>()
   private agentLastEnd = new Map<string, number>()
+  /** Worker pool size K (1–4). */
+  private readonly concurrency: number
+  /** Rolling rate-window length; 0 = unlimited. */
+  private readonly wallFloorMs: number
+  private readonly nowFn: () => number
+  /** True when pump wanted to dispatch but was blocked only by the rate floor. */
+  private rateFloorWaiting = false
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
+    this.concurrency = resolveLunaConcurrency({ explicit: opts?.concurrency })
+    this.wallFloorMs =
+      opts?.wallFloorMs != null
+        ? Math.max(0, Math.floor(opts.wallFloorMs))
+        : MIND_WALL_FLOOR_MS
+    this.nowFn = opts?.now ?? (() => Date.now())
     if (opts?.provider) {
       this.provider = opts.provider
       if (mode === 'auto') this.mode = 'mock'
@@ -294,12 +325,19 @@ export class LunaBrainService {
   dispose(): void {
     this.disposed = true
     this.clearQueueUnmarkReflections()
-    this.activeDispatch = null
+    this.activeDispatches.clear()
+    this.dispatchWallTimes = []
+    this.rateFloorWaiting = false
     this.holds = []
     this.noteHolds = []
     this.sayHolds = []
     this.activeConv = null
     this.latestSim = null
+  }
+
+  /** Test/dev: configured worker-pool size. */
+  getConcurrency(): number {
+    return this.concurrency
   }
 
   /** Test/e2e: active conversation snapshot (null if none). */
@@ -344,8 +382,12 @@ export class LunaBrainService {
   }
 
   getMeter(): MindMeter {
-    // Breathe through the whole line: queued waiters + the one in-flight fetch
-    const thinking = this.queue.size() + (this.activeDispatch ? 1 : 0)
+    // Breathe for the whole line: queue + in-flight + rate-floor wait
+    const lineDepth =
+      this.queue.size() +
+      this.activeDispatches.size +
+      (this.rateFloorWaiting ? 1 : 0)
+    const thinking = lineDepth
     const pending =
       thinking + this.holds.length + this.noteHolds.length + this.sayHolds.length
     return {
@@ -371,10 +413,35 @@ export class LunaBrainService {
     }
   }
 
-  /** Agent is queued or has the single in-flight provider call. */
+  /** Agent is queued or has an in-flight provider call (one mind one voice). */
   private isPipelineBusy(agentId: string): boolean {
-    if (this.activeDispatch?.agentId === agentId) return true
+    if (this.activeDispatches.has(agentId)) return true
     return this.queue.has(agentId)
+  }
+
+  /** Prune rolling dispatch timestamps; true if a new start is allowed. */
+  private canStartByRate(now: number): boolean {
+    if (this.wallFloorMs <= 0) return true
+    const cutoff = now - this.wallFloorMs
+    this.dispatchWallTimes = this.dispatchWallTimes.filter((t) => t > cutoff)
+    return this.dispatchWallTimes.length < this.concurrency
+  }
+
+  /** Conversation lane: block turn N+1 until turn N is applied (no in-flight/hold). */
+  private isConversationLaneBlocked(entry: MindQueueEntry): boolean {
+    if (entry.kind !== 'conversation' || !entry.conversationId) return false
+    const cid = entry.conversationId
+    for (const f of this.activeDispatches.values()) {
+      if (f.kind === 'conversation' && f.conversationId === cid) return true
+    }
+    if (this.sayHolds.some((h) => h.conversationId === cid)) return true
+    return false
+  }
+
+  private isEntryDispatchable(entry: MindQueueEntry): boolean {
+    if (this.activeDispatches.has(entry.agentId)) return false
+    if (this.isConversationLaneBlocked(entry)) return false
+    return true
   }
 
   private clearQueueUnmarkReflections(): void {
@@ -478,11 +545,14 @@ export class LunaBrainService {
     // Interrupt / advance active conversation after holds applied
     this.tickConversation(sim)
 
-    // Wall-timeout only for the dispatched request (queue wait does not consume it)
-    const now = Date.now()
-    const flight = this.activeDispatch
-    if (flight && now - flight.startedWall >= MIND_WALL_TIMEOUT_MS) {
-      this.activeDispatch = null
+    // Wall-timeout for each in-flight request (queue wait does not consume it)
+    const now = this.nowFn()
+    const timedOut: InFlight[] = []
+    for (const flight of this.activeDispatches.values()) {
+      if (now - flight.startedWall >= MIND_WALL_TIMEOUT_MS) timedOut.push(flight)
+    }
+    for (const flight of timedOut) {
+      this.activeDispatches.delete(flight.agentId)
       if (flight.kind === 'reflection' && flight.nightKey != null) {
         this.reflectedNights.get(flight.agentId)?.delete(flight.nightKey)
       }
@@ -507,9 +577,8 @@ export class LunaBrainService {
           'Mind request timed out — continuing on instinct',
         )
       }
-      // Next waiter may proceed
-      this.pumpDispatch(sim)
     }
+    if (timedOut.length > 0) this.pumpDispatch(sim)
 
     // Drop queue entries for agents that no longer exist (world reset mid-line)
     const valid = new Set(sim.state.agents.map((a) => a.id))
@@ -526,7 +595,9 @@ export class LunaBrainService {
     // Hard client cooldown: no further enqueues / dispatches until reset
     if (this.isBudgetCooldown(now)) return
 
-    // Nightly reflections take priority over routine decisions when due
+    // Nightly reflections take priority over routine decisions when due.
+    // Rate floor is enforced only at pumpDispatch — enqueue freely so breathe
+    // spans the whole line (including floor-wait windows).
     for (const agentId of LUNA_AGENT_IDS) {
       if (this.isPipelineBusy(agentId)) continue
       if (this.holds.some((h) => h.agentId === agentId)) continue
@@ -537,12 +608,6 @@ export class LunaBrainService {
 
       const dueNight = this.reflectionDueNightKey(sim, agentId)
       if (dueNight == null) continue
-
-      // Wall-floor for async/sidecar path only (checked again at actual dispatch)
-      if (!this.providerPrefersSync()) {
-        const lastWall = this.lastDispatchWall.get(agentId) ?? 0
-        if (now - lastWall < MIND_WALL_FLOOR_MS) continue
-      }
 
       this.requestReflection(sim, agentId, dueNight)
     }
@@ -556,14 +621,7 @@ export class LunaBrainService {
         !this.noteHolds.some((h) => h.agentId === speakerId) &&
         !this.sayHolds.some((h) => h.agentId === speakerId)
       ) {
-        if (!this.providerPrefersSync()) {
-          const lastWall = this.lastDispatchWall.get(speakerId) ?? 0
-          if (now - lastWall >= MIND_WALL_FLOOR_MS) {
-            this.requestConversationTurn(sim)
-          }
-        } else {
-          this.requestConversationTurn(sim)
-        }
+        this.requestConversationTurn(sim)
       }
     } else if (!this.activeConv) {
       // Try to start a new conversation (max one island-wide)
@@ -594,16 +652,10 @@ export class LunaBrainService {
       const hardOk = since >= MIND_HARD_GAP_TICKS
       if (!softOk && !hardOk) continue
 
-      // Wall-floor for async/sidecar path only
-      if (!this.providerPrefersSync()) {
-        const lastWall = this.lastDispatchWall.get(agentId) ?? 0
-        if (now - lastWall < MIND_WALL_FLOOR_MS) continue
-      }
-
       this.requestDecision(sim, agentId)
     }
 
-    // Ensure the single dispatcher is running if anything is waiting
+    // Fill free pool slots if anything is waiting
     this.pumpDispatch(sim)
   }
 
@@ -852,12 +904,6 @@ export class LunaBrainService {
     return null
   }
 
-  private providerPrefersSync(): boolean {
-    return (
-      this.provider instanceof MockProvider && this.provider.preferSync()
-    )
-  }
-
   private requestDecision(sim: Simulation, agentId: string): void {
     if (!this.provider) return
     if (this.isBudgetCooldown()) return
@@ -946,26 +992,75 @@ export class LunaBrainService {
   }
 
   /**
-   * Single-flight dispatcher: at most one provider.decide in flight app-wide.
+   * Concurrency-K worker pool: fill free slots from the priority FIFO.
    * Observation/prompts are built at dispatch time (not enqueue) so the prompt
    * tick matches the world when the request actually leaves.
+   * Rolling rate floor: at most K starts per wallFloorMs window.
+   * Conversation lane: turn N+1 never leaves while turn N is in flight/hold.
    */
   private pumpDispatch(sim: Simulation): void {
     if (this.disposed || !this.provider) return
-    if (this.activeDispatch) return
-    if (this.isBudgetCooldown()) return
+    if (this.isBudgetCooldown()) {
+      this.rateFloorWaiting = false
+      return
+    }
 
-    const entry = this.queue.dequeue()
-    if (!entry) return
+    let started = false
+    for (;;) {
+      if (this.activeDispatches.size >= this.concurrency) {
+        this.rateFloorWaiting = false
+        break
+      }
+      if (this.queue.isEmpty()) {
+        this.rateFloorWaiting = false
+        break
+      }
+
+      const now = this.nowFn()
+      if (!this.canStartByRate(now)) {
+        // Work is waiting but rate floor blocks — keep breathe engaged
+        this.rateFloorWaiting = this.queue.size() > 0
+        break
+      }
+
+      const entry = this.queue.takeFirst((e) => this.isEntryDispatchable(e))
+      if (!entry) {
+        // Queue has items but all blocked by conversation lane / agent voice —
+        // still line work; rate floor not the cause.
+        this.rateFloorWaiting = false
+        break
+      }
+
+      if (!this.startDispatch(sim, entry)) {
+        // Entry was discarded (missing agent / dead conv) — try next
+        continue
+      }
+      started = true
+    }
+
+    if (!started && this.queue.isEmpty()) {
+      this.rateFloorWaiting = false
+    }
+  }
+
+  /**
+   * Begin one provider.decide for a dequeued entry.
+   * @returns false if the entry was discarded without starting a flight.
+   */
+  private startDispatch(sim: Simulation, entry: MindQueueEntry): boolean {
+    if (!this.provider) return false
 
     const agent = sim.state.agents.find((a) => a.id === entry.agentId)
     if (!agent) {
       if (entry.kind === 'reflection' && entry.nightKey != null) {
         this.reflectedNights.get(entry.agentId)?.delete(entry.nightKey)
       }
-      // Try next waiter
-      this.pumpDispatch(sim)
-      return
+      if (entry.kind === 'conversation' && this.activeConv) {
+        if (this.activeConv.id === entry.conversationId) {
+          this.activeConv.turnInFlight = false
+        }
+      }
+      return false
     }
 
     // Build prompts NOW — refresh observation at dispatch, not enqueue
@@ -980,12 +1075,12 @@ export class LunaBrainService {
       user = buildReflectionUserPrompt(entry.agentId, events, day)
     } else if (entry.kind === 'conversation') {
       const conv = this.activeConv
-      const partnerId = entry.partnerId ?? (conv ? partnerOf(conv, entry.agentId) : '')
+      const partnerId =
+        entry.partnerId ?? (conv ? partnerOf(conv, entry.agentId) : '')
       const partner = sim.state.agents.find((a) => a.id === partnerId)
       if (!conv || conv.id !== entry.conversationId || !partner) {
-        if (conv) conv.turnInFlight = false
-        this.pumpDispatch(sim)
-        return
+        if (conv && conv.id === entry.conversationId) conv.turnInFlight = false
+        return false
       }
       system = buildConversationSystemPrompt(entry.agentId)
       user = buildConversationUserPrompt(
@@ -1002,18 +1097,20 @@ export class LunaBrainService {
 
     const provider = this.provider
     const providerName = provider.name
+    const startedWall = this.nowFn()
     const flight: InFlight = {
       agentId: entry.agentId,
       startedTick: tick,
-      startedWall: Date.now(),
+      startedWall,
       kind: entry.kind,
       nightKey: entry.nightKey,
       conversationId: entry.conversationId,
       partnerId: entry.partnerId,
       turn: entry.turn,
     }
-    this.activeDispatch = flight
-    this.lastDispatchWall.set(entry.agentId, flight.startedWall)
+    this.activeDispatches.set(entry.agentId, flight)
+    this.dispatchWallTimes.push(startedWall)
+    this.rateFloorWaiting = false
     // Count only the initial dispatch of a logical request (429 retries reuse it)
     this.decideCallCount += 1
 
@@ -1027,7 +1124,7 @@ export class LunaBrainService {
     const run = async () => {
       for (;;) {
         if (this.disposed) return
-        if (this.activeDispatch !== flight) return
+        if (this.activeDispatches.get(agentId) !== flight) return
         try {
           const result = await provider.decide({
             system,
@@ -1037,9 +1134,9 @@ export class LunaBrainService {
             kind,
           })
           if (this.disposed) return
-          if (this.activeDispatch !== flight) return
+          if (this.activeDispatches.get(agentId) !== flight) return
           if (result.budget) this.applyBudgetSnapshot(result.budget)
-          this.activeDispatch = null
+          this.activeDispatches.delete(agentId)
           const applySim = this.latestSim ?? sim
           if (kind === 'reflection' && nightKey != null) {
             this.finishReflection(
@@ -1080,19 +1177,18 @@ export class LunaBrainService {
           return
         } catch (err) {
           if (this.disposed) return
-          if (this.activeDispatch !== flight) return
+          if (this.activeDispatches.get(agentId) !== flight) return
           const code = (err as { code?: string })?.code
           if (code === 'LUNA_BUSY') {
-            // Defensive: single dispatcher should make this unreachable.
-            // Means another app instance shares the sidecar.
+            // Sidecar at capacity (another app instance or race) — brief retry
             console.warn(
-              '[luna] LUNA_BUSY from sidecar — another app instance may share the slot',
+              '[luna] LUNA_BUSY from sidecar — pool saturated or shared instance',
             )
             await new Promise<void>((r) => setTimeout(r, LUNA_BUSY_RETRY_MS))
             continue
           }
           if (code === 'LUNA_BUDGET') {
-            this.activeDispatch = null
+            this.activeDispatches.delete(agentId)
             if (kind === 'reflection' && nightKey != null) {
               this.reflectedNights.get(agentId)?.delete(nightKey)
             }
@@ -1101,15 +1197,21 @@ export class LunaBrainService {
             }
             // Drop the rest of the line; no dispatches during cooldown
             this.clearQueueUnmarkReflections()
+            this.rateFloorWaiting = false
             const resetsInSec =
               typeof (err as { resetsInSec?: number }).resetsInSec === 'number'
                 ? (err as { resetsInSec: number }).resetsInSec
                 : 3600
             const budget = (err as { budget?: MindBudgetInfo }).budget
-            this.enterBudgetCooldown(this.latestSim ?? sim, agentId, resetsInSec, budget)
+            this.enterBudgetCooldown(
+              this.latestSim ?? sim,
+              agentId,
+              resetsInSec,
+              budget,
+            )
             return
           }
-          this.activeDispatch = null
+          this.activeDispatches.delete(agentId)
           if (kind === 'reflection' && nightKey != null) {
             this.reflectedNights.get(agentId)?.delete(nightKey)
           }
@@ -1146,6 +1248,7 @@ export class LunaBrainService {
     }
 
     void run()
+    return true
   }
 
   private finishConversationTurn(
@@ -1442,4 +1545,12 @@ export function mockWallDelayMsFromLocation(): number {
   const n = Number(raw)
   if (!Number.isFinite(n) || n <= 0) return 0
   return Math.min(30_000, Math.floor(n))
+}
+
+/**
+ * Worker pool size from `?mindConcurrency=` / localStorage `luna.concurrency`
+ * (default 3, clamp 1–4).
+ */
+export function mindConcurrencyFromLocation(): number {
+  return resolveLunaConcurrency()
 }

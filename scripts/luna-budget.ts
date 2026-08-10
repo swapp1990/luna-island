@@ -203,15 +203,23 @@ export class BudgetTracker {
   }
 }
 
+/** In-flight pool for concurrent codex workers (K = max). */
+export interface SidecarBusy {
+  /** Current in-flight count. */
+  count: number
+  /** Max concurrent workers (clamped 1–4 by the plugin). */
+  max: number
+}
+
 export interface SidecarDeps {
-  busy: { current: boolean }
+  busy: SidecarBusy
   budget: BudgetTracker
   runner: CodexRunner
 }
 
 /**
  * POST /api/luna/decide core logic — budget check is the FIRST statement.
- * Runner is never invoked on a 402 path.
+ * Runner is never invoked on a 402 path. 429 only when in-flight count ≥ K.
  */
 export async function handleDecide(
   deps: SidecarDeps,
@@ -235,7 +243,7 @@ export async function handleDecide(
     }
   }
 
-  if (deps.busy.current) {
+  if (deps.busy.count >= deps.busy.max) {
     return {
       status: 429,
       json: { error: 'busy' },
@@ -244,13 +252,15 @@ export async function handleDecide(
 
   const system = body.system ?? ''
   const user = body.user ?? ''
-  deps.busy.current = true
+  deps.busy.count += 1
+  const lane = deps.busy.count
+  const maxLanes = deps.busy.max
   try {
     const { text, latencyMs } = await deps.runner(system, user)
     const snap = deps.budget.recordSuccess()
     // eslint-disable-next-line no-console
     console.log(
-      `[luna-sidecar] decide ${latencyMs}ms chars=${text.length} budget=${snap.usedHour}/${snap.maxHour}h ${snap.usedDay}/${snap.maxDay}d`,
+      `[luna-sidecar] decide ${latencyMs}ms chars=${text.length} budget=${snap.usedHour}/${snap.maxHour}h ${snap.usedDay}/${snap.maxDay}d lane=${lane}/${maxLanes}`,
     )
     return {
       status: 200,
@@ -269,7 +279,7 @@ export async function handleDecide(
       json: { error: msg },
     }
   } finally {
-    deps.busy.current = false
+    deps.busy.count = Math.max(0, deps.busy.count - 1)
   }
 }
 

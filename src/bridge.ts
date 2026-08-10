@@ -5,7 +5,10 @@ export interface MindBridgeState {
   enabled: boolean
   agentIds: string[]
   pending: number
-  /** Wall-bound in-flight requests (auto-breathe + thinking chip). */
+  /**
+   * Whole mind line for auto-breathe + thinking chip: queue depth + in-flight
+   * workers + rate-floor wait. Restores user speed only when fully drained.
+   */
   thinking?: number
   decisions: number
   fallbacks: number
@@ -34,7 +37,7 @@ export interface SimStateBridge {
   minute: number
   tick: number
   /**
-   * Effective sim speed (1 while auto-breathe throttles for an in-flight mind).
+   * Effective sim speed (1 while auto-breathe throttles for any mind-line work).
    * Use `userSpeed` for the player's selected button highlight.
    */
   speed: number
