@@ -1,8 +1,13 @@
 import type { SceneHandle } from './render/scene'
 import { Simulation } from './sim/sim'
 import { dayEndTick, dayStartTick, toSimTime } from './sim/time'
-import type { SimMode, SimStateBridge } from './bridge'
+import type { MindBridgeState, SimMode, SimStateBridge } from './bridge'
 import { refreshBridge } from './bridge'
+
+export interface MindTickHook {
+  onAfterTick: (sim: Simulation) => void
+  getMeter: () => MindBridgeState
+}
 
 export interface LoopController {
   setSpeed: (n: number) => void
@@ -29,6 +34,8 @@ export interface LoopController {
   getPrevAgentPositions: () => Map<string, { x: number; y: number }>
   /** Inclusive scrubber bounds for the currently viewed day. */
   getDayBounds: () => { startTick: number; endTick: number }
+  /** Swap / clear the live mind hook (LunaBrain). */
+  setMindHook: (hook: MindTickHook | null) => void
 }
 
 const SPEEDS = new Set([0, 1, 8, 64])
@@ -55,7 +62,17 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let running = false
   let ready = true
   let lastSavedTick: number | null = null
+  let mindHook: MindTickHook | null = null
   let prevPositions = capturePositions(live)
+
+  const advanceLive = (n: number) => {
+    if (n <= 0) return
+    // Per-tick so LunaBrain can flush mock holds mid-batch (ffwd / high speed)
+    for (let i = 0; i < n; i++) {
+      live.advanceTicks(1)
+      if (mode === 'live') mindHook?.onAfterTick(live)
+    }
+  }
   /** Event count of the view sim already scanned for critical bubbles. */
   let lastCriticalEventCount = 0
   /** Live-only toast scanner cursor (never backfills on replay enter). */
@@ -123,6 +140,19 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       agent0: a0
         ? { id: a0.id, x: a0.x, y: a0.y, wallet: a0.wallet }
         : null,
+      mind: mindHook
+        ? mindHook.getMeter()
+        : {
+            enabled: false,
+            agentIds: [],
+            pending: 0,
+            decisions: 0,
+            fallbacks: 0,
+            meanLatencyMs: 0,
+            approxChars: 0,
+            provider: 'off',
+            decideCalls: 0,
+          },
     }
   }
 
@@ -348,7 +378,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
   const ffwd = (n: number) => {
     if (n <= 0) return
-    live.advanceTicksBatch(n)
+    advanceLive(n)
     if (mode === 'live') {
       prevPositions = capturePositions(live)
       lastCriticalEventCount = live.getEventCount()
@@ -361,6 +391,10 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       applyScene(performance.now())
     }
     refreshBridge(getState())
+  }
+
+  const setMindHook = (hook: MindTickHook | null) => {
+    mindHook = hook
   }
 
   const selectAgent = (id: string | null) => {
@@ -402,7 +436,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       if (mode === 'live') {
         if (steps > 0) {
           prevPositions = capturePositions(live)
-          live.advanceTicks(steps)
+          advanceLive(steps)
         }
       } else if (fork) {
         if (steps > 0) {
@@ -473,6 +507,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     stop,
     getViewSim: viewSim,
     getLiveSim: () => live,
+    setMindHook,
     getMode: () => mode,
     setLastSavedTick: (tick: number | null) => {
       lastSavedTick = tick

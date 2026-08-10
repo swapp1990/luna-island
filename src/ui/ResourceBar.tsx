@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { MindBridgeState } from '../bridge'
 
 export interface ResourceSnapshot {
   treasury: number
@@ -71,8 +72,11 @@ function Chip(props: {
   )
 }
 
-export function ResourceBar(props: { resources: ResourceSnapshot }) {
-  const { resources } = props
+export function ResourceBar(props: {
+  resources: ResourceSnapshot
+  mind?: MindBridgeState | null
+}) {
+  const { resources, mind } = props
   const prev = useRef<ResourceSnapshot>({ ...resources })
   const [pulse, setPulse] = useState<Partial<Record<keyof ResourceSnapshot, boolean>>>(
     {},
@@ -128,6 +132,43 @@ export function ResourceBar(props: { resources: ResourceSnapshot }) {
           testId={c.testId}
         />
       ))}
+      {mind?.enabled ? (
+        <div
+          data-testid="mind-chip"
+          title={`LunaBrain (${mind.provider}) — ${mind.decisions} decisions, ${mind.fallbacks} fallbacks`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '5px 10px',
+            borderRadius: 10,
+            background: 'rgba(160, 140, 255, 0.12)',
+            border: '1px solid rgba(160, 140, 255, 0.35)',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span style={{ fontSize: 14, lineHeight: 1 }} aria-hidden>
+            🧠
+          </span>
+          <span
+            data-testid="mind-chip-count"
+            style={{
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+              fontWeight: 700,
+              fontSize: 13,
+              minWidth: 12,
+            }}
+          >
+            {mind.decisions}
+          </span>
+          <span
+            data-testid="mind-chip-provider"
+            style={{ fontSize: 10, opacity: 0.7, fontWeight: 600 }}
+          >
+            {mind.provider}
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }

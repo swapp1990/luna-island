@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react'
 import type { AgentState, Place, SimEvent } from '../sim/types'
 import { toSimTime } from '../sim/time'
 import { SlotGrid } from './SlotGrid'
+import type { MindExchange } from '../mind/lunaBrain'
+import { isLunaAgent } from '../mind/personas'
 
-type TabId = 'status' | 'life' | 'people' | 'work'
+type TabId = 'status' | 'life' | 'people' | 'work' | 'mind'
 
 function pad2s(n: number): string {
   return n.toString().padStart(2, '0')
@@ -173,11 +175,12 @@ function SympathyBar(props: { value: number }) {
   )
 }
 
-const TABS: Array<{ id: TabId; label: string; testId: string }> = [
+const BASE_TABS: Array<{ id: TabId; label: string; testId: string }> = [
   { id: 'status', label: 'Status', testId: 'tab-status' },
   { id: 'life', label: 'Life', testId: 'tab-life' },
   { id: 'people', label: 'People', testId: 'tab-people' },
   { id: 'work', label: 'Work', testId: 'tab-work' },
+  { id: 'mind', label: 'Mind', testId: 'tab-mind' },
 ]
 
 export function Inspector(props: {
@@ -193,18 +196,25 @@ export function Inspector(props: {
   following: boolean
   onToggleFollow: () => void
   onClose: () => void
+  /** LunaBrain enabled for this session and agent is luna-capable. */
+  lunaEnabled?: boolean
+  lastExchange?: MindExchange | null
 }) {
   const { agent, events, replayTick, following, onToggleFollow, onClose } = props
   const dayStart = props.dayStartTick ?? 0
   const [tab, setTab] = useState<TabId>('status')
+  const [exchangeOpen, setExchangeOpen] = useState(false)
 
   // Reset to Status when selecting a different villager
   useEffect(() => {
     setTab('status')
+    setExchangeOpen(false)
   }, [agent?.id])
 
   if (!agent) return null
   const owns = ownsLabel(agent, props.places, props.owners)
+  const showMind = isLunaAgent(agent.id)
+  const tabs = BASE_TABS
 
   const logEvents = events
     .filter(
@@ -330,7 +340,7 @@ export function Inspector(props: {
           paddingBottom: 0,
         }}
       >
-        {TABS.map((t) => {
+        {tabs.map((t) => {
           const active = tab === t.id
           return (
             <button
@@ -523,6 +533,196 @@ export function Inspector(props: {
               containerTestId="inv-row"
             />
           </div>
+        </div>
+      )}
+
+      {/* Mind — LunaBrain decisions (luna agents) or instinct note */}
+      {tab === 'mind' && (
+        <div data-testid="mind-tab" style={{ overflowY: 'auto', fontSize: 12 }}>
+          {!showMind ? (
+            <div data-testid="mind-instinct" style={{ opacity: 0.7, lineHeight: 1.4 }}>
+              Runs on instinct
+            </div>
+          ) : (
+            (() => {
+              const mindEvents = events
+                .filter(
+                  (e) =>
+                    e.agentId === agent.id &&
+                    e.tick >= dayStart &&
+                    e.tick <= replayTick &&
+                    (e.type === 'mind:decision' || e.type === 'mind:fallback'),
+                )
+                .slice()
+                .reverse()
+              const lastDecision = mindEvents.find((e) => e.type === 'mind:decision')
+              const decisions = mindEvents.filter((e) => e.type === 'mind:decision').length
+              const fallbacks = mindEvents.filter((e) => e.type === 'mind:fallback').length
+              const latencies = mindEvents
+                .map((e) => e.data?.latencyMs)
+                .filter((n): n is number => typeof n === 'number')
+              const meanLat =
+                latencies.length > 0
+                  ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
+                  : 0
+              const chars = mindEvents.reduce(
+                (s, e) => s + (typeof e.data?.approxChars === 'number' ? e.data.approxChars : 0),
+                0,
+              )
+              const intentKind =
+                (lastDecision?.data?.intent as { kind?: string } | undefined)?.kind ??
+                '—'
+              const reasoning =
+                (lastDecision?.data?.reasoning as string) ??
+                lastDecision?.reason ??
+                'No mind decision yet'
+
+              return (
+                <>
+                  <div
+                    data-testid="mind-last-decision"
+                    style={{
+                      marginBottom: 12,
+                      padding: '8px 10px',
+                      borderRadius: 8,
+                      background: 'rgba(160, 140, 255, 0.1)',
+                      border: '1px solid rgba(160, 140, 255, 0.28)',
+                    }}
+                  >
+                    <div style={{ fontSize: 11, opacity: 0.55, fontWeight: 700, marginBottom: 4 }}>
+                      LAST DECISION
+                    </div>
+                    <div
+                      data-testid="mind-last-intent"
+                      style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}
+                    >
+                      {intentKind}
+                    </div>
+                    <div
+                      data-testid="mind-last-reasoning"
+                      style={{ fontSize: 12, opacity: 0.88, lineHeight: 1.4 }}
+                    >
+                      {reasoning}
+                    </div>
+                  </div>
+
+                  <div
+                    data-testid="mind-token-totals"
+                    style={{
+                      display: 'flex',
+                      gap: 10,
+                      marginBottom: 12,
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                      fontSize: 11,
+                      opacity: 0.85,
+                    }}
+                  >
+                    <span>🧠 {decisions}</span>
+                    <span>↩ {fallbacks}</span>
+                    <span>{meanLat}ms</span>
+                    <span>~{chars}ch</span>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      opacity: 0.55,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Decision timeline
+                  </div>
+                  <div
+                    data-testid="mind-timeline"
+                    style={{
+                      maxHeight: 140,
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 5,
+                      marginBottom: 12,
+                    }}
+                  >
+                    {mindEvents.length === 0 ? (
+                      <div style={{ opacity: 0.5 }}>No mind events yet</div>
+                    ) : (
+                      mindEvents.slice(0, 30).map((ev) => {
+                        const t = toSimTime(ev.tick)
+                        const when = `D${t.day} ${pad2s(t.hour)}:${pad2s(t.minute)}`
+                        const label =
+                          ev.type === 'mind:decision'
+                            ? `decision: ${(ev.data?.reasoning as string) ?? ev.reason ?? ''}`
+                            : `fallback: ${(ev.data?.reason as string) ?? ev.reason ?? ''}`
+                        return (
+                          <div
+                            key={ev.seq}
+                            data-tick={ev.tick}
+                            style={{
+                              fontSize: 11,
+                              padding: '4px 6px',
+                              borderRadius: 6,
+                              background: 'rgba(255,255,255,0.04)',
+                              border: '1px solid rgba(255,255,255,0.05)',
+                            }}
+                          >
+                            {when} — {label}
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+
+                  {props.lunaEnabled && props.lastExchange ? (
+                    <div>
+                      <button
+                        type="button"
+                        data-testid="mind-exchange-toggle"
+                        onClick={() => setExchangeOpen((o) => !o)}
+                        style={{
+                          background: 'rgba(255,255,255,0.06)',
+                          border: '1px solid rgba(255,255,255,0.1)',
+                          color: '#c8ced8',
+                          borderRadius: 6,
+                          padding: '4px 8px',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          marginBottom: 6,
+                        }}
+                      >
+                        {exchangeOpen ? 'Hide' : 'Show'} last exchange
+                      </button>
+                      {exchangeOpen ? (
+                        <pre
+                          data-testid="mind-last-exchange"
+                          style={{
+                            fontSize: 10,
+                            lineHeight: 1.35,
+                            maxHeight: 160,
+                            overflow: 'auto',
+                            padding: 8,
+                            borderRadius: 6,
+                            background: 'rgba(0,0,0,0.35)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            margin: 0,
+                            fontFamily:
+                              'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                          }}
+                        >
+                          {`=== SYSTEM ===\n${props.lastExchange.system}\n\n=== USER ===\n${props.lastExchange.user}\n\n=== RESPONSE ===\n${props.lastExchange.rawResponse}`}
+                        </pre>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              )
+            })()
+          )}
         </div>
       )}
     </div>

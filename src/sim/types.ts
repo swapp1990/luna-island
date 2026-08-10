@@ -173,6 +173,31 @@ export interface AgentState {
   sympathy: Record<string, number>
 }
 
+/** Meta attached to a mind-sourced external intent (recorded for replay). */
+export interface ExternalIntentMeta {
+  reasoning: string
+  source: 'luna'
+  provider: string
+  latencyMs?: number
+  approxChars?: number
+}
+
+/** One applied mind decision, ordered by tick then agentId (hash / replay source). */
+export interface ExternalIntentRecord {
+  tick: Tick
+  agentId: string
+  intent: Intent
+  meta: ExternalIntentMeta
+}
+
+/** Per-agent mind counters (snapshots / saves; not read by UtilityBrain). */
+export interface AgentMindStats {
+  decisions: number
+  fallbacks: number
+  totalLatencyMs: number
+  approxChars: number
+}
+
 export interface WorldState {
   seed: number
   tick: Tick
@@ -197,6 +222,13 @@ export interface WorldState {
    * calendar day (for end-of-day decay). Sparse boolean map.
    */
   sympathyMet: Record<string, true>
+  /**
+   * Applied external (mind) intents — live = record, re-sim = playback.
+   * Part of snapshots, saves, and the state hash.
+   */
+  externalIntentLog: ExternalIntentRecord[]
+  /** Sparse per-agent mind counters (optional; empty object when none). */
+  mindStats: Record<string, AgentMindStats>
 }
 
 export interface SimEvent {

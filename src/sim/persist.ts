@@ -1,8 +1,11 @@
-import { Simulation, type DayArchiveMeta, type SimSnapshot } from './sim'
+import { ensureMindFields, Simulation, type DayArchiveMeta, type SimSnapshot } from './sim'
 import type { EconomyStat, SimEvent, Tick, WorldState } from './types'
 
-/** Current on-disk save schema version. */
-export const SAVE_FORMAT_VERSION = 1 as const
+/** Current on-disk save schema version (v2 adds externalIntentLog + mindStats). */
+export const SAVE_FORMAT_VERSION = 2 as const
+
+/** Oldest format we can still load (upgrades to v2 with empty mind fields). */
+export const SAVE_FORMAT_MIN_VERSION = 1 as const
 
 /** Serializable world snapshot at head (reuses SimSnapshot shape without forcing full event copy at top). */
 export interface SaveSnapshot {
@@ -43,6 +46,7 @@ function cloneSaveSnapshot(s: SimSnapshot | SaveSnapshot): SaveSnapshot {
   // WorldState is deep-cloned via JSON path for pure serializable copy
   // (same structure as snapshot mechanism; no Date/random).
   const state = JSON.parse(JSON.stringify(s.state)) as WorldState
+  ensureMindFields(state)
   return {
     state,
     rngState: s.rngState,
@@ -101,15 +105,17 @@ export function serializeSave(sim: Simulation): SaveGame {
 
 /**
  * Rebuild a Simulation from a save payload.
- * Rejects format-version mismatch (and structural invalidity) without half-loading.
+ * Accepts formatVersion 1 (upgrade: empty externalIntentLog/mindStats) or 2.
+ * Rejects other versions / structural invalidity without half-loading.
  */
 export function restoreSave(raw: unknown): Simulation {
   if (!isRecord(raw)) {
     throw new SaveFormatError('Save is not an object')
   }
-  if (raw.formatVersion !== SAVE_FORMAT_VERSION) {
+  const ver = raw.formatVersion
+  if (ver !== 1 && ver !== 2 && ver !== SAVE_FORMAT_VERSION) {
     throw new SaveFormatError(
-      `Unsupported save format version: ${String(raw.formatVersion)} (expected ${SAVE_FORMAT_VERSION})`,
+      `Unsupported save format version: ${String(raw.formatVersion)} (expected ${SAVE_FORMAT_MIN_VERSION}–${SAVE_FORMAT_VERSION})`,
     )
   }
   if (typeof raw.seed !== 'number' || !Number.isFinite(raw.seed)) {
@@ -148,6 +154,8 @@ export function restoreSave(raw: unknown): Simulation {
   // Prefer top-level events (full timeline); fall back to head snapshot events
   const events = (raw.events as SimEvent[]).map(cloneEvent)
   const head = cloneSaveSnapshot(raw.snapshot as SaveSnapshot)
+  // v1 → v2: ensure mind fields (cloneSaveSnapshot already does; belt-and-suspenders)
+  ensureMindFields(head.state)
   // Ensure head state tick matches declared tick when present
   if (head.state.tick !== raw.tick) {
     head.state.tick = raw.tick as number
@@ -159,6 +167,8 @@ export function restoreSave(raw: unknown): Simulation {
 
   const pinnedSnaps = (raw.pinnedDayStartSnapshots as SaveSnapshot[]).map(cloneSaveSnapshot)
   const fineSnaps = (raw.fineSnapshotRing as SaveSnapshot[]).map(cloneSaveSnapshot)
+  for (const s of pinnedSnaps) ensureMindFields(s.state)
+  for (const s of fineSnaps) ensureMindFields(s.state)
   const snaps: SimSnapshot[] = [...pinnedSnaps, ...fineSnaps]
   const pinned: Tick[] = pinnedSnaps.map((s) => s.state.tick)
 

@@ -159,6 +159,23 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'mind:decision') {
+      // Throttle: only action-changing decisions
+      if (ev.data?.actionChanging === false) continue
+      const name = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const reasoning =
+        (ev.data?.reasoning as string) ??
+        (ev.reason && ev.reason.length > 0 ? ev.reason : 'decided')
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `mind-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · 🧠 ${name} decided: "${reasoning}"`,
+      })
+      continue
+    }
+
     if (ev.type === 'action:start') {
       const agentId = ev.agentId
       if (!agentId) continue

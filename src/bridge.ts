@@ -1,5 +1,20 @@
 export type SimMode = 'live' | 'replay'
 
+/** Mind meter on the window bridge (Phase 3 LunaBrain). */
+export interface MindBridgeState {
+  enabled: boolean
+  agentIds: string[]
+  pending: number
+  decisions: number
+  fallbacks: number
+  meanLatencyMs: number
+  approxChars: number
+  /** codex | mock | off */
+  provider: string
+  /** Provider decide() call count (scrub must not increase). */
+  decideCalls: number
+}
+
 export interface SimStateBridge {
   ready: boolean
   mode: SimMode
@@ -29,6 +44,8 @@ export interface SimStateBridge {
   seed: number
   /** Additive: first agent layout + wallet probe for persistence e2e. */
   agent0?: { id: string; x: number; y: number; wallet: number } | null
+  /** Additive: LunaBrain meter (null when never initialized). */
+  mind?: MindBridgeState | null
 }
 
 export interface SimControlBridge {

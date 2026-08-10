@@ -84,8 +84,20 @@ function project(
   return { x, y, behind }
 }
 
+/** Luna agent ids get a subtle 🧠 prefix on the status bubble. */
+const LUNA_BUBBLE_IDS = new Set(['agent-0'])
+
 /** Destination / action micro-status for the selected-agent bubble (derived, no sim state). */
 export function formatStatusBubble(
+  agent: AgentState,
+  places: Place[],
+  agents: readonly AgentState[] = [],
+): string {
+  const body = formatStatusBubbleBody(agent, places, agents)
+  return LUNA_BUBBLE_IDS.has(agent.id) ? `🧠 ${body}` : body
+}
+
+function formatStatusBubbleBody(
   agent: AgentState,
   places: Place[],
   agents: readonly AgentState[] = [],

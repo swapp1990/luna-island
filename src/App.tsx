@@ -19,6 +19,11 @@ import { ResourceBar, resourcesFromWorld, type ResourceSnapshot } from './ui/Res
 import { Ticker } from './ui/Ticker'
 import { Charts } from './ui/Charts'
 import { PortraitDock } from './ui/PortraitDock'
+import {
+  brainModeFromLocation,
+  LunaBrainService,
+} from './mind/lunaBrain'
+import { isLunaAgent } from './mind/personas'
 import type { AgentState, EconomyStat, Place, SimEvent } from './sim/types'
 
 const DEFAULT_SEED = 42
@@ -50,6 +55,7 @@ function emptyHud(): SimStateBridge {
     lastSavedTick: null,
     seed: DEFAULT_SEED,
     agent0: null,
+    mind: null,
   }
 }
 
@@ -84,6 +90,7 @@ export function App() {
   const sceneRef = useRef<SceneHandle | null>(null)
   const liveRef = useRef<Simulation | null>(null)
   const unbindRef = useRef<(() => void) | null>(null)
+  const mindRef = useRef<LunaBrainService | null>(null)
   const lastAutosaveWallRef = useRef(0)
   const lastAutosaveDayRef = useRef(0)
   /** In-flight save promise so concurrent saveNow/autosave coalesce. */
@@ -204,6 +211,8 @@ export function App() {
       unbindRef.current = null
       loopRef.current?.stop()
       sceneRef.current?.dispose()
+      mindRef.current?.dispose()
+      mindRef.current = null
       while (el.firstChild) el.removeChild(el.firstChild)
 
       liveRef.current = live
@@ -211,6 +220,38 @@ export function App() {
       sceneRef.current = scene
       const loop = createLoop(live, scene)
       loopRef.current = loop
+
+      // LunaBrain: ?brain=mock|codex|off|auto
+      const attachMind = (m: LunaBrainService) => {
+        if (!m.isEnabled()) {
+          loop.setMindHook(null)
+          return
+        }
+        loop.setMindHook({
+          onAfterTick: (sim) => m.onAfterTick(sim),
+          getMeter: () => {
+            const meter = m.getMeter()
+            return {
+              ...meter,
+              decideCalls: m.getDecideCallCount(),
+            }
+          },
+        })
+        m.onAfterTick(live)
+      }
+      const mind = new LunaBrainService(brainModeFromLocation())
+      mindRef.current = mind
+      const mode = brainModeFromLocation()
+      if (mode === 'auto') {
+        void mind.init().then(() => {
+          if (mindRef.current !== mind) return
+          attachMind(mind)
+          setHud(loop.getState())
+        })
+      } else {
+        void mind.init()
+        attachMind(mind)
+      }
 
       if (opts?.markSaved) {
         // Resume paused so the saved tick is exact until the player hits play.
@@ -403,6 +444,8 @@ export function App() {
       window.removeEventListener('beforeunload', onBeforeUnload)
       unbindRef.current?.()
       unbindRef.current = null
+      mindRef.current?.dispose()
+      mindRef.current = null
       loopRef.current?.stop()
       sceneRef.current?.dispose()
       loopRef.current = null
@@ -461,7 +504,7 @@ export function App() {
         ref={containerRef}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       />
-      <ResourceBar resources={resources} />
+      <ResourceBar resources={resources} mind={hud.mind ?? null} />
       <Hud
         state={hud}
         lastSavedClock={lastSavedClock}
@@ -569,6 +612,16 @@ export function App() {
           owners={owners}
           agents={allAgents}
           following={following}
+          lunaEnabled={
+            !!selectedAgent &&
+            isLunaAgent(selectedAgent.id) &&
+            (hud.mind?.enabled ?? false)
+          }
+          lastExchange={
+            selectedAgent && mindRef.current
+              ? mindRef.current.getLastExchange(selectedAgent.id) ?? null
+              : null
+          }
           onToggleFollow={() => {
             const loop = loopRef.current
             if (!loop) return
