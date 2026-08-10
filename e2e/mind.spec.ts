@@ -386,4 +386,91 @@ test.describe.serial('lunabrain harness', () => {
     expect(after.tick).toBeGreaterThan(tickBefore)
     expect(after.budgetCooldown).toBe(true)
   })
+
+  test('memory & reflection (P3-1): 2 sim-days → Mind tab 💭; prompt has Your memories:; auto brain; off clean', async ({
+    page,
+  }) => {
+    const url = '/?brain=mock'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    // 2 full sim-days — nightly reflections at 03:00 fallback or bedtime sleep
+    await page.evaluate(() => (window as any).__simControl.ffwd(2 * 1440))
+    // Drain mock holds + note inbox
+    await page.evaluate(() => (window as any).__simControl.ffwd(20))
+
+    await page.evaluate(() => (window as any).__simControl.selectAgent('agent-0'))
+    await page.getByTestId('tab-mind').click()
+    await expect(page.getByTestId('mind-tab')).toBeVisible()
+    await expect(page.getByTestId('mind-memories')).toBeVisible()
+
+    // ≥1 reflection row in Memories
+    await expect
+      .poll(async () => page.getByTestId('mind-memory-reflection').count(), {
+        timeout: 10_000,
+      })
+      .toBeGreaterThanOrEqual(1)
+
+    // Decision after reflection should include Your memories: in last exchange
+    // Advance a bit more so a post-reflection decision can fire
+    await page.evaluate(() => (window as any).__simControl.ffwd(200))
+    await page.evaluate(() => (window as any).__simControl.selectAgent('agent-0'))
+    await page.getByTestId('tab-mind').click()
+    const toggle = page.getByTestId('mind-exchange-toggle')
+    await expect(toggle).toBeVisible({ timeout: 15_000 })
+    await toggle.click()
+    const exchange = page.getByTestId('mind-last-exchange')
+    await expect(exchange).toBeVisible()
+    const exchangeText = await exchange.textContent()
+    expect(exchangeText).toContain('Your memories:')
+
+    await page.screenshot({ path: 'artifacts/memories.png', fullPage: false })
+
+    // Plain URL (no ?brain=) auto-enables mock or codex
+    await page.goto('/')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const m = (window as any).__simState?.mind
+            return m?.enabled === true && (m.provider === 'mock' || m.provider === 'codex')
+          }),
+        { timeout: 10_000 },
+      )
+      .toBe(true)
+
+    // ?brain=off still clean
+    await page.goto('/?brain=off')
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await page.evaluate(() => (window as any).__simControl.ffwd(60))
+    const offMind = await page.evaluate(() => (window as any).__simState?.mind)
+    expect(offMind?.enabled).toBe(false)
+    expect(offMind?.provider).toBe('off')
+    await expect(page.getByTestId('mind-chip')).toHaveCount(0)
+  })
 })

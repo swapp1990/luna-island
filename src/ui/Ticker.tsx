@@ -176,6 +176,19 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'mind:reflection') {
+      const name = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const t = toSimTime(ev.tick)
+      const pronoun = name === 'Mira' ? 'her' : name === 'Joss' || name === 'Wren' ? 'their' : 'their'
+      rows.push({
+        key: `mind-reflect-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · 💭 ${name} reflected on ${pronoun} day`,
+      })
+      continue
+    }
+
     if (ev.type === 'mind:budget') {
       const t = toSimTime(ev.tick)
       const reason =

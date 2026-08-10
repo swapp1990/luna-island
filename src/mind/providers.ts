@@ -6,6 +6,8 @@ export interface MindPrompt {
   /** For MockProvider seeding only. */
   agentId?: string
   tick?: number
+  /** Decision (default) or nightly reflection. */
+  kind?: 'decision' | 'reflection'
 }
 
 export interface MindBudgetInfo {
@@ -104,11 +106,26 @@ export class MockProvider implements MindProvider {
     const tick = prompt.tick ?? 0
     // Simple deterministic hash
     let h = 2166136261
-    const seed = `${agentId}:${tick}`
+    const seed = `${agentId}:${tick}:${prompt.kind ?? 'decision'}`
     for (let i = 0; i < seed.length; i++) {
       h ^= seed.charCodeAt(i)
       h = Math.imul(h, 16777619)
     }
+
+    if (prompt.kind === 'reflection') {
+      const notes = [
+        `I made it through another day on the island — needs first, then neighbors.`,
+        `Tomorrow I will work if I can and keep an eye on my wallet.`,
+      ]
+      // Deterministic third note sometimes
+      if (Math.abs(h) % 2 === 0) {
+        notes.push(`I hope the plaza is quiet and the pantry stays full.`)
+      }
+      const text = JSON.stringify({ notes: notes.slice(0, 1 + (Math.abs(h) % 3)) })
+      const approxChars = prompt.system.length + prompt.user.length + text.length
+      return { text, latencyMs: 1, approxChars }
+    }
+
     const action = ACTION_CYCLE[Math.abs(h) % ACTION_CYCLE.length]!
     const reasoning = `I should ${action} now — needs and the island clock say so.`
     const payload: { action: string; target?: string; reasoning: string } = {

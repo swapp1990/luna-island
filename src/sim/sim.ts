@@ -34,6 +34,8 @@ import type {
   Good,
   Intent,
   Inventory,
+  MindNoteMeta,
+  MindNoteRecord,
   Needs,
   OwnerId,
   Place,
@@ -197,6 +199,24 @@ function cloneExternalIntentLog(
   }))
 }
 
+function cloneMindNoteMeta(meta: MindNoteMeta): MindNoteMeta {
+  return {
+    provider: meta.provider,
+    latencyMs: meta.latencyMs,
+    approxChars: meta.approxChars,
+  }
+}
+
+function cloneMindNoteLog(log: MindNoteRecord[] | undefined): MindNoteRecord[] {
+  if (!log || log.length === 0) return []
+  return log.map((r) => ({
+    tick: r.tick,
+    agentId: r.agentId,
+    notes: r.notes.slice(),
+    meta: cloneMindNoteMeta(r.meta),
+  }))
+}
+
 function cloneMindStats(
   stats: Record<string, AgentMindStats> | undefined,
 ): Record<string, AgentMindStats> {
@@ -230,13 +250,15 @@ function deepCloneWorld(state: WorldState): WorldState {
     sympathyStreak: { ...(state.sympathyStreak ?? {}) },
     sympathyMet: { ...(state.sympathyMet ?? {}) },
     externalIntentLog: cloneExternalIntentLog(state.externalIntentLog),
+    mindNoteLog: cloneMindNoteLog(state.mindNoteLog),
     mindStats: cloneMindStats(state.mindStats),
   }
 }
 
-/** Ensure older snapshots / v1 saves have the Phase-3 fields. */
+/** Ensure older snapshots / v1–v2 saves have the Phase-3 mind fields. */
 export function ensureMindFields(state: WorldState): void {
   if (!state.externalIntentLog) state.externalIntentLog = []
+  if (!state.mindNoteLog) state.mindNoteLog = []
   if (!state.mindStats) state.mindStats = {}
 }
 
@@ -378,11 +400,26 @@ export class Simulation {
     meta: ExternalIntentMeta
   }> = []
   /**
+   * Live inbox: mind notes posted mid-tick, applied at the start of the next step
+   * (sorted by agentId then queue order).
+   */
+  private mindNoteInbox: Array<{
+    agentId: string
+    notes: string[]
+    meta: MindNoteMeta
+  }> = []
+  /**
    * Full intent log for re-sim playback (set on forks via stateAt).
    * When non-null, intents at the current tick are re-applied from this list
    * instead of consulting the brain for that agent.
    */
   private intentPlayback: ExternalIntentRecord[] | null = null
+  /**
+   * Full mind-note log for re-sim playback (set on forks via stateAt).
+   * When non-null, notes at the current tick are re-applied from this list
+   * instead of consulting any provider.
+   */
+  private notePlayback: MindNoteRecord[] | null = null
   /** Agents who received an external intent this tick (skip brain redecide). */
   private externalAppliedThisTick = new Set<string>()
 
@@ -397,6 +434,7 @@ export class Simulation {
       dayArchives?: DayArchiveMeta[]
       skipInitEvents?: boolean
       intentPlayback?: ExternalIntentRecord[] | null
+      notePlayback?: MindNoteRecord[] | null
     },
   )
   constructor(
@@ -409,12 +447,14 @@ export class Simulation {
       dayArchives?: DayArchiveMeta[]
       skipInitEvents?: boolean
       intentPlayback?: ExternalIntentRecord[] | null
+      notePlayback?: MindNoteRecord[] | null
     },
   ) {
     this.snapshots = opts?.snapshots ?? new SnapshotStore()
     this.events = opts?.events ?? new EventTrace()
     this.rng = createRng(seed)
     this.intentPlayback = opts?.intentPlayback ?? null
+    this.notePlayback = opts?.notePlayback ?? null
     if (opts?.dayArchives) {
       this.dayArchives = opts.dayArchives.map((a) => ({
         day: a.day,
@@ -463,6 +503,22 @@ export class Simulation {
       agentId,
       intent: cloneIntent(intent),
       meta: cloneExternalMeta(meta),
+    })
+  }
+
+  /**
+   * Queue mind reflection notes for application at the start of the next step.
+   * Live path only — replays use notePlayback / mindNoteLog.
+   */
+  postMindNotes(
+    agentId: string,
+    notes: string[],
+    meta: MindNoteMeta,
+  ): void {
+    this.mindNoteInbox.push({
+      agentId,
+      notes: notes.map((n) => String(n)),
+      meta: cloneMindNoteMeta(meta),
     })
   }
 
@@ -543,14 +599,29 @@ export class Simulation {
     this.intentPlayback = log ? cloneExternalIntentLog(log) : null
   }
 
+  /** Install mind-note playback for re-sim (stateAt / forks). */
+  setNotePlayback(log: MindNoteRecord[] | null): void {
+    this.notePlayback = log ? cloneMindNoteLog(log) : null
+  }
+
   getExternalIntentLog(): readonly ExternalIntentRecord[] {
     ensureMindFields(this.state)
     return this.state.externalIntentLog
   }
 
+  getMindNoteLog(): readonly MindNoteRecord[] {
+    ensureMindFields(this.state)
+    return this.state.mindNoteLog
+  }
+
   /** Pending live-inbox size (not yet applied). */
   getExternalInboxSize(): number {
     return this.externalInbox.length
+  }
+
+  /** Pending mind-note inbox size (not yet applied). */
+  getMindNoteInboxSize(): number {
+    return this.mindNoteInbox.length
   }
 
   getEvents(): readonly SimEvent[] {
@@ -1973,8 +2044,9 @@ export class Simulation {
       this.stepEconomyStats()
     }
 
-    // External (mind) intents: live inbox + replay playback, before brains
+    // External (mind) intents + reflection notes: live inbox + replay playback
     this.applyExternalIntentsForTick()
+    this.applyMindNotesForTick()
 
     this.stepAgents()
     this.stepSympathy()
@@ -2042,6 +2114,93 @@ export class Simulation {
         recordStats: true,
       })
     }
+  }
+
+  /**
+   * Apply mind reflection notes for the current tick.
+   * Live: drain inbox (sorted agentId, queue order), record into log.
+   * Replay: re-apply entries from notePlayback at this tick (log already set).
+   */
+  private applyMindNotesForTick(): void {
+    const tick = this.state.tick
+
+    if (this.notePlayback) {
+      const atTick = this.notePlayback
+        .filter((r) => r.tick === tick)
+        .slice()
+        .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0))
+      for (const rec of atTick) {
+        const already = this.state.mindNoteLog.some(
+          (r) =>
+            r.tick === rec.tick &&
+            r.agentId === rec.agentId &&
+            r.notes.length === rec.notes.length &&
+            r.notes.every((n, i) => n === rec.notes[i]),
+        )
+        if (!already) {
+          this.state.mindNoteLog.push({
+            tick: rec.tick,
+            agentId: rec.agentId,
+            notes: rec.notes.slice(),
+            meta: cloneMindNoteMeta(rec.meta),
+          })
+        }
+        this.forceMindNotes(rec.agentId, rec.notes, rec.meta, {
+          recordLog: false,
+        })
+      }
+      return
+    }
+
+    if (this.mindNoteInbox.length === 0) return
+    const batch = this.mindNoteInbox.splice(0, this.mindNoteInbox.length)
+    batch.sort((a, b) =>
+      a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0,
+    )
+    for (const item of batch) {
+      this.forceMindNotes(item.agentId, item.notes, item.meta, {
+        recordLog: true,
+      })
+    }
+  }
+
+  /**
+   * Apply mind notes: emit mind:reflection, optionally append mindNoteLog.
+   * Does not change agent action.
+   */
+  private forceMindNotes(
+    agentId: string,
+    notes: string[],
+    meta: MindNoteMeta,
+    opts: { recordLog: boolean },
+  ): void {
+    const agent = this.state.agents.find((a) => a.id === agentId)
+    const cleanNotes = notes.map((n) => String(n)).filter((n) => n.length > 0)
+    if (cleanNotes.length === 0) return
+
+    if (opts.recordLog) {
+      this.state.mindNoteLog.push({
+        tick: this.state.tick,
+        agentId,
+        notes: cleanNotes.slice(),
+        meta: cloneMindNoteMeta(meta),
+      })
+    }
+
+    this.events.append({
+      tick: this.state.tick,
+      type: 'mind:reflection',
+      agentId,
+      data: {
+        notes: cleanNotes.slice(),
+        provider: meta.provider,
+        latencyMs: meta.latencyMs,
+        approxChars: meta.approxChars,
+        source: 'luna',
+        agentName: agent?.name,
+      },
+      reason: `${agent?.name ?? agentId} reflected on the day`,
+    })
   }
 
   /**
@@ -2639,7 +2798,10 @@ export class Simulation {
   static fromSnapshot(
     snap: SimSnapshot,
     events?: SimEvent[],
-    opts?: { intentPlayback?: ExternalIntentRecord[] | null },
+    opts?: {
+      intentPlayback?: ExternalIntentRecord[] | null
+      notePlayback?: MindNoteRecord[] | null
+    },
   ): Simulation {
     const ev = new EventTrace()
     const eventList = events ?? snap.events
@@ -2655,6 +2817,7 @@ export class Simulation {
       events: ev,
       skipInitEvents: true,
       intentPlayback: opts?.intentPlayback ?? null,
+      notePlayback: opts?.notePlayback ?? null,
     })
     // Rebuild snapshot ring from restored position for further seeks on this fork
     sim.snapshots.add(sim.makeSnapshot())
@@ -2702,24 +2865,27 @@ export class Simulation {
   /**
    * Returns a FORKED sim at the given tick. Never mutates the live sim.
    * Fork gets its own event trace (copy-on-fork).
-   * Re-sim plays back externalIntentLog so mind decisions are never re-requested.
+   * Re-sim plays back externalIntentLog + mindNoteLog so mind calls are never re-requested.
    */
   stateAt(tick: Tick): Simulation {
     const target = Math.max(0, Math.min(tick, this.state.tick))
     ensureMindFields(this.state)
-    // Full log up to live head — re-sim applies entries at their recorded ticks
+    // Full logs up to live head — re-sim applies entries at their recorded ticks
     const playback = cloneExternalIntentLog(this.state.externalIntentLog)
+    const notePlayback = cloneMindNoteLog(this.state.mindNoteLog)
     const nearest = this.snapshots.nearestAtOrBefore(target)
     if (!nearest) {
       // Fallback: re-sim from scratch with playback
       const fresh = new Simulation(this.state.seed, {
         intentPlayback: playback,
+        notePlayback,
       })
       if (target > 0) fresh.advanceTicks(target)
       return fresh
     }
     const fork = Simulation.fromSnapshot(nearest, undefined, {
       intentPlayback: playback,
+      notePlayback,
     })
     const remaining = target - fork.state.tick
     if (remaining > 0) fork.advanceTicks(remaining)

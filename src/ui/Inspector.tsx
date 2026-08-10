@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
-import type { AgentState, Place, SimEvent } from '../sim/types'
+import { useEffect, useMemo, useState } from 'react'
+import type { AgentState, MindNoteRecord, Place, SimEvent } from '../sim/types'
 import { toSimTime } from '../sim/time'
 import { SlotGrid } from './SlotGrid'
 import type { MindExchange } from '../mind/lunaBrain'
 import { isLunaAgent } from '../mind/personas'
+import { episodicMemories, reflectionMemories } from '../mind/memory'
 
 type TabId = 'status' | 'life' | 'people' | 'work' | 'mind'
 
@@ -199,6 +200,8 @@ export function Inspector(props: {
   /** LunaBrain enabled for this session and agent is luna-capable. */
   lunaEnabled?: boolean
   lastExchange?: MindExchange | null
+  /** Applied mind reflections (for Memories section). */
+  mindNoteLog?: readonly MindNoteRecord[]
 }) {
   const { agent, events, replayTick, following, onToggleFollow, onClose } = props
   const dayStart = props.dayStartTick ?? 0
@@ -211,9 +214,20 @@ export function Inspector(props: {
     setExchangeOpen(false)
   }, [agent?.id])
 
+  const memoryRows = useMemo(() => {
+    if (!agent) return { reflections: [] as ReturnType<typeof reflectionMemories>, episodics: [] as ReturnType<typeof episodicMemories> }
+    const upTo = events.filter((e) => e.tick <= replayTick)
+    const notes = (props.mindNoteLog ?? []).filter((r) => r.tick <= replayTick)
+    return {
+      reflections: reflectionMemories(agent.id, notes),
+      episodics: episodicMemories(agent.id, upTo),
+    }
+  }, [agent, events, replayTick, props.mindNoteLog])
+
   if (!agent) return null
   const owns = ownsLabel(agent, props.places, props.owners)
-  const showMind = isLunaAgent(agent.id)
+  // Show mind UI for luna agents when brain is on; otherwise instinct (incl. brain=off)
+  const showMind = isLunaAgent(agent.id) && !!props.lunaEnabled
   const tabs = BASE_TABS
 
   const logEvents = events
@@ -621,6 +635,76 @@ export function Inspector(props: {
                     <span>↩ {fallbacks}</span>
                     <span>{meanLat}ms</span>
                     <span>~{chars}ch</span>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      opacity: 0.55,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Memories
+                  </div>
+                  <div
+                    data-testid="mind-memories"
+                    style={{
+                      maxHeight: 160,
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      marginBottom: 12,
+                    }}
+                  >
+                    {memoryRows.reflections.length === 0 &&
+                    memoryRows.episodics.length === 0 ? (
+                      <div data-testid="mind-memories-empty" style={{ opacity: 0.5 }}>
+                        No memories yet — she&apos;ll reflect tonight.
+                      </div>
+                    ) : (
+                      <>
+                        {memoryRows.reflections.map((m, i) => (
+                          <div
+                            key={`r-${m.tick}-${i}`}
+                            data-testid="mind-memory-reflection"
+                            style={{
+                              fontSize: 11,
+                              padding: '4px 6px',
+                              borderRadius: 6,
+                              background: 'rgba(160, 140, 255, 0.08)',
+                              border: '1px solid rgba(160, 140, 255, 0.18)',
+                              lineHeight: 1.35,
+                            }}
+                          >
+                            💭 {m.text}
+                          </div>
+                        ))}
+                        {memoryRows.episodics
+                          .slice()
+                          .reverse()
+                          .slice(0, 8)
+                          .map((m, i) => (
+                            <div
+                              key={`e-${m.tick}-${i}-${m.text.slice(0, 12)}`}
+                              data-testid="mind-memory-episodic"
+                              style={{
+                                fontSize: 11,
+                                padding: '4px 6px',
+                                borderRadius: 6,
+                                background: 'rgba(255,255,255,0.04)',
+                                border: '1px solid rgba(255,255,255,0.05)',
+                                lineHeight: 1.35,
+                              }}
+                            >
+                              📌 {m.text}
+                            </div>
+                          ))}
+                      </>
+                    )}
                   </div>
 
                   <div

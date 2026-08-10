@@ -25,6 +25,10 @@ export type ParseMindResult =
   | { ok: true; intent: Intent; raw: MindIntentJson }
   | { ok: false; error: string }
 
+export type ParseReflectionResult =
+  | { ok: true; notes: string[] }
+  | { ok: false; error: string }
+
 /** Strip markdown fences and extract first {...} JSON object. */
 export function extractJsonObject(text: string): string | null {
   let s = text.trim()
@@ -88,6 +92,45 @@ export function parseMindJson(text: string): ParseMindResult {
       reasoning: obj.reasoning,
     },
   }
+}
+
+/**
+ * Parse nightly reflection: {"notes":["…","…"]} — 1–3 notes, each ≤120 chars.
+ */
+export function parseReflectionJson(text: string): ParseReflectionResult {
+  const jsonStr = extractJsonObject(text)
+  if (!jsonStr) {
+    return { ok: false, error: 'no JSON object in response' }
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(jsonStr)
+  } catch {
+    return { ok: false, error: 'invalid JSON' }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'JSON root must be object' }
+  }
+  const obj = raw as Record<string, unknown>
+  if (!Array.isArray(obj.notes)) {
+    return { ok: false, error: 'missing notes array' }
+  }
+  const notes: string[] = []
+  for (const n of obj.notes) {
+    if (typeof n !== 'string') {
+      return { ok: false, error: 'note must be string' }
+    }
+    const trimmed = n.trim()
+    if (trimmed.length === 0) continue
+    if (trimmed.length > 120) {
+      return { ok: false, error: 'note exceeds 120 chars' }
+    }
+    notes.push(trimmed)
+  }
+  if (notes.length < 1 || notes.length > 3) {
+    return { ok: false, error: 'need 1–3 notes' }
+  }
+  return { ok: true, notes }
 }
 
 function dist2(ax: number, ay: number, bx: number, by: number): number {

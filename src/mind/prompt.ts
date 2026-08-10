@@ -1,7 +1,11 @@
-import type { AgentState, Place, SimEvent, WorldState } from '../sim/types'
+import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
 import { toSimTime } from '../sim/time'
 import { marketPriceFromStock } from '../sim/sim'
 import { personaFor } from './personas'
+import {
+  memoryLinesForPrompt,
+  standingFacts,
+} from './memory'
 
 const ACTION_KINDS = [
   'idle',
@@ -16,6 +20,9 @@ const ACTION_KINDS = [
   'buy',
   'commission',
 ] as const
+
+const GROUNDING =
+  'GROUNDING: Cite only facts present in your observation and memories. Never invent numbers, events, or possessions.'
 
 const WORLD_RULES = `WORLD RULES (scaffold only — you choose what to do):
 - Time: 1 tick = 1 sim minute; day 06:00 start; night 21:00–06:00.
@@ -36,7 +43,7 @@ If unsure, prefer a safe need-serving action (eat/forage/sleep/work).`
 
 export function buildSystemPrompt(agentId: string): string {
   const persona = personaFor(agentId) ?? 'You are a villager on Luna Island.'
-  return `${persona}\n\n${WORLD_RULES}\n\n${RESPONSE_CONTRACT}`
+  return `${persona}\n\n${GROUNDING}\n\n${WORLD_RULES}\n\n${RESPONSE_CONTRACT}`
 }
 
 function pct(n: number): number {
@@ -80,6 +87,7 @@ export function buildUserPrompt(
   agent: AgentState,
   world: WorldState,
   recentEvents: readonly SimEvent[],
+  mindNoteLog?: readonly MindNoteRecord[],
 ): string {
   const t = toSimTime(world.tick)
   const stall = world.places.find((p) => p.kind === 'stall')
@@ -98,6 +106,10 @@ export function buildUserPrompt(
       return `@${e.tick} ${e.type}${reason}`
     })
 
+  const standing = standingFacts(agent, world)
+  const noteLog = mindNoteLog ?? world.mindNoteLog ?? []
+  const memories = memoryLinesForPrompt(agent.id, recentEvents, noteLog, 8)
+
   const lines = [
     `Time: Day ${t.day} ${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')} (tick ${world.tick})`,
     `Needs: hunger ${pct(agent.needs.hunger)}% energy ${pct(agent.needs.energy)}% social ${pct(agent.needs.social)}%${agent.collapsed ? ' COLLAPSED' : ''}`,
@@ -106,6 +118,10 @@ export function buildUserPrompt(
     `Current action: ${agent.action.kind}${agent.action.targetPlaceId ? ` @${agent.action.targetPlaceId}` : ''} — ${agent.action.reason}`,
     `Market: food price ${price}, stall stock ${stock}`,
     `Nearby: ${near.length ? near.map((n) => `${n.name}(sym ${n.sympathy}, ${n.action})`).join('; ') : 'none'}`,
+    `Standing facts:`,
+    ...standing.map((s) => `- ${s}`),
+    `Your memories:`,
+    ...(memories.length ? memories.map((m) => `- ${m}`) : ['- (none yet)']),
     `Recent trace:`,
     ...(events.length ? events : ['(none)']),
     `Available actions: ${ACTION_KINDS.join(', ')}`,
@@ -113,7 +129,49 @@ export function buildUserPrompt(
   return lines.join('\n')
 }
 
-/** Rough token estimate (~4 chars/token). Keep prompt ≤ ~1200 tokens. */
+/** Reflection system prompt: persona + contract for nightly notes. */
+export function buildReflectionSystemPrompt(agentId: string): string {
+  const persona = personaFor(agentId) ?? 'You are a villager on Luna Island.'
+  return `${persona}
+
+${GROUNDING}
+
+You are reflecting on your day before sleep. Reply ONLY with one JSON object, no markdown:
+{"notes":["…","…"]}
+Rules: 1–3 notes; each ≤120 characters; first person ("I"); concrete facts from today's events and intentions for tomorrow. No invented possessions or numbers.`
+}
+
+/** Compact day-trace lines for reflection (agent's own events that day). */
+export function buildReflectionUserPrompt(
+  agentId: string,
+  events: readonly SimEvent[],
+  day: number,
+): string {
+  const dayLines: string[] = []
+  for (const e of events) {
+    if (e.agentId !== agentId) continue
+    const t = toSimTime(e.tick)
+    if (t.day !== day) continue
+    const reason = e.reason ? ` — ${e.reason}` : ''
+    dayLines.push(
+      `${pad2(t.hour)}:${pad2(t.minute)} ${e.type}${reason}`,
+    )
+  }
+  // Cap to keep prompt small
+  const clipped =
+    dayLines.length > 40
+      ? [...dayLines.slice(0, 10), '…', ...dayLines.slice(-29)]
+      : dayLines
+  return `Here are today's events for you (Day ${day}):\n${
+    clipped.length ? clipped.join('\n') : '(quiet day — little happened)'
+  }\n\nReply ONLY {"notes":["…"]}.`
+}
+
+function pad2(n: number): string {
+  return n.toString().padStart(2, '0')
+}
+
+/** Rough token estimate (~4 chars/token). Keep prompt ≤ ~1500 tokens. */
 export function approxTokens(system: string, user: string): number {
   return Math.ceil((system.length + user.length) / 4)
 }

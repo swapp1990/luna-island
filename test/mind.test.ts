@@ -16,6 +16,12 @@ import {
   MIND_WALL_TIMEOUT_MS,
 } from '../src/mind/lunaBrain'
 import { MockProvider } from '../src/mind/providers'
+import { LUNA_AGENT_IDS, personaFor } from '../src/mind/personas'
+import {
+  episodicMemories,
+  reflectionMemories,
+} from '../src/mind/memory'
+import { buildUserPrompt } from '../src/mind/prompt'
 
 const meta = (reasoning: string): ExternalIntentMeta => ({
   reasoning,
@@ -109,7 +115,7 @@ describe('mind external intents — record/replay', () => {
 
     const save = serializeSave(sim)
     expect(save.formatVersion).toBe(SAVE_FORMAT_VERSION)
-    expect(save.formatVersion).toBe(2)
+    expect(save.formatVersion).toBe(3)
     expect(save.snapshot.state.externalIntentLog.length).toBe(1)
 
     const restored = restoreSave(save)
@@ -125,6 +131,7 @@ describe('mind external intents — record/replay', () => {
         state: {
           ...save.snapshot.state,
           externalIntentLog: undefined,
+          mindNoteLog: undefined,
           mindStats: undefined,
         },
       },
@@ -135,6 +142,7 @@ describe('mind external intents — record/replay', () => {
       state: {
         ...s.state,
         externalIntentLog: undefined as unknown as [],
+        mindNoteLog: undefined as unknown as [],
         mindStats: undefined as unknown as {},
       },
     })
@@ -145,6 +153,7 @@ describe('mind external intents — record/replay', () => {
     }
     const fromV1 = restoreSave(v1raw)
     expect(fromV1.state.externalIntentLog).toEqual([])
+    expect(fromV1.state.mindNoteLog).toEqual([])
     expect(fromV1.state.mindStats).toEqual({})
     expect(fromV1.state.tick).toBe(sim.state.tick)
   })
@@ -314,8 +323,8 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
     expect(decisions.length).toBe(meter.decisions)
     expect(meter.decisions).toBeGreaterThan(0)
     // No request spam: one in-flight at a time + hard-gap cadence (~120 ticks)
-    // ⇒ ~24 calls over 2 days, not thousands. Every dispatch must apply (0 waste).
-    expect(meter.decideCalls).toBeLessThan(30)
+    // × 3 luna agents + nightly reflections over 2 days — bounded, not thousands.
+    expect(meter.decideCalls).toBeLessThan(120)
     expect(meter.decideCalls).toBe(meter.decisions)
     expect(sawThrottle).toBe(true)
     expect(sawRestore).toBe(true)
@@ -328,11 +337,12 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
     const mind = new LunaBrainService('mock', { provider })
     await mind.init()
     const sim = new Simulation(42)
+    const nLuna = LUNA_AGENT_IDS.length
 
-    // Kick a decision at tick 0
+    // Kick decisions at tick 0 (one per luna agent)
     mind.onAfterTick(sim)
-    expect(mind.getMeter().pending).toBe(1)
-    expect(mind.getDecideCallCount()).toBe(1)
+    expect(mind.getMeter().pending).toBe(nLuna)
+    expect(mind.getDecideCallCount()).toBe(nLuna)
     const requestTick = sim.state.tick
 
     // Race sim far ahead while the answer is still wall-waiting (no breathe)
@@ -346,9 +356,9 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
     await Promise.resolve()
 
     const stales = sim.getEvents().filter((e) => e.type === 'mind:stale')
-    expect(stales.length).toBe(1)
+    expect(stales.length).toBe(nLuna)
     expect(stales[0]!.reason).toMatch(/sim-min/)
-    expect(mind.getMeter().stales).toBe(1)
+    expect(mind.getMeter().stales).toBe(nLuna)
     expect(mind.getMeter().decisions).toBe(0)
     expect(mind.getMeter().fallbacks).toBe(0)
     expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(0)
@@ -366,10 +376,11 @@ describe('mind budget cooldown (P3-0c)', () => {
     const mind = new LunaBrainService('mock', { provider })
     await mind.init()
     const sim = new Simulation(42)
+    const nLuna = LUNA_AGENT_IDS.length
 
-    // Kick first dispatch (async provider path)
+    // Kick first dispatch (async provider path) — one per luna agent
     mind.onAfterTick(sim)
-    expect(mind.getDecideCallCount()).toBe(1)
+    expect(mind.getDecideCallCount()).toBe(nLuna)
     // Drain provider rejection + cooldown entry
     await Promise.resolve()
     await Promise.resolve()
@@ -377,6 +388,8 @@ describe('mind budget cooldown (P3-0c)', () => {
     await Promise.resolve()
 
     const budgetEvents = sim.getEvents().filter((e) => e.type === 'mind:budget')
+    // First 402 enters cooldown and emits once; other in-flight may also 402 but
+    // only one mind:budget event per cooldown episode.
     expect(budgetEvents.length).toBe(1)
     expect(budgetEvents[0]!.reason).toMatch(/mind budget exhausted — running on instinct until \d{2}:\d{2}/)
     expect(mind.getMeter().budgetCooldown).toBe(true)
@@ -434,6 +447,8 @@ describe('mind disabled leaves phase-2 determinism intact', () => {
     expect(a.hash()).toBe(b.hash())
     expect(a.state.externalIntentLog).toEqual([])
     expect(b.state.externalIntentLog).toEqual([])
+    expect(a.state.mindNoteLog).toEqual([])
+    expect(b.state.mindNoteLog).toEqual([])
   })
 })
 
@@ -444,5 +459,194 @@ describe('save format rejects unknown versions', () => {
     const save = serializeSave(sim) as unknown as Record<string, unknown>
     save.formatVersion = 999
     expect(() => restoreSave(save)).toThrow(SaveFormatError)
+  })
+})
+
+describe('mind notes — record/replay (P3-1)', () => {
+  it('postMindNotes → stateAt/fork re-sim hash-identical; save v3 round-trip; v2/v1 load', () => {
+    const sim = new Simulation(42)
+    const plan: Array<{ atTick: number; notes: string[] }> = [
+      { atTick: 80, notes: ['I worked the farm today.', 'Tomorrow I will rest.'] },
+      { atTick: 200, notes: ['I spent coins carefully.'] },
+    ]
+    let pi = 0
+    const target = 400
+    for (let t = 0; t < target; t++) {
+      const next = plan[pi]
+      if (next && sim.state.tick === next.atTick) {
+        sim.postMindNotes('agent-0', next.notes, {
+          provider: 'mock',
+          latencyMs: 2,
+          approxChars: 50,
+        })
+        pi++
+      }
+      sim.advanceTicks(1)
+    }
+
+    expect(sim.state.mindNoteLog.length).toBe(2)
+    const reflections = sim.getEvents().filter((e) => e.type === 'mind:reflection')
+    expect(reflections.length).toBe(2)
+    expect(reflections[0]!.data?.notes).toEqual(plan[0]!.notes)
+
+    const liveHash = sim.hash()
+    const atHead = sim.stateAt(target)
+    expect(atHead.hash()).toBe(liveHash)
+    expect(atHead.state.mindNoteLog).toEqual(sim.state.mindNoteLog)
+
+    // Fresh re-sim with same posts matches
+    const fresh = new Simulation(42)
+    let pj = 0
+    for (let t = 0; t < target; t++) {
+      const next = plan[pj]
+      if (next && fresh.state.tick === next.atTick) {
+        fresh.postMindNotes('agent-0', next.notes, {
+          provider: 'mock',
+          latencyMs: 2,
+          approxChars: 50,
+        })
+        pj++
+      }
+      fresh.advanceTicks(1)
+    }
+    expect(fresh.hash()).toBe(liveHash)
+
+    // mid stateAt
+    const mid = sim.stateAt(150)
+    expect(mid.state.mindNoteLog.length).toBe(1)
+
+    // Save v3
+    const save = serializeSave(sim)
+    expect(save.formatVersion).toBe(3)
+    expect(save.snapshot.state.mindNoteLog.length).toBe(2)
+    const restored = restoreSave(save)
+    expect(restored.hash()).toBe(liveHash)
+    expect(restored.state.mindNoteLog).toEqual(sim.state.mindNoteLog)
+
+    // v2 load → empty note log
+    const stripNotes = (s: (typeof save.snapshot)) => ({
+      ...s,
+      state: {
+        ...s.state,
+        mindNoteLog: undefined as unknown as [],
+      },
+    })
+    const v2raw = {
+      ...save,
+      formatVersion: 2,
+      snapshot: stripNotes(save.snapshot),
+      pinnedDayStartSnapshots: save.pinnedDayStartSnapshots.map(stripNotes),
+      fineSnapshotRing: save.fineSnapshotRing.map(stripNotes),
+    }
+    const fromV2 = restoreSave(v2raw)
+    expect(fromV2.state.mindNoteLog).toEqual([])
+    expect(fromV2.state.externalIntentLog.length).toBe(
+      save.snapshot.state.externalIntentLog.length,
+    )
+
+    // v1 still works
+    const stripAll = (s: (typeof save.snapshot)) => ({
+      ...s,
+      state: {
+        ...s.state,
+        externalIntentLog: undefined as unknown as [],
+        mindNoteLog: undefined as unknown as [],
+        mindStats: undefined as unknown as {},
+      },
+    })
+    const v1raw = {
+      ...save,
+      formatVersion: 1,
+      snapshot: stripAll(save.snapshot),
+      pinnedDayStartSnapshots: save.pinnedDayStartSnapshots.map(stripAll),
+      fineSnapshotRing: save.fineSnapshotRing.map(stripAll),
+    }
+    const fromV1 = restoreSave(v1raw)
+    expect(fromV1.state.mindNoteLog).toEqual([])
+    expect(fromV1.state.externalIntentLog).toEqual([])
+  })
+})
+
+describe('reflection scheduling (P3-1)', () => {
+  it('exactly one reflection per luna agent per sim-day over 3 mock days; budget counter increments', () => {
+    const mind = new LunaBrainService('mock')
+    void mind.init()
+    const sim = new Simulation(42)
+    const THREE_DAYS = 3 * 1440
+
+    for (let i = 0; i < THREE_DAYS; i++) {
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+    // Drain mock holds
+    for (let i = 0; i < 10; i++) {
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+
+    const reflections = sim.getEvents().filter((e) => e.type === 'mind:reflection')
+    const byAgent = new Map<string, number>()
+    for (const e of reflections) {
+      const id = e.agentId ?? '?'
+      byAgent.set(id, (byAgent.get(id) ?? 0) + 1)
+    }
+
+    // 3 nights × each luna agent
+    for (const id of LUNA_AGENT_IDS) {
+      expect(byAgent.get(id) ?? 0).toBe(3)
+    }
+    expect(reflections.length).toBe(LUNA_AGENT_IDS.length * 3)
+
+    const meter = mind.getMeter()
+    // decideCalls includes decisions + reflections
+    expect(meter.decideCalls).toBeGreaterThanOrEqual(reflections.length)
+    expect(meter.decisions).toBeGreaterThanOrEqual(reflections.length)
+  })
+})
+
+describe('memory purity (P3-1)', () => {
+  it('episodic/reflection memories are deterministic; prompt includes Your memories:', () => {
+    const sim = new Simulation(42)
+    sim.advanceTicks(100)
+    // Script notes + advance so they apply
+    sim.postMindNotes('agent-0', ['I counted every coin today.', 'Tomorrow: the stall.'], {
+      provider: 'mock',
+      latencyMs: 1,
+    })
+    sim.advanceTicks(1)
+
+    const events = sim.getEvents()
+    const log = sim.state.mindNoteLog
+    const a = episodicMemories('agent-0', events)
+    const b = episodicMemories('agent-0', events)
+    expect(a).toEqual(b)
+    const r1 = reflectionMemories('agent-0', log)
+    const r2 = reflectionMemories('agent-0', log)
+    expect(r1).toEqual(r2)
+    expect(r1.length).toBeGreaterThanOrEqual(1)
+    expect(r1[0]!.text).toContain('Tomorrow: the stall')
+
+    const agent = sim.state.agents.find((x) => x.id === 'agent-0')!
+    const user = buildUserPrompt(agent, sim.state, events, log)
+    expect(user).toContain('Your memories:')
+    expect(user).toContain('Standing facts:')
+    expect(user).toContain('I counted every coin today.')
+    expect(user).toContain('Tomorrow: the stall.')
+
+    // Personas list includes contrast agents
+    expect(LUNA_AGENT_IDS).toContain('agent-0')
+    expect(LUNA_AGENT_IDS).toContain('agent-1')
+    expect(LUNA_AGENT_IDS).toContain('agent-11')
+  })
+})
+
+describe('personas grounding (P3-1)', () => {
+  it('personas contain no ownership/job/wealth assertions', () => {
+    const forbidden =
+      /homeowner|I own|my house|my home(?!land)|proud first-time|employed at|I work as|I am rich|my wallet/i
+    for (const id of LUNA_AGENT_IDS) {
+      const p = personaFor(id) ?? ''
+      expect(p).not.toMatch(forbidden)
+    }
   })
 })

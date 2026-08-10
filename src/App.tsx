@@ -113,6 +113,9 @@ export function App() {
   const [places, setPlaces] = useState<Place[]>([])
   const [owners, setOwners] = useState<Record<string, string>>({})
   const [allAgents, setAllAgents] = useState<AgentState[]>([])
+  const [mindNoteLog, setMindNoteLog] = useState<
+    import('./sim/types').MindNoteRecord[]
+  >([])
   const [stats, setStats] = useState<EconomyStat[]>([])
   const [following, setFollowing] = useState(false)
   const [scrubMin, setScrubMin] = useState(0)
@@ -146,6 +149,14 @@ export function App() {
       setPlaces(sim.state.places.map(clonePlace))
       setOwners({ ...sim.state.owners })
       setAllAgents(sim.state.agents.map(cloneAgent))
+      setMindNoteLog(
+        (sim.state.mindNoteLog ?? []).map((r) => ({
+          tick: r.tick,
+          agentId: r.agentId,
+          notes: r.notes.slice(),
+          meta: { ...r.meta },
+        })),
+      )
       setStats(sim.state.stats.map((st) => ({ ...st })))
       setResources(resourcesFromWorld(sim.state))
       setFollowing(loop.getFollow())
@@ -354,6 +365,14 @@ export function App() {
       setAllAgents(live.state.agents.map(cloneAgent))
       setPlaces(live.state.places.map(clonePlace))
       setOwners({ ...live.state.owners })
+      setMindNoteLog(
+        (live.state.mindNoteLog ?? []).map((r) => ({
+          tick: r.tick,
+          agentId: r.agentId,
+          notes: r.notes.slice(),
+          meta: { ...r.meta },
+        })),
+      )
       setStats(live.state.stats.map((st) => ({ ...st })))
       setResources(resourcesFromWorld(live.state))
       const b0 = loop.getDayBounds()
@@ -631,6 +650,7 @@ export function App() {
               ? mindRef.current.getLastExchange(selectedAgent.id) ?? null
               : null
           }
+          mindNoteLog={mindNoteLog}
           onToggleFollow={() => {
             const loop = loopRef.current
             if (!loop) return

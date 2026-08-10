@@ -190,6 +190,21 @@ export interface ExternalIntentRecord {
   meta: ExternalIntentMeta
 }
 
+/** Meta attached to a mind reflection note batch (recorded for replay). */
+export interface MindNoteMeta {
+  provider: string
+  latencyMs?: number
+  approxChars?: number
+}
+
+/** One applied mind reflection, ordered by tick then agentId (hash / replay source). */
+export interface MindNoteRecord {
+  tick: Tick
+  agentId: string
+  notes: string[]
+  meta: MindNoteMeta
+}
+
 /** Per-agent mind counters (snapshots / saves; not read by UtilityBrain). */
 export interface AgentMindStats {
   decisions: number
@@ -227,6 +242,11 @@ export interface WorldState {
    * Part of snapshots, saves, and the state hash.
    */
   externalIntentLog: ExternalIntentRecord[]
+  /**
+   * Applied mind reflection notes — live = record, re-sim = playback.
+   * Part of snapshots, saves, and the state hash (mirrors externalIntentLog).
+   */
+  mindNoteLog: MindNoteRecord[]
   /** Sparse per-agent mind counters (optional; empty object when none). */
   mindStats: Record<string, AgentMindStats>
 }
