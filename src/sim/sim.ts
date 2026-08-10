@@ -499,6 +499,25 @@ export class Simulation {
     })
   }
 
+  /**
+   * Record a mind:stale discard (intent arrived too late after requestTick).
+   * Not a generic fallback — does not bump fallback counters.
+   */
+  postMindStale(
+    agentId: string,
+    data: Record<string, unknown>,
+    reason: string,
+  ): void {
+    ensureMindFields(this.state)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'mind:stale',
+      agentId,
+      data: { ...data, source: 'luna' },
+      reason,
+    })
+  }
+
   /** Install full-log playback for re-sim (stateAt / forks). */
   setIntentPlayback(log: ExternalIntentRecord[] | null): void {
     this.intentPlayback = log ? cloneExternalIntentLog(log) : null

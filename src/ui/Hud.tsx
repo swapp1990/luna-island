@@ -43,8 +43,12 @@ export function Hud(props: {
   const [seedInput, setSeedInput] = useState('42')
   const fileRef = useRef<HTMLInputElement>(null)
 
+  // Highlight the player's chosen speed, not the temporary breathe throttle (1×).
+  const highlightSpeed = state.userSpeed ?? state.speed
+
   return (
     <div
+      data-testid="hud-controls"
       style={{
         position: 'absolute',
         top: 12,
@@ -96,7 +100,7 @@ export function Hud(props: {
       ) : null}
       <div style={{ display: 'flex', gap: 6 }}>
         {SPEEDS.map((s) => {
-          const active = state.speed === s.value
+          const active = highlightSpeed === s.value
           return (
             <button
               key={s.value}

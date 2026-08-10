@@ -19,6 +19,13 @@ export const MIND_HARD_GAP_TICKS = 120
 export const MOCK_DELAY_TICKS = 3
 /** Wall-clock timeout for a mind request → fallback. */
 export const MIND_WALL_TIMEOUT_MS = 10_000
+/**
+ * Backstop: discard intents older than this many sim minutes after requestTick.
+ * With auto-breathe this should rarely fire; ages > 45 mean the world raced ahead.
+ */
+export const MIND_STALE_TICKS = 45
+/** Brief pause before retrying a 429 "still thinking" without a new decideCall. */
+const LUNA_BUSY_RETRY_MS = 250
 
 export type BrainMode = 'codex' | 'mock' | 'off'
 
@@ -34,12 +41,34 @@ export interface MindExchange {
 export interface MindMeter {
   enabled: boolean
   agentIds: string[]
+  /** inFlight + holds (inbox not yet applied). */
   pending: number
+  /**
+   * Wall-bound requests only (sidecar / delayed mock). Auto-breathe keys off this —
+   * short mock holds do not throttle the sim.
+   */
+  thinking: number
   decisions: number
   fallbacks: number
+  /** Intent discarded as too old relative to requestTick. */
+  stales: number
   meanLatencyMs: number
   approxChars: number
   provider: string
+  /** Actual dispatched decide requests (not cadence skips / 429 re-checks). */
+  decideCalls: number
+}
+
+export interface LunaBrainOptions {
+  /** Optional provider override (tests). */
+  provider?: MindProvider
+  /**
+   * Mock-only: wall-frame delay for async decide (pacing tests).
+   * Ignored when provider is supplied explicitly.
+   */
+  mockWallDelayFrames?: number
+  /** Mock-only: wall-clock ms delay (browser breathe e2e). */
+  mockWallDelayMs?: number
 }
 
 interface PendingHold {
@@ -48,6 +77,7 @@ interface PendingHold {
   intent: Intent
   meta: ExternalIntentMeta
   exchange: MindExchange
+  requestTick: number
 }
 
 interface InFlight {
@@ -82,12 +112,21 @@ export class LunaBrainService {
   private totalApproxChars = 0
   private decisions = 0
   private fallbacks = 0
+  private stales = 0
   private disposed = false
 
-  constructor(mode: BrainModeOrAuto = 'auto') {
+  constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
+    if (opts?.provider) {
+      this.provider = opts.provider
+      if (mode === 'auto') this.mode = 'mock'
+      return
+    }
     if (mode === 'mock') {
-      this.provider = new MockProvider()
+      this.provider = new MockProvider({
+        wallDelayFrames: opts?.mockWallDelayFrames,
+        wallDelayMs: opts?.mockWallDelayMs,
+      })
     } else if (mode === 'codex') {
       this.provider = new CodexProvider()
     } else if (mode === 'off') {
@@ -97,16 +136,17 @@ export class LunaBrainService {
   }
 
   async init(): Promise<void> {
+    if (this.provider && this.mode !== 'auto') return
     if (this.mode === 'off') {
       this.provider = null
       return
     }
     if (this.mode === 'mock') {
-      this.provider = new MockProvider()
+      this.provider = this.provider ?? new MockProvider()
       return
     }
     if (this.mode === 'codex') {
-      this.provider = new CodexProvider()
+      this.provider = this.provider ?? new CodexProvider()
       return
     }
     // auto
@@ -146,19 +186,23 @@ export class LunaBrainService {
   }
 
   getMeter(): MindMeter {
-    const pending = this.inFlight.size + this.holds.length
+    const thinking = this.inFlight.size
+    const pending = thinking + this.holds.length
     return {
       enabled: this.isEnabled(),
       agentIds: [...LUNA_AGENT_IDS],
       pending,
+      thinking,
       decisions: this.decisions,
       fallbacks: this.fallbacks,
+      stales: this.stales,
       meanLatencyMs:
         this.latencySamples > 0
           ? Math.round(this.totalLatency / this.latencySamples)
           : 0,
       approxChars: this.totalApproxChars,
       provider: this.provider?.name ?? 'off',
+      decideCalls: this.decideCallCount,
     }
   }
 
@@ -176,10 +220,10 @@ export class LunaBrainService {
     const ready = this.holds.filter((h) => h.readyTick <= tick)
     this.holds = this.holds.filter((h) => h.readyTick > tick)
     for (const h of ready) {
-      sim.postExternalIntent(h.agentId, h.intent, h.meta)
-      this.lastDecisionTick.set(h.agentId, tick)
-      this.lastExchange.set(h.agentId, h.exchange)
-      this.decisions += 1
+      if (this.applyOrStale(sim, h.agentId, h.intent, h.meta, h.exchange, h.requestTick)) {
+        this.lastDecisionTick.set(h.agentId, tick)
+        this.lastExchange.set(h.agentId, h.exchange)
+      }
     }
 
     // Wall-timeout in-flight
@@ -228,10 +272,10 @@ export class LunaBrainService {
     const user = buildUserPrompt(agent, sim.state, events)
     const provider = this.provider
     const providerName = provider.name
-    this.decideCallCount += 1
 
-    // Mock: fully synchronous so ffwd interleaves decide → 3-tick hold → apply
-    if (provider instanceof MockProvider) {
+    // Mock sync: fully synchronous so ffwd interleaves decide → 3-tick hold → apply
+    if (provider instanceof MockProvider && provider.preferSync()) {
+      this.decideCallCount += 1
       const result = provider.decideSync({ system, user, agentId, tick })
       this.finishDecision(sim, agentId, system, user, result, providerName, tick)
       return
@@ -243,38 +287,85 @@ export class LunaBrainService {
       startedWall: Date.now(),
     }
     this.inFlight.set(agentId, flight)
+    // Count only the initial dispatch of a logical decision (429 retries reuse it)
+    this.decideCallCount += 1
 
     const run = async () => {
-      try {
-        const result = await provider.decide({
-          system,
-          user,
-          agentId,
-          tick,
-        })
+      // Retry loop for 429 "still thinking" — same flight, no extra decideCalls
+      for (;;) {
         if (this.disposed) return
         if (this.inFlight.get(agentId) !== flight) return
-        this.inFlight.delete(agentId)
-        this.finishDecision(sim, agentId, system, user, result, providerName, tick)
-      } catch (err) {
-        if (this.disposed) return
-        if (this.inFlight.get(agentId) !== flight) return
-        this.inFlight.delete(agentId)
-        const code = (err as { code?: string })?.code
-        if (code === 'LUNA_BUSY') {
+        try {
+          const result = await provider.decide({
+            system,
+            user,
+            agentId,
+            tick,
+          })
+          if (this.disposed) return
+          if (this.inFlight.get(agentId) !== flight) return
+          this.inFlight.delete(agentId)
+          this.finishDecision(sim, agentId, system, user, result, providerName, tick)
+          return
+        } catch (err) {
+          if (this.disposed) return
+          if (this.inFlight.get(agentId) !== flight) return
+          const code = (err as { code?: string })?.code
+          if (code === 'LUNA_BUSY') {
+            // Stay in-flight; re-check without counting a new decideCall
+            await new Promise<void>((r) => setTimeout(r, LUNA_BUSY_RETRY_MS))
+            continue
+          }
+          this.inFlight.delete(agentId)
+          this.fallbacks += 1
+          const msg = err instanceof Error ? err.message : String(err)
+          sim.postMindFallback(
+            agentId,
+            { reason: 'provider error', error: msg },
+            `Mind provider error: ${msg}`,
+          )
           return
         }
-        this.fallbacks += 1
-        const msg = err instanceof Error ? err.message : String(err)
-        sim.postMindFallback(
-          agentId,
-          { reason: 'provider error', error: msg },
-          `Mind provider error: ${msg}`,
-        )
       }
     }
 
     void run()
+  }
+
+  /**
+   * Apply intent if fresh; otherwise emit mind:stale (not a generic fallback).
+   * @returns true when applied
+   */
+  private applyOrStale(
+    sim: Simulation,
+    agentId: string,
+    intent: Intent,
+    meta: ExternalIntentMeta,
+    exchange: MindExchange,
+    requestTick: number,
+  ): boolean {
+    const age = sim.state.tick - requestTick
+    if (age > MIND_STALE_TICKS) {
+      this.stales += 1
+      sim.postMindStale(
+        agentId,
+        {
+          reason: 'stale intent',
+          requestTick,
+          applyTick: sim.state.tick,
+          ageTicks: age,
+          staleAfterTicks: MIND_STALE_TICKS,
+          latencyMs: meta.latencyMs,
+          approxChars: meta.approxChars,
+        },
+        `Mind intent arrived ${age} sim-min after observation (limit ${MIND_STALE_TICKS}) — discarded`,
+      )
+      this.lastExchange.set(agentId, exchange)
+      return false
+    }
+    sim.postExternalIntent(agentId, intent, meta)
+    this.decisions += 1
+    return true
   }
 
   private finishDecision(
@@ -328,12 +419,19 @@ export class LunaBrainService {
       approxChars: result.approxChars,
     }
 
-    const delay = providerName === 'mock' ? MOCK_DELAY_TICKS : 0
+    // Sync mock path keeps a short hold so ffwd interleaves apply mid-batch.
+    // Async paths (codex / delayed mock) apply immediately subject to stale guard.
+    const delay =
+      providerName === 'mock' &&
+      this.provider instanceof MockProvider &&
+      this.provider.preferSync()
+        ? MOCK_DELAY_TICKS
+        : 0
     const readyTick = sim.state.tick + delay
     if (delay <= 0) {
-      sim.postExternalIntent(agentId, intent, meta)
-      this.lastDecisionTick.set(agentId, sim.state.tick)
-      this.decisions += 1
+      if (this.applyOrStale(sim, agentId, intent, meta, exchange, requestTick)) {
+        this.lastDecisionTick.set(agentId, sim.state.tick)
+      }
     } else {
       this.holds.push({
         agentId,
@@ -341,6 +439,7 @@ export class LunaBrainService {
         intent,
         meta,
         exchange,
+        requestTick,
       })
     }
   }
@@ -355,4 +454,18 @@ export function brainModeFromLocation(): BrainModeOrAuto {
   if (v === 'mock') return 'mock'
   if (v === 'codex') return 'codex'
   return 'auto'
+}
+
+/**
+ * Optional mock wall-clock delay from `?mindWallMs=` (breathe e2e).
+ * Only applied when brain=mock.
+ */
+export function mockWallDelayMsFromLocation(): number {
+  if (typeof window === 'undefined') return 0
+  const q = new URLSearchParams(window.location.search)
+  const raw = q.get('mindWallMs')
+  if (raw == null || raw === '') return 0
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.min(30_000, Math.floor(n))
 }

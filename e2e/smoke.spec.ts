@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 test.describe.serial('smoke', () => {
   test('page loads with ready state and canvas', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -13,7 +13,7 @@ test.describe.serial('smoke', () => {
   })
 
   test('time advances at speed 1', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -28,7 +28,7 @@ test.describe.serial('smoke', () => {
   })
 
   test('fast-forward at 64× gains ≥ 100 ticks', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -47,7 +47,7 @@ test.describe.serial('smoke', () => {
   })
 
   test('scrub to replay and go live', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -77,7 +77,7 @@ test.describe.serial('smoke', () => {
   })
 
   test('day and night screenshots', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

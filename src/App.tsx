@@ -22,6 +22,7 @@ import { PortraitDock } from './ui/PortraitDock'
 import {
   brainModeFromLocation,
   LunaBrainService,
+  mockWallDelayMsFromLocation,
 } from './mind/lunaBrain'
 import { isLunaAgent } from './mind/personas'
 import type { AgentState, EconomyStat, Place, SimEvent } from './sim/types'
@@ -44,6 +45,7 @@ function emptyHud(): SimStateBridge {
     minute: 0,
     tick: 0,
     speed: 1,
+    userSpeed: 1,
     agentCount: 0,
     agentIds: [],
     selectedAgentId: null,
@@ -229,19 +231,15 @@ export function App() {
         }
         loop.setMindHook({
           onAfterTick: (sim) => m.onAfterTick(sim),
-          getMeter: () => {
-            const meter = m.getMeter()
-            return {
-              ...meter,
-              decideCalls: m.getDecideCallCount(),
-            }
-          },
+          getMeter: () => m.getMeter(),
         })
         m.onAfterTick(live)
       }
-      const mind = new LunaBrainService(brainModeFromLocation())
-      mindRef.current = mind
       const mode = brainModeFromLocation()
+      const mind = new LunaBrainService(mode, {
+        mockWallDelayMs: mode === 'mock' ? mockWallDelayMsFromLocation() : 0,
+      })
+      mindRef.current = mind
       if (mode === 'auto') {
         void mind.init().then(() => {
           if (mindRef.current !== mind) return

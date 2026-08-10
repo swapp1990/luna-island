@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 test.describe.serial('juice', () => {
   test('portrait dock renders 24 chips; click selects + follows', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -34,7 +34,7 @@ test.describe.serial('juice', () => {
   })
 
   test('ffwd to work hours → hats visible via __renderProbe', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -68,7 +68,7 @@ test.describe.serial('juice', () => {
   })
 
   test('screenshots: work, night Zzz, portrait dock', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

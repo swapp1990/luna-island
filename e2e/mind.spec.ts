@@ -174,4 +174,116 @@ test.describe.serial('lunabrain harness', () => {
     await page.getByTestId('tab-mind').click()
     await expect(page.getByTestId('mind-instinct')).toHaveText('Runs on instinct')
   })
+
+  test('auto-breathe: 64× throttles to 1 while mind pending, restores; resource bar no HUD overlap', async ({
+    page,
+  }) => {
+    // mindWallMs forces async mock path so thinking/inFlight is observable (codex-like)
+    const url = '/?brain=mock&mindWallMs=1200'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    const decisionsBefore = await page.evaluate(
+      () => (window as any).__simState.mind.decisions as number,
+    )
+    const fallbacksBefore = await page.evaluate(
+      () => (window as any).__simState.mind.fallbacks as number,
+    )
+
+    // User wants 64×; breathe drops effective speed to 1 while wall-bound mind is thinking
+    await page.evaluate(() => (window as any).__simControl.setSpeed(64))
+
+    // Wait until we observe the breathe window: thinking/pending and effective speed 1
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            const thinking = (s.mind?.thinking ?? s.mind?.pending ?? 0) as number
+            return thinking >= 1 && s.speed === 1 && (s.userSpeed ?? 64) === 64
+          }),
+        { timeout: 20_000 },
+      )
+      .toBe(true)
+
+    // Capture thinking chip screenshot while pending
+    await expect(page.getByTestId('mind-chip')).toBeVisible()
+    await expect(page.getByTestId('mind-chip-thinking')).toBeVisible()
+    await page.screenshot({ path: 'artifacts/mind-pacing.png', fullPage: false })
+
+    // After decision applies: thinking clears, speed restores to 64, decisions++
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            return {
+              thinking: (s.mind?.thinking ?? 0) as number,
+              pending: s.mind?.pending as number,
+              speed: s.speed as number,
+              userSpeed: s.userSpeed as number,
+              decisions: s.mind?.decisions as number,
+              fallbacks: s.mind?.fallbacks as number,
+            }
+          }),
+        { timeout: 20_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          thinking: 0,
+          speed: 64,
+          userSpeed: 64,
+        }),
+      )
+
+    const after = await page.evaluate(() => {
+      const s = (window as any).__simState
+      return {
+        decisions: s.mind.decisions as number,
+        fallbacks: s.mind.fallbacks as number,
+        speed: s.speed as number,
+      }
+    })
+    expect(after.decisions).toBeGreaterThan(decisionsBefore)
+    expect(after.fallbacks).toBe(fallbacksBefore)
+    expect(after.speed).toBe(64)
+
+    // Resource bar must not overlap centered HUD controls at 1280×720
+    await expect(page.getByTestId('resource-bar')).toBeVisible()
+    await expect(page.getByTestId('hud-controls')).toBeVisible()
+    const overlap = await page.evaluate(() => {
+      const bar = document.querySelector('[data-testid="resource-bar"]') as HTMLElement
+      const hud = document.querySelector('[data-testid="hud-controls"]') as HTMLElement
+      const a = bar.getBoundingClientRect()
+      const b = hud.getBoundingClientRect()
+      const noOverlap =
+        a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom
+      return {
+        noOverlap,
+        bar: { left: a.left, right: a.right, top: a.top, bottom: a.bottom },
+        hud: { left: b.left, right: b.right, top: b.top, bottom: b.bottom },
+      }
+    })
+    expect(overlap.noOverlap).toBe(true)
+  })
 })

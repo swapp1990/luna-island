@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 test.describe.serial('agents', () => {
   test('agentCount is 24', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -13,7 +13,7 @@ test.describe.serial('agents', () => {
   })
 
   test('life happens at 64×', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -55,7 +55,7 @@ test.describe.serial('agents', () => {
   })
 
   test('bridge selection opens inspector with needs and log', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -95,7 +95,7 @@ test.describe.serial('agents', () => {
   })
 
   test('replay inspector only shows events ≤ scrub tick', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -135,7 +135,7 @@ test.describe.serial('agents', () => {
   })
 
   test('day and night agent screenshots', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -191,7 +191,7 @@ test.describe.serial('agents', () => {
   })
 
   test('world-rules plaza — clustered socializers + chatting bubble', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -255,7 +255,7 @@ test.describe.serial('agents', () => {
   })
 
   test('watchability: status bubble, ticker, follow camera', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -320,7 +320,7 @@ test.describe.serial('agents', () => {
   })
 
   test('economy: market jobs + farm screenshot', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -379,7 +379,7 @@ test.describe.serial('agents', () => {
   })
 
   test('economy: forage inspector rows + screenshot', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -439,7 +439,7 @@ test.describe.serial('agents', () => {
   })
 
   test('construction: site or private house screenshot', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -477,7 +477,7 @@ test.describe.serial('agents', () => {
   })
 
   test('watchability screenshot', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -514,7 +514,7 @@ test.describe.serial('agents', () => {
   })
 
   test('biography tabs + town charts + people relationships', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

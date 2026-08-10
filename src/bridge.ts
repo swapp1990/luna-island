@@ -5,13 +5,17 @@ export interface MindBridgeState {
   enabled: boolean
   agentIds: string[]
   pending: number
+  /** Wall-bound in-flight requests (auto-breathe + thinking chip). */
+  thinking?: number
   decisions: number
   fallbacks: number
+  /** Intent discarded as too old after requestTick (mind:stale). */
+  stales?: number
   meanLatencyMs: number
   approxChars: number
   /** codex | mock | off */
   provider: string
-  /** Provider decide() call count (scrub must not increase). */
+  /** Actual dispatched decide requests (scrub must not increase; 429 retries don't count). */
   decideCalls: number
 }
 
@@ -22,7 +26,13 @@ export interface SimStateBridge {
   hour: number
   minute: number
   tick: number
+  /**
+   * Effective sim speed (1 while auto-breathe throttles for an in-flight mind).
+   * Use `userSpeed` for the player's selected button highlight.
+   */
   speed: number
+  /** Player-selected speed / restore target after breathe (0 = paused). */
+  userSpeed?: number
   agentCount: number
   /** Ordered agent ids (additive; for E2E selection). */
   agentIds: string[]

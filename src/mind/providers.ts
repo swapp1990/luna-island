@@ -30,14 +30,62 @@ const ACTION_CYCLE = [
   'buy',
 ] as const
 
+export interface MockProviderOptions {
+  /**
+   * Wall-frame artificial delay before resolve (for pacing tests).
+   * When > 0, preferSync() is false and decide() waits for advanceWallFrame() calls.
+   */
+  wallDelayFrames?: number
+  /**
+   * Wall-clock ms delay before resolve (browser e2e breathe tests).
+   * When > 0, preferSync() is false and decide() uses setTimeout.
+   */
+  wallDelayMs?: number
+}
+
 /**
  * Deterministic canned decisions for vitest/e2e — no network.
- * Seeds by agentId+tick; artificial delay is handled by LunaBrain (3 sim ticks).
+ * Seeds by agentId+tick; artificial delay is handled by LunaBrain (3 sim ticks)
+ * unless wallDelayFrames is set (async path for breathe/stale tests).
  */
 export class MockProvider implements MindProvider {
   readonly name = 'mock'
+  private readonly wallDelayFrames: number
+  private readonly wallDelayMs: number
+  private wallWaiters: Array<{
+    left: number
+    resolve: (r: MindDecisionResult) => void
+    result: MindDecisionResult
+  }> = []
 
-  /** Synchronous path so ffwd can interleave decide → hold → apply without microtasks. */
+  constructor(opts?: MockProviderOptions) {
+    this.wallDelayFrames = Math.max(0, opts?.wallDelayFrames ?? 0)
+    this.wallDelayMs = Math.max(0, opts?.wallDelayMs ?? 0)
+  }
+
+  /** True when LunaBrain may use the fully-synchronous decide path (ffwd-safe). */
+  preferSync(): boolean {
+    return this.wallDelayFrames <= 0 && this.wallDelayMs <= 0
+  }
+
+  /**
+   * Advance one wall frame for async delayed decides.
+   * Call once per simulated/real frame from tests (or harness).
+   */
+  advanceWallFrame(): void {
+    if (this.wallWaiters.length === 0) return
+    const done: typeof this.wallWaiters = []
+    const rest: typeof this.wallWaiters = []
+    for (const w of this.wallWaiters) {
+      w.left -= 1
+      if (w.left <= 0) done.push(w)
+      else rest.push(w)
+    }
+    this.wallWaiters = rest
+    for (const w of done) w.resolve(w.result)
+  }
+
+  /** Synchronous path so ffwd can interleave decide → 3-tick hold → apply without microtasks. */
   decideSync(prompt: MindPrompt): MindDecisionResult {
     const agentId = prompt.agentId ?? 'agent-0'
     const tick = prompt.tick ?? 0
@@ -67,9 +115,23 @@ export class MockProvider implements MindProvider {
   }
 
   async decide(prompt: MindPrompt): Promise<MindDecisionResult> {
+    const result = this.decideSync(prompt)
+    if (this.wallDelayFrames > 0) {
+      return new Promise((resolve) => {
+        this.wallWaiters.push({
+          left: this.wallDelayFrames,
+          resolve,
+          result,
+        })
+      })
+    }
+    if (this.wallDelayMs > 0) {
+      await new Promise<void>((r) => setTimeout(r, this.wallDelayMs))
+      return result
+    }
     // Microtask so async path is still exercised when not in sync ffwd
     await Promise.resolve()
-    return this.decideSync(prompt)
+    return result
   }
 }
 

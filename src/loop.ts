@@ -36,6 +36,8 @@ export interface LoopController {
   getDayBounds: () => { startTick: number; endTick: number }
   /** Swap / clear the live mind hook (LunaBrain). */
   setMindHook: (hook: MindTickHook | null) => void
+  /** User-chosen speed (not the temporary breathe throttle). */
+  getUserSpeed: () => number
 }
 
 const SPEEDS = new Set([0, 1, 8, 64])
@@ -50,6 +52,12 @@ function capturePositions(sim: Simulation): Map<string, { x: number; y: number }
 }
 
 export function createLoop(live: Simulation, scene: SceneHandle): LoopController {
+  /** User's selected speed (restore target after breathe). */
+  let userSpeed = 1
+  /**
+   * Effective sim speed for the frame accumulator / bridge.
+   * While a mind is pending and user is not paused, this is 1 (auto-breathe).
+   */
   let speed = 1
   let mode: SimMode = 'live'
   let selectedAgentId: string | null = null
@@ -65,13 +73,45 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let mindHook: MindTickHook | null = null
   let prevPositions = capturePositions(live)
 
-  const advanceLive = (n: number) => {
+  /** Wall-bound mind requests only — holds do not throttle (mock apply lag). */
+  const mindThinking = (): number => {
+    const m = mindHook?.getMeter()
+    if (!m) return 0
+    return m.thinking ?? 0
+  }
+
+  /** Recompute effective speed from user intent + wall-bound mind thinking. */
+  const applyBreathe = () => {
+    if (userSpeed === 0) {
+      // Manual pause always wins — never auto-unpause
+      speed = 0
+      return
+    }
+    if (mode === 'live' && mindThinking() > 0) {
+      speed = 1
+      return
+    }
+    speed = userSpeed
+  }
+
+  /**
+   * Advance live sim. When respectBreathe, mid-batch thinking stops catch-up
+   * so high-speed frames cannot race past an in-flight mind answer.
+   * ffwd always passes respectBreathe=false — never waits on minds.
+   */
+  const advanceLive = (n: number, respectBreathe = false) => {
     if (n <= 0) return
-    // Per-tick so LunaBrain can flush mock holds mid-batch (ffwd / high speed)
     for (let i = 0; i < n; i++) {
       live.advanceTicks(1)
       if (mode === 'live') mindHook?.onAfterTick(live)
+      if (respectBreathe && mode === 'live' && mindThinking() > 0 && userSpeed > 1) {
+        // Enter breathe: drop remaining batch; next frames run at 1×
+        applyBreathe()
+        accumulator = 0
+        break
+      }
     }
+    if (respectBreathe) applyBreathe()
   }
   /** Event count of the view sim already scanned for critical bubbles. */
   let lastCriticalEventCount = 0
@@ -118,6 +158,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       placeCounts[p.kind] = (placeCounts[p.kind] ?? 0) + 1
     }
     const a0 = live.state.agents[0]
+    applyBreathe()
     return {
       ready,
       mode,
@@ -126,6 +167,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       minute: t.minute,
       tick: sim.state.tick,
       speed,
+      userSpeed,
       agentCount: sim.state.agents.length,
       agentIds: sim.state.agents.map((a) => a.id),
       selectedAgentId,
@@ -146,8 +188,10 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             enabled: false,
             agentIds: [],
             pending: 0,
+            thinking: 0,
             decisions: 0,
             fallbacks: 0,
+            stales: 0,
             meanLatencyMs: 0,
             approxChars: 0,
             provider: 'off',
@@ -297,10 +341,13 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
   const setSpeed = (n: number) => {
     if (!SPEEDS.has(n)) return
-    speed = n
+    // User intent always updates restore target (including mid-think)
+    userSpeed = n
+    applyBreathe()
   }
 
   const pause = () => {
+    userSpeed = 0
     speed = 0
   }
 
@@ -313,6 +360,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastCriticalEventCount = live.getEventCount()
     lastToastEventCount = live.getEventCount()
     lastCelebrateEventCount = live.getEventCount()
+    applyBreathe()
     applyScene(performance.now())
   }
 
@@ -326,6 +374,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     mode = 'replay'
     fork = live.stateAt(t)
     // Hold at scrubbed tick until the user presses play
+    userSpeed = 0
     speed = 0
     accumulator = 0
     prevPositions = capturePositions(fork)
@@ -378,13 +427,15 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
   const ffwd = (n: number) => {
     if (n <= 0) return
-    advanceLive(n)
+    // Never waits on minds — respectBreathe=false
+    advanceLive(n, false)
     if (mode === 'live') {
       prevPositions = capturePositions(live)
       lastCriticalEventCount = live.getEventCount()
       // Skip toast/celebration spam from large ffwd batches — advance cursor only
       lastToastEventCount = live.getEventCount()
       lastCelebrateEventCount = live.getEventCount()
+      applyBreathe()
       applyScene(performance.now())
     } else if (fork) {
       // Live advanced underneath; keep replay fork as-is
@@ -395,6 +446,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
 
   const setMindHook = (hook: MindTickHook | null) => {
     mindHook = hook
+    applyBreathe()
   }
 
   const selectAgent = (id: string | null) => {
@@ -422,6 +474,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     if (!lastTs) lastTs = ts
     // Higher speeds must not drop wall time on slow WebGL frames (headless + terrain).
     // Cap still bounds spiral-of-death; pure sim is >> 1k ticks/s so a 1s catch-up is fine.
+    applyBreathe()
     const dtCap = speed >= 64 ? 1.0 : speed >= 8 ? 0.25 : 0.1
     const dt = Math.min(dtCap, (ts - lastTs) / 1000)
     lastTs = ts
@@ -436,7 +489,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       if (mode === 'live') {
         if (steps > 0) {
           prevPositions = capturePositions(live)
-          advanceLive(steps)
+          advanceLive(steps, true)
         }
       } else if (fork) {
         if (steps > 0) {
@@ -454,6 +507,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             goLive()
           } else if (fork.state.tick >= endTick && day < liveDay()) {
             // Past day: auto-pause at day end
+            userSpeed = 0
             speed = 0
             accumulator = 0
           }
@@ -461,6 +515,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       }
     }
 
+    applyBreathe()
     const sim = viewSim()
     scanCriticals(sim, ts)
     scanToasts(sim, ts, mode === 'live')
@@ -480,6 +535,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastCriticalEventCount = viewSim().getEventCount()
     lastToastEventCount = viewSim().getEventCount()
     lastCelebrateEventCount = viewSim().getEventCount()
+    applyBreathe()
     applyScene(performance.now())
     refreshBridge(getState())
     rafId = requestAnimationFrame(frame)
@@ -516,5 +572,6 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     getAlpha: () => accumulator,
     getPrevAgentPositions: () => prevPositions,
     getDayBounds,
+    getUserSpeed: () => userSpeed,
   }
 }

@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 test.describe.serial('info-layer', () => {
   test('resource bar renders 4 chips; values change after work day', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -62,7 +62,7 @@ test.describe.serial('info-layer', () => {
   })
 
   test('selectPlace farm → building panel; roster chip selects agent', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -117,7 +117,7 @@ test.describe.serial('info-layer', () => {
   })
 
   test('construction site materials line', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -157,7 +157,7 @@ test.describe.serial('info-layer', () => {
   })
 
   test('agent inventory slot grid with count badges', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -176,7 +176,7 @@ test.describe.serial('info-layer', () => {
   })
 
   test('screenshots: building panel farm + construction site', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

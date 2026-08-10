@@ -7,7 +7,7 @@ const TICKS_TO_DAY3 = 2520 + 60 // a bit into Day 3 morning
 
 test.describe.serial('day-paged timeline', () => {
   test('ffwd to Day 3, archives present, day selector visible', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -34,7 +34,7 @@ test.describe.serial('day-paged timeline', () => {
   })
 
   test('loadDay(1) scopes replay + scrubber + inspector log to Day 1', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -106,7 +106,7 @@ test.describe.serial('day-paged timeline', () => {
   })
 
   test('goLive() returns to Day 3 live head', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

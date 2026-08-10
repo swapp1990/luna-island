@@ -7,7 +7,7 @@ const TICKS_TO_DAY2 = 1080 + 120
 
 test.describe.serial('persistence', () => {
   test('saveNow + reload resumes tick, day, archives, wallet', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -111,7 +111,7 @@ test.describe.serial('persistence', () => {
   })
 
   test('Day-1 replay still works after reload', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)
@@ -163,7 +163,7 @@ test.describe.serial('persistence', () => {
   })
 
   test('newWorld(7) resets to Day 1 with different layout than seed 42', async ({ page }) => {
-    await page.goto('/')
+    await page.goto('/?brain=off')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

@@ -8,7 +8,11 @@ import {
 } from '../src/sim/persist'
 import type { ExternalIntentMeta, Intent } from '../src/sim/types'
 import { parseMindJson, resolveMindIntent } from '../src/mind/parse'
-import { LunaBrainService, MIND_MIN_GAP_TICKS } from '../src/mind/lunaBrain'
+import {
+  LunaBrainService,
+  MIND_MIN_GAP_TICKS,
+  MIND_STALE_TICKS,
+} from '../src/mind/lunaBrain'
 import { MockProvider } from '../src/mind/providers'
 
 const meta = (reasoning: string): ExternalIntentMeta => ({
@@ -221,6 +225,131 @@ describe('mind external intents — record/replay', () => {
       tick: 42,
     })
     expect(a.text).toBe(b.text)
+  })
+})
+
+/**
+ * Simulated auto-breathe: when mind is pending, effective speed is 1× (remember
+ * userSpeed=64 as restore target). Mock answers after 20 wall frames so without
+ * breathe the world would race ahead and stale; with breathe every answer applies.
+ */
+describe('mind auto-breathe pacing (P3-0b)', () => {
+  it('64× over 2 sim-days: every delayed decision applies, decideCalls bounded, throttle engages', async () => {
+    const WALL_DELAY = 20
+    const provider = new MockProvider({ wallDelayFrames: WALL_DELAY })
+    const mind = new LunaBrainService('mock', { provider })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    const userSpeed = 64
+    let effectiveSpeed = userSpeed
+    let sawThrottle = false
+    let sawRestore = false
+    let wasThrottled = false
+
+    const TWO_DAYS = 2 * 1440
+    const maxFrames = TWO_DAYS * 2 + 10_000
+    let frames = 0
+
+    while (sim.state.tick < TWO_DAYS && frames < maxFrames) {
+      frames++
+      const pendingBefore = mind.getMeter().pending
+      if (pendingBefore > 0) {
+        effectiveSpeed = 1
+        sawThrottle = true
+        wasThrottled = true
+      } else {
+        if (wasThrottled) {
+          sawRestore = true
+          wasThrottled = false
+        }
+        effectiveSpeed = userSpeed
+      }
+
+      // One "frame" at effective speed; mid-batch break when mind goes pending
+      for (let i = 0; i < effectiveSpeed; i++) {
+        if (sim.state.tick >= TWO_DAYS) break
+        sim.advanceTicks(1)
+        mind.onAfterTick(sim)
+        // External intents apply on the subsequent step — nudge once if inbox posted
+        if (mind.getMeter().pending > 0 && userSpeed > 1) {
+          effectiveSpeed = 1
+          sawThrottle = true
+          wasThrottled = true
+          break
+        }
+      }
+
+      // Wall-bound mind latency advances one frame (like codex wall time)
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+
+    // Drain any in-flight wall answers + external-intent inbox so events catch up
+    for (let i = 0; i < WALL_DELAY + 5; i++) {
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+    await new Promise((r) => setTimeout(r, 0))
+    for (let i = 0; i < 3; i++) {
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+    }
+
+    expect(sim.state.tick).toBeGreaterThanOrEqual(TWO_DAYS)
+
+    const meter = mind.getMeter()
+    const stales = sim.getEvents().filter((e) => e.type === 'mind:stale')
+    const decisions = sim.getEvents().filter((e) => e.type === 'mind:decision')
+
+    expect(stales.length).toBe(0)
+    expect(meter.stales).toBe(0)
+    // Every completed (non-stale) decide should have applied as a decision event
+    expect(decisions.length).toBe(meter.decisions)
+    expect(meter.decisions).toBeGreaterThan(0)
+    // No request spam: one in-flight at a time + hard-gap cadence (~120 ticks)
+    // ⇒ ~24 calls over 2 days, not thousands. Every dispatch must apply (0 waste).
+    expect(meter.decideCalls).toBeLessThan(30)
+    expect(meter.decideCalls).toBe(meter.decisions)
+    expect(sawThrottle).toBe(true)
+    expect(sawRestore).toBe(true)
+    // Effective speed restored to user intent after last settle
+    expect(mind.getMeter().pending).toBe(0)
+  })
+
+  it('stale backstop: intent older than MIND_STALE_TICKS is discarded as mind:stale', async () => {
+    const provider = new MockProvider({ wallDelayFrames: 1 })
+    const mind = new LunaBrainService('mock', { provider })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    // Kick a decision at tick 0
+    mind.onAfterTick(sim)
+    expect(mind.getMeter().pending).toBe(1)
+    expect(mind.getDecideCallCount()).toBe(1)
+    const requestTick = sim.state.tick
+
+    // Race sim far ahead while the answer is still wall-waiting (no breathe)
+    sim.advanceTicks(MIND_STALE_TICKS + 10)
+    expect(sim.state.tick - requestTick).toBeGreaterThan(MIND_STALE_TICKS)
+    provider.advanceWallFrame()
+    // Drain microtasks + macrotask so async decide continuation runs
+    await Promise.resolve()
+    await Promise.resolve()
+    await new Promise((r) => setTimeout(r, 0))
+    await Promise.resolve()
+
+    const stales = sim.getEvents().filter((e) => e.type === 'mind:stale')
+    expect(stales.length).toBe(1)
+    expect(stales[0]!.reason).toMatch(/sim-min/)
+    expect(mind.getMeter().stales).toBe(1)
+    expect(mind.getMeter().decisions).toBe(0)
+    expect(mind.getMeter().fallbacks).toBe(0)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(0)
   })
 })
 

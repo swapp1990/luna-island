@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { MindBridgeState } from '../bridge'
 
 export interface ResourceSnapshot {
@@ -25,6 +25,18 @@ const CHIPS: Array<{
   },
 ]
 
+const chipBase: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '5px 10px',
+  borderRadius: 10,
+  background: 'rgba(255,255,255,0.06)',
+  border: '1px solid rgba(255,255,255,0.1)',
+  whiteSpace: 'nowrap',
+  transition: 'transform 0.18s ease, box-shadow 0.18s ease',
+}
+
 function Chip(props: {
   icon: string
   label: string
@@ -36,19 +48,11 @@ function Chip(props: {
     <div
       data-testid={props.testId}
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '5px 10px',
-        borderRadius: 10,
-        background: 'rgba(255,255,255,0.06)',
-        border: '1px solid rgba(255,255,255,0.1)',
+        ...chipBase,
         transform: props.pulse ? 'scale(1.08)' : 'scale(1)',
         boxShadow: props.pulse
           ? '0 0 12px rgba(255,220,140,0.45)'
           : 'none',
-        transition: 'transform 0.18s ease, box-shadow 0.18s ease',
-        whiteSpace: 'nowrap',
       }}
       title={props.label}
     >
@@ -68,6 +72,74 @@ function Chip(props: {
       <span style={{ fontSize: 10, opacity: 0.55, fontWeight: 600 }}>
         {props.label}
       </span>
+    </div>
+  )
+}
+
+function MindChip(props: { mind: MindBridgeState }) {
+  const { mind } = props
+  // Wall-bound thinking only (not short mock holds)
+  const showThinking = (mind.thinking ?? 0) > 0
+  return (
+    <div
+      data-testid="mind-chip"
+      data-thinking={showThinking ? '1' : '0'}
+      title={
+        showThinking
+          ? `LunaBrain (${mind.provider}) — thinking…`
+          : `LunaBrain (${mind.provider}) — ${mind.decisions} decisions, ${mind.fallbacks} fallbacks`
+      }
+      style={{
+        ...chipBase,
+        background: showThinking
+          ? 'rgba(160, 140, 255, 0.22)'
+          : 'rgba(160, 140, 255, 0.12)',
+        border: showThinking
+          ? '1px solid rgba(190, 170, 255, 0.65)'
+          : '1px solid rgba(160, 140, 255, 0.35)',
+        transform: showThinking ? 'scale(1.06)' : 'scale(1)',
+        boxShadow: showThinking
+          ? '0 0 14px rgba(160, 140, 255, 0.55)'
+          : 'none',
+        animation: showThinking ? 'luna-mind-pulse 1.1s ease-in-out infinite' : 'none',
+      }}
+    >
+      <span style={{ fontSize: 14, lineHeight: 1 }} aria-hidden>
+        🧠
+      </span>
+      {showThinking ? (
+        <span
+          data-testid="mind-chip-thinking"
+          style={{
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: 0.2,
+            color: '#d8ceff',
+          }}
+        >
+          thinking…
+        </span>
+      ) : (
+        <>
+          <span
+            data-testid="mind-chip-count"
+            style={{
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+              fontWeight: 700,
+              fontSize: 13,
+              minWidth: 12,
+            }}
+          >
+            {mind.decisions}
+          </span>
+          <span
+            data-testid="mind-chip-provider"
+            style={{ fontSize: 10, opacity: 0.7, fontWeight: 600 }}
+          >
+            {mind.provider}
+          </span>
+        </>
+      )}
     </div>
   )
 }
@@ -106,9 +178,13 @@ export function ResourceBar(props: {
         position: 'absolute',
         top: 12,
         left: 14,
+        // Stay left of the centered HUD cluster (~half viewport minus HUD half-width)
+        maxWidth: 'min(360px, calc(50vw - 220px))',
         display: 'flex',
         flexWrap: 'wrap',
-        gap: 6,
+        alignContent: 'flex-start',
+        columnGap: 6,
+        rowGap: 8,
         zIndex: 12,
         color: '#f2f4f8',
         fontSize: 12,
@@ -119,9 +195,15 @@ export function ResourceBar(props: {
         borderRadius: 12,
         border: '1px solid rgba(255,255,255,0.08)',
         boxShadow: '0 4px 20px rgba(0,0,0,0.35)',
-        maxWidth: 420,
+        boxSizing: 'border-box',
       }}
     >
+      <style>{`
+        @keyframes luna-mind-pulse {
+          0%, 100% { box-shadow: 0 0 8px rgba(160, 140, 255, 0.35); }
+          50% { box-shadow: 0 0 16px rgba(190, 170, 255, 0.75); }
+        }
+      `}</style>
       {CHIPS.map((c) => (
         <Chip
           key={c.key}
@@ -132,43 +214,7 @@ export function ResourceBar(props: {
           testId={c.testId}
         />
       ))}
-      {mind?.enabled ? (
-        <div
-          data-testid="mind-chip"
-          title={`LunaBrain (${mind.provider}) — ${mind.decisions} decisions, ${mind.fallbacks} fallbacks`}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '5px 10px',
-            borderRadius: 10,
-            background: 'rgba(160, 140, 255, 0.12)',
-            border: '1px solid rgba(160, 140, 255, 0.35)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          <span style={{ fontSize: 14, lineHeight: 1 }} aria-hidden>
-            🧠
-          </span>
-          <span
-            data-testid="mind-chip-count"
-            style={{
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-              fontWeight: 700,
-              fontSize: 13,
-              minWidth: 12,
-            }}
-          >
-            {mind.decisions}
-          </span>
-          <span
-            data-testid="mind-chip-provider"
-            style={{ fontSize: 10, opacity: 0.7, fontWeight: 600 }}
-          >
-            {mind.provider}
-          </span>
-        </div>
-      ) : null}
+      {mind?.enabled ? <MindChip mind={mind} /> : null}
     </div>
   )
 }
