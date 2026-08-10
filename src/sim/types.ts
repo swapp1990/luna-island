@@ -215,6 +215,11 @@ export interface SayRecord {
   text: string
   /** True when this utterance ends the conversation. */
   done: boolean
+  /**
+   * Utterance origin (P3-2c). Optional for v4 backward compat — missing ⇒ luna.
+   * 'template' = deterministic sheep reply (no LLM).
+   */
+  source?: 'luna' | 'template'
 }
 
 /** Per-agent mind counters (snapshots / saves; not read by UtilityBrain). */

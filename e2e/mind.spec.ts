@@ -918,4 +918,113 @@ test.describe.serial('lunabrain harness', () => {
     }
     expect(foundReflect).toBe(true)
   })
+
+  test('P3-2c mixed society: mind↔sheep sticky chat, template bubble, Life 💬', async ({
+    page,
+  }) => {
+    const url = '/?brain=mock'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    // Still six minds only
+    const agentIds = await page.evaluate(
+      () => (window as any).__simState?.mind?.agentIds as string[],
+    )
+    expect(agentIds?.length).toBe(6)
+
+    // Seed mind↔sheep (agent-3 is UtilityBrain sheep); partner mid-eat sticky
+    const seeded = await page.evaluate(() =>
+      (window as any).__simControl.seedConversation({
+        agentIdA: 'agent-0',
+        agentIdB: 'agent-3',
+        maxTicks: 200,
+        partnerEating: true,
+        minSays: 2,
+      }),
+    )
+    expect(seeded.ok).toBe(true)
+    expect(seeded.says).toBeGreaterThanOrEqual(2)
+
+    // Sheep template utterances present in sayLog
+    const sayMeta = await page.evaluate(() => {
+      const live = (window as any).__simControl
+      // Pull events via count + select
+      void live
+      const events = (window as any).__simState
+      void events
+      return (window as any).__simControl.countEventTypes?.() as Record<string, number>
+    })
+    expect((sayMeta?.['mind:say'] ?? 0)).toBeGreaterThanOrEqual(2)
+
+    // Mind Conversations transcript shows both sides
+    await page.evaluate(() => (window as any).__simControl.selectAgent('agent-0'))
+    await page.getByTestId('tab-mind').click()
+    await expect(page.getByTestId('mind-conversations')).toBeVisible()
+    await page.getByTestId('mind-conversation-toggle').first().click()
+    await expect(page.getByTestId('mind-conversation-transcript')).toBeVisible()
+    const transcript = await page.getByTestId('mind-conversation-transcript').textContent()
+    expect(transcript && transcript.length).toBeGreaterThan(0)
+    // At least two speakers named in transcript lines
+    const lineCount = await page.getByTestId('mind-conversation-line').count()
+    expect(lineCount).toBeGreaterThanOrEqual(2)
+
+    // Sheep Life log has 💬 rows (no Mind tab required)
+    await page.evaluate(() => (window as any).__simControl.selectAgent('agent-3'))
+    await page.getByTestId('tab-life').click()
+    await expect
+      .poll(async () => {
+        const text = await page.getByTestId('activity-log').textContent()
+        return text?.includes('💬') ?? false
+      })
+      .toBe(true)
+
+    // Sheep speech bubble with template text
+    await page.evaluate(() =>
+      (window as any).__simControl.seedConversation({
+        agentIdA: 'agent-0',
+        agentIdB: 'agent-3',
+        maxTicks: 120,
+        partnerEating: true,
+        minSays: 2,
+      }),
+    )
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const bubbles = Array.from(
+              document.querySelectorAll('[data-testid="speech-bubble"], [data-speech-bubble]'),
+            ) as HTMLElement[]
+            return bubbles.some(
+              (el) =>
+                el.style.display !== 'none' &&
+                (el.textContent?.trim().length ?? 0) > 0,
+            )
+          }),
+        { timeout: 15_000 },
+      )
+      .toBe(true)
+
+    await page.screenshot({ path: 'artifacts/mixed-conversation.png', fullPage: false })
+  })
 })

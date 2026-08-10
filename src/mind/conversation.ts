@@ -7,6 +7,7 @@ import type { Simulation } from '../sim/sim'
 import type { AgentState, SayRecord, SimEvent, WorldState } from '../sim/types'
 import { isStanding, SOCIAL_PROXIMITY_SQ } from '../sim/spots'
 import { toSimTime } from '../sim/time'
+import { anyNeedCritical } from '../sim/utilityBrain'
 import { isLunaAgent, LUNA_AGENT_IDS } from './personas'
 import { episodicMemories, standingFacts } from './memory'
 import { personaFor } from './personas'
@@ -17,6 +18,8 @@ export const PAIR_COOLDOWN_TICKS = 4 * 60
 export const AGENT_COOLDOWN_TICKS = 60
 /** Max turns per conversation (strict alternation). */
 export const MAX_CONVERSATION_TURNS = 4
+/** Island-wide concurrent conversations (P3-2c). */
+export const MAX_ACTIVE_CONVERSATIONS = 2
 /** Graceful end text on invalid JSON (no fallback storm). */
 export const TRAILS_OFF = '…(trails off)'
 
@@ -42,6 +45,8 @@ export interface ActiveConversation {
   lastText: string
   /** True once a done:true utterance has been posted or held. */
   closed: boolean
+  /** True when one side is a UtilityBrain sheep (template replies). */
+  mixed: boolean
 }
 
 export interface ConversationEndResult {
@@ -53,7 +58,7 @@ export interface ConversationEndResult {
   endTick: number
 }
 
-function pairKey(a: string, b: string): string {
+export function pairKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`
 }
 
@@ -63,13 +68,31 @@ function dist2(ax: number, ay: number, bx: number, by: number): number {
   return dx * dx + dy * dy
 }
 
-/** Participant still valid for an active conversation. */
-export function participantConversationOk(agent: AgentState): boolean {
-  return isStanding(agent) && agent.action.kind === 'socialize'
+/**
+ * Continuation rule (P3-2c): both stationary within 1.5 tiles, no urgent need.
+ * Action kind does not matter — chatting over a meal is village life.
+ * Movement (walking) or any need < 0.15 ends the conversation.
+ */
+export function conversationContinues(a: AgentState, b: AgentState): boolean {
+  if (!isStanding(a) || !isStanding(b)) return false
+  if (dist2(a.x, a.y, b.x, b.y) > SOCIAL_PROXIMITY_SQ + 1e-9) return false
+  if (anyNeedCritical(a) || anyNeedCritical(b)) return false
+  return true
 }
 
 /**
- * Eligibility for starting a new conversation between two luna agents.
+ * @deprecated Prefer conversationContinues for active chats.
+ * Kept name used by older call sites; maps to stationary-only (not action-gated).
+ */
+export function participantConversationOk(agent: AgentState): boolean {
+  return isStanding(agent)
+}
+
+/**
+ * Eligibility for starting a new conversation.
+ * - mind↔mind or mind↔sheep (never sheep↔sheep)
+ * - both standing, within proximity, at least one socializing
+ * - cooldowns
  */
 export function pairEligible(
   a: AgentState,
@@ -78,10 +101,12 @@ export function pairEligible(
   pairLastEnd: Map<string, number>,
   agentLastEnd: Map<string, number>,
 ): boolean {
-  if (!isLunaAgent(a.id) || !isLunaAgent(b.id)) return false
+  const aLuna = isLunaAgent(a.id)
+  const bLuna = isLunaAgent(b.id)
+  // Need at least one mind; never sheep↔sheep
+  if (!aLuna && !bLuna) return false
   if (!isStanding(a) || !isStanding(b)) return false
   if (a.action.kind !== 'socialize' && b.action.kind !== 'socialize') return false
-  // At least one socialize (checked); both stationary (checked)
   if (dist2(a.x, a.y, b.x, b.y) > SOCIAL_PROXIMITY_SQ + 1e-9) return false
 
   const lastPair = pairLastEnd.get(pairKey(a.id, b.id))
@@ -93,11 +118,20 @@ export function pairEligible(
   return true
 }
 
+export function isMixedPair(a: AgentState, b: AgentState): boolean {
+  return isLunaAgent(a.id) !== isLunaAgent(b.id)
+}
+
 /**
- * First speaker = agent with lower sympathy toward the other (more reason to reach out).
- * Ties broken by agent id ascending.
+ * First speaker:
+ * - mind↔sheep: always the mind (sheeps never initiate)
+ * - mind↔mind: lower sympathy toward the other (ties: id ascending)
  */
 export function firstSpeakerId(a: AgentState, b: AgentState): string {
+  const aLuna = isLunaAgent(a.id)
+  const bLuna = isLunaAgent(b.id)
+  if (aLuna && !bLuna) return a.id
+  if (bLuna && !aLuna) return b.id
   const symA = a.sympathy?.[b.id] ?? 0
   const symB = b.sympathy?.[a.id] ?? 0
   if (symA < symB) return a.id
@@ -114,29 +148,61 @@ export function makeConversationId(
   return `conv-${tick}-${lo}-${hi}`
 }
 
+export interface EligiblePair {
+  a: AgentState
+  b: AgentState
+  key: string
+  mixed: boolean
+}
+
 /**
- * Find the best eligible pair (deterministic: sort by pair key).
- * Returns null if none or if active already exists (caller enforces max-one).
+ * Collect eligible pairs not involving busy agents, respecting mind↔mind cap.
+ * Deterministic sort by pair key.
+ */
+export function findEligiblePairs(
+  world: WorldState,
+  pairLastEnd: Map<string, number>,
+  agentLastEnd: Map<string, number>,
+  busyAgentIds: ReadonlySet<string>,
+  opts: { allowMindMind: boolean },
+): EligiblePair[] {
+  const tick = world.tick
+  const agents = world.agents
+  const candidates: EligiblePair[] = []
+
+  for (let i = 0; i < agents.length; i++) {
+    for (let j = i + 1; j < agents.length; j++) {
+      const a = agents[i]!
+      const b = agents[j]!
+      if (busyAgentIds.has(a.id) || busyAgentIds.has(b.id)) continue
+      if (!pairEligible(a, b, tick, pairLastEnd, agentLastEnd)) continue
+      const mixed = isMixedPair(a, b)
+      if (!mixed && !opts.allowMindMind) continue
+      // mind↔sheep: require the mind side to be socializing (mind initiates intent)
+      if (mixed) {
+        const mind = isLunaAgent(a.id) ? a : b
+        if (mind.action.kind !== 'socialize') continue
+      }
+      candidates.push({ a, b, key: pairKey(a.id, b.id), mixed })
+    }
+  }
+  candidates.sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
+  return candidates
+}
+
+/**
+ * First eligible pair (backward-compatible helper).
  */
 export function findEligiblePair(
   world: WorldState,
   pairLastEnd: Map<string, number>,
   agentLastEnd: Map<string, number>,
+  busyAgentIds: ReadonlySet<string> = new Set(),
+  opts: { allowMindMind: boolean } = { allowMindMind: true },
 ): { a: AgentState; b: AgentState } | null {
-  const tick = world.tick
-  const luna = world.agents.filter((ag) => isLunaAgent(ag.id))
-  const candidates: Array<{ a: AgentState; b: AgentState; key: string }> = []
-  for (let i = 0; i < luna.length; i++) {
-    for (let j = i + 1; j < luna.length; j++) {
-      const a = luna[i]!
-      const b = luna[j]!
-      if (!pairEligible(a, b, tick, pairLastEnd, agentLastEnd)) continue
-      candidates.push({ a, b, key: pairKey(a.id, b.id) })
-    }
-  }
-  if (candidates.length === 0) return null
-  candidates.sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : 0))
-  const best = candidates[0]!
+  const list = findEligiblePairs(world, pairLastEnd, agentLastEnd, busyAgentIds, opts)
+  if (list.length === 0) return null
+  const best = list[0]!
   return { a: best.a, b: best.b }
 }
 
@@ -160,6 +226,7 @@ export function startConversation(
     turnInFlight: false,
     lastText: '',
     closed: false,
+    mixed: isMixedPair(a, b),
   }
 }
 

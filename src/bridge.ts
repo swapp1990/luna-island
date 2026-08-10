@@ -97,6 +97,8 @@ export interface SimControlBridge {
     agentIdA?: string
     agentIdB?: string
     maxTicks?: number
+    partnerEating?: boolean
+    minSays?: number
   }) => { ok: boolean; says: number }
   /** E2e/dev: event type histogram on the view sim. */
   countEventTypes?: () => Record<string, number>

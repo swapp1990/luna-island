@@ -227,6 +227,7 @@ function cloneSayRecord(r: SayRecord): SayRecord {
     turn: r.turn,
     text: r.text,
     done: r.done,
+    ...(r.source ? { source: r.source } : {}),
   }
 }
 
@@ -438,6 +439,7 @@ export class Simulation {
     turn: number
     text: string
     done: boolean
+    source?: 'luna' | 'template'
   }> = []
   /**
    * Full intent log for re-sim playback (set on forks via stateAt).
@@ -457,6 +459,12 @@ export class Simulation {
   private sayPlayback: SayRecord[] | null = null
   /** Agents who received an external intent this tick (skip brain redecide). */
   private externalAppliedThisTick = new Set<string>()
+  /**
+   * Participation hold (P3-2c): active conversation participants defer non-urgent
+   * UtilityBrain redecide until the chat ends (urgent need still redecides).
+   * Set each tick by LunaBrain; empty when no active conversations.
+   */
+  private conversationHold = new Set<string>()
 
   constructor(seed: number)
   constructor(
@@ -563,6 +571,7 @@ export class Simulation {
   /**
    * Queue a conversation utterance for application at the start of the next step.
    * Live path only — replays use sayPlayback / sayLog.
+   * @param source optional — 'template' for sheep replies (P3-2c); default luna.
    */
   postSay(
     conversationId: string,
@@ -571,6 +580,7 @@ export class Simulation {
     turn: number,
     text: string,
     done: boolean,
+    source?: 'luna' | 'template',
   ): void {
     this.sayInbox.push({
       conversationId,
@@ -579,7 +589,21 @@ export class Simulation {
       turn,
       text: String(text),
       done: !!done,
+      ...(source ? { source } : {}),
     })
+  }
+
+  /**
+   * Participation hold for active conversation participants (P3-2c).
+   * Non-urgent redecide is deferred while held; urgent need (< 0.15) still fires.
+   */
+  setConversationHold(agentIds: readonly string[]): void {
+    this.conversationHold = new Set(agentIds)
+  }
+
+  /** Test/dev: agents currently held in conversation participation. */
+  getConversationHold(): readonly string[] {
+    return [...this.conversationHold]
   }
 
   /**
@@ -1783,6 +1807,11 @@ export class Simulation {
     // Urgent only for a *different* need than the one this action is serving
     const urgent = idle ? anyNeedCritical(agent) : urgentDifferentNeed(agent)
 
+    // Participation hold (P3-2c): defer non-urgent redecide while chatting
+    if (this.conversationHold.has(agent.id) && !anyNeedCritical(agent)) {
+      return
+    }
+
     // Sleep is committed while resting on a bed slot: natural wake only
     // (energy ≥ 0.95 or 07:00). Prevents scarcity thrash of sleep↔forage/social.
     // Walking home to sleep can still be redecided.
@@ -2325,6 +2354,7 @@ export class Simulation {
           turn: item.turn,
           text: item.text,
           done: item.done,
+          ...(item.source ? { source: item.source } : {}),
         },
         { recordLog: true },
       )
@@ -2339,6 +2369,7 @@ export class Simulation {
     const agent = this.state.agents.find((a) => a.id === rec.agentId)
     const partner = this.state.agents.find((a) => a.id === rec.partnerId)
     const text = String(rec.text)
+    const source = rec.source ?? 'luna'
 
     if (opts.recordLog) {
       this.state.sayLog.push({
@@ -2349,6 +2380,7 @@ export class Simulation {
         turn: rec.turn,
         text,
         done: !!rec.done,
+        ...(rec.source ? { source: rec.source } : {}),
       })
     }
 
@@ -2362,7 +2394,7 @@ export class Simulation {
         turn: rec.turn,
         text,
         done: !!rec.done,
-        source: 'luna',
+        source,
         agentName: agent?.name,
         partnerName: partner?.name,
       },

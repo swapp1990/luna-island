@@ -379,6 +379,10 @@ export function App() {
             agentIdA?: string
             agentIdB?: string
             maxTicks?: number
+            /** When true, pin mind socialize + partner mid-eat (sticky/mixed). */
+            partnerEating?: boolean
+            /** Min mind:say count before success (default 1; use 2+ for both sides). */
+            minSays?: number
           }) => {
             const live = liveRef.current
             const loop = loopRef.current
@@ -386,6 +390,7 @@ export function App() {
             const idA = opts?.agentIdA ?? 'agent-0'
             const idB = opts?.agentIdB ?? 'agent-1'
             const maxTicks = opts?.maxTicks ?? 120
+            const minSays = opts?.minSays ?? 1
             const plaza = live.state.places.find((p) => p.kind === 'plaza')
             if (!plaza) return { ok: false, says: 0 }
             const pin = () => {
@@ -396,6 +401,7 @@ export function App() {
               a.y = plaza.y
               b.x = plaza.x + 1
               b.y = plaza.y
+              // Mind side always socializes to initiate
               a.action = {
                 kind: 'socialize',
                 targetPlaceId: plaza.id,
@@ -403,12 +409,22 @@ export function App() {
                 targetY: plaza.y,
                 reason: 'e2e socialize',
               }
-              b.action = {
-                kind: 'socialize',
-                targetPlaceId: plaza.id,
-                targetX: plaza.x + 1,
-                targetY: plaza.y,
-                reason: 'e2e socialize',
+              if (opts?.partnerEating) {
+                b.action = {
+                  kind: 'eat',
+                  targetX: plaza.x + 1,
+                  targetY: plaza.y,
+                  reason: 'e2e mid-eat chat',
+                }
+                b.actionTicks = 5
+              } else {
+                b.action = {
+                  kind: 'socialize',
+                  targetPlaceId: plaza.id,
+                  targetX: plaza.x + 1,
+                  targetY: plaza.y,
+                  reason: 'e2e socialize',
+                }
               }
               a.action.path = undefined
               b.action.path = undefined
@@ -420,9 +436,9 @@ export function App() {
               loop.ffwd(1)
               pin()
               const says = live.getEvents().filter((e) => e.type === 'mind:say').length
-              if (says >= 1) {
+              if (says >= minSays) {
                 // Drain a few more ticks so transcript can grow + bubble applies
-                for (let j = 0; j < 12; j++) {
+                for (let j = 0; j < 16; j++) {
                   pin()
                   loop.ffwd(1)
                   pin()

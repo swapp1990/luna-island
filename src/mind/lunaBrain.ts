@@ -34,14 +34,16 @@ import {
   applyCooldowns,
   buildConversationSystemPrompt,
   buildConversationUserPrompt,
-  findEligiblePair,
+  conversationContinues,
+  findEligiblePairs,
+  MAX_ACTIVE_CONVERSATIONS,
   MAX_CONVERSATION_TURNS,
   partnerOf,
-  participantConversationOk,
   startConversation,
   TRAILS_OFF,
   type ActiveConversation,
 } from './conversation'
+import { selectSheepReply } from './sheepTalk'
 
 /** Cadence: min gap after a decision before the soft path. */
 export const MIND_MIN_GAP_TICKS = 30
@@ -161,6 +163,8 @@ interface PendingSayHold {
   done: boolean
   exchange: MindExchange
   requestTick: number
+  /** Sheep template replies (P3-2c). */
+  source?: 'luna' | 'template'
 }
 
 interface InFlight {
@@ -252,8 +256,10 @@ export class LunaBrainService {
   private reflectedNights = new Map<string, Set<number>>()
   /** Latest live sim (for prompt rebuild at dispatch). */
   private latestSim: Simulation | null = null
-  /** At most one active conversation island-wide (P3-2). */
-  private activeConv: ActiveConversation | null = null
+  /**
+   * Active conversations island-wide (P3-2c: max 2; at most one mind↔mind).
+   */
+  private activeConvs: ActiveConversation[] = []
   private pairLastEnd = new Map<string, number>()
   private agentLastEnd = new Map<string, number>()
   /** Worker pool size K (1–4). */
@@ -331,7 +337,7 @@ export class LunaBrainService {
     this.holds = []
     this.noteHolds = []
     this.sayHolds = []
-    this.activeConv = null
+    this.activeConvs = []
     this.latestSim = null
   }
 
@@ -340,9 +346,41 @@ export class LunaBrainService {
     return this.concurrency
   }
 
-  /** Test/e2e: active conversation snapshot (null if none). */
+  /** Test/e2e: first active conversation (null if none). */
   getActiveConversation(): ActiveConversation | null {
-    return this.activeConv
+    return this.activeConvs[0] ?? null
+  }
+
+  /** Test/e2e: all active conversations. */
+  getActiveConversations(): ActiveConversation[] {
+    return this.activeConvs.slice()
+  }
+
+  private convById(id: string | undefined | null): ActiveConversation | null {
+    if (!id) return null
+    return this.activeConvs.find((c) => c.id === id) ?? null
+  }
+
+  private busyConversationAgentIds(): Set<string> {
+    const s = new Set<string>()
+    for (const c of this.activeConvs) {
+      s.add(c.agentIdA)
+      s.add(c.agentIdB)
+    }
+    return s
+  }
+
+  private mindMindActiveCount(): number {
+    return this.activeConvs.filter((c) => !c.mixed).length
+  }
+
+  /** Sync participation hold onto the sim so UtilityBrain defers redecide. */
+  private syncConversationHold(sim: Simulation): void {
+    const ids: string[] = []
+    for (const c of this.activeConvs) {
+      ids.push(c.agentIdA, c.agentIdB)
+    }
+    sim.setConversationHold(ids)
   }
 
   getMode(): BrainMode {
@@ -436,6 +474,12 @@ export class LunaBrainService {
     }
     if (this.sayHolds.some((h) => h.conversationId === cid)) return true
     return false
+  }
+
+  /** Drop dead queue/hold state when a conversation ends. */
+  private dropConversationPipeline(conversationId: string): void {
+    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== conversationId)
+    // leave in-flight; wall-timeout / finish path will no-op if conv gone
   }
 
   private isEntryDispatchable(entry: MindQueueEntry): boolean {
@@ -542,8 +586,9 @@ export class LunaBrainService {
       this.applySayHold(sim, h)
     }
 
-    // Interrupt / advance active conversation after holds applied
-    this.tickConversation(sim)
+    // Interrupt / advance active conversations after holds applied
+    this.tickConversations(sim)
+    this.syncConversationHold(sim)
 
     // Wall-timeout for each in-flight request (queue wait does not consume it)
     const now = this.nowFn()
@@ -556,16 +601,17 @@ export class LunaBrainService {
       if (flight.kind === 'reflection' && flight.nightKey != null) {
         this.reflectedNights.get(flight.agentId)?.delete(flight.nightKey)
       }
-      if (flight.kind === 'conversation' && this.activeConv) {
+      if (flight.kind === 'conversation') {
+        const ac = this.convById(flight.conversationId)
         // Graceful trails-off end — not a fallback storm
         this.finishConversationTrailsOff(
           sim,
           flight.agentId,
-          flight.partnerId ?? partnerOf(this.activeConv, flight.agentId),
-          flight.conversationId ?? this.activeConv.id,
-          flight.turn ?? this.activeConv.nextTurn,
+          flight.partnerId ?? (ac ? partnerOf(ac, flight.agentId) : ''),
+          flight.conversationId ?? ac?.id ?? '',
+          flight.turn ?? ac?.nextTurn ?? 0,
         )
-      } else if (flight.kind !== 'conversation') {
+      } else {
         this.fallbacks += 1
         sim.postMindFallback(
           flight.agentId,
@@ -587,13 +633,16 @@ export class LunaBrainService {
         this.reflectedNights.get(e.agentId)?.delete(e.nightKey)
       }
       if (e.kind === 'conversation') {
-        const ac = this.activeConv
-        if (ac && ac.id === e.conversationId) ac.turnInFlight = false
+        const ac = this.convById(e.conversationId)
+        if (ac) ac.turnInFlight = false
       }
     }
 
     // Hard client cooldown: no further enqueues / dispatches until reset
-    if (this.isBudgetCooldown(now)) return
+    if (this.isBudgetCooldown(now)) {
+      this.syncConversationHold(sim)
+      return
+    }
 
     // Nightly reflections take priority over routine decisions when due.
     // Rate floor is enforced only at pumpDispatch — enqueue freely so breathe
@@ -612,25 +661,29 @@ export class LunaBrainService {
       this.requestReflection(sim, agentId, dueNight)
     }
 
-    // Conversation turns (participants' decision cadence is suspended while active)
-    if (this.activeConv && !this.activeConv.turnInFlight) {
-      const speakerId = this.activeConv.nextSpeakerId
+    // Conversation turns (participants' decision cadence suspended while active).
+    // Drive from applied-tick hooks so ffwd + pure advanceTicks advance turns
+    // without any rAF / render loop.
+    for (const c of this.activeConvs.slice()) {
+      if (c.turnInFlight || c.closed) continue
+      const speakerId = c.nextSpeakerId
+      // Sheep turns never use the mind pipeline
+      if (!isLunaAgent(speakerId)) {
+        this.requestConversationTurn(sim, c)
+        continue
+      }
       if (
         !this.isPipelineBusy(speakerId) &&
         !this.holds.some((h) => h.agentId === speakerId) &&
         !this.noteHolds.some((h) => h.agentId === speakerId) &&
         !this.sayHolds.some((h) => h.agentId === speakerId)
       ) {
-        this.requestConversationTurn(sim)
-      }
-    } else if (!this.activeConv) {
-      // Try to start a new conversation (max one island-wide)
-      const pair = findEligiblePair(sim.state, this.pairLastEnd, this.agentLastEnd)
-      if (pair) {
-        this.activeConv = startConversation(sim, pair.a, pair.b)
-        this.requestConversationTurn(sim)
+        this.requestConversationTurn(sim, c)
       }
     }
+
+    // Try to start new conversations (max 2; ≤1 mind↔mind)
+    this.tryStartConversations(sim)
 
     // Cadence: request decisions for luna agents (skip conversation participants)
     for (const agentId of LUNA_AGENT_IDS) {
@@ -655,35 +708,80 @@ export class LunaBrainService {
       this.requestDecision(sim, agentId)
     }
 
+    this.syncConversationHold(sim)
     // Fill free pool slots if anything is waiting
     this.pumpDispatch(sim)
   }
 
   private isInActiveConversation(agentId: string): boolean {
-    const c = this.activeConv
-    if (!c) return false
-    return c.agentIdA === agentId || c.agentIdB === agentId
+    return this.activeConvs.some(
+      (c) => c.agentIdA === agentId || c.agentIdB === agentId,
+    )
   }
 
-  /** Interrupt if participants leave socialize/stationary; no-op otherwise. */
-  private tickConversation(sim: Simulation): void {
-    const c = this.activeConv
-    if (!c) return
-    const a = sim.state.agents.find((x) => x.id === c.agentIdA)
-    const b = sim.state.agents.find((x) => x.id === c.agentIdB)
-    if (!a || !b || !participantConversationOk(a) || !participantConversationOk(b)) {
-      this.endConversationInterrupted(sim)
+  /** Start eligible pairs up to capacity (deterministic order). */
+  private tryStartConversations(sim: Simulation): void {
+    // Only open new chats when the mind line is quiet. Otherwise mixed-society
+    // pairs re-seed forever and auto-breathe never restores high speed.
+    // In-flight / queued turns for *existing* conversations still progress above.
+    if (
+      this.queue.size() > 0 ||
+      this.activeDispatches.size > 0 ||
+      this.rateFloorWaiting
+    ) {
+      return
+    }
+    while (this.activeConvs.length < MAX_ACTIVE_CONVERSATIONS) {
+      const busy = this.busyConversationAgentIds()
+      const allowMindMind = this.mindMindActiveCount() < 1
+      const pairs = findEligiblePairs(
+        sim.state,
+        this.pairLastEnd,
+        this.agentLastEnd,
+        busy,
+        { allowMindMind },
+      )
+      if (pairs.length === 0) break
+      const pair = pairs[0]!
+      const conv = startConversation(sim, pair.a, pair.b)
+      this.activeConvs.push(conv)
+      this.requestConversationTurn(sim, conv)
+      // One start per quiet tick — leave room for the first turn to schedule
+      // without immediately filling both slots over a busy rate window.
+      if (this.queue.size() > 0 || this.activeDispatches.size > 0) break
     }
   }
 
-  private endConversationInterrupted(sim: Simulation): void {
-    const c = this.activeConv
-    if (!c) return
-    // Capture + drop pending holds for this conversation
-    const pending = this.sayHolds.filter((h) => h.conversationId === c.id)
-    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== c.id)
+  /**
+   * Interrupt if either participant MOVES or any need goes urgent (< 0.15).
+   * Action kind (eat/work/socialize) does not end a sticky conversation.
+   */
+  private tickConversations(sim: Simulation): void {
+    const doomed: ActiveConversation[] = []
+    for (const c of this.activeConvs) {
+      if (c.closed) {
+        doomed.push(c)
+        continue
+      }
+      const a = sim.state.agents.find((x) => x.id === c.agentIdA)
+      const b = sim.state.agents.find((x) => x.id === c.agentIdB)
+      if (!a || !b || !conversationContinues(a, b)) {
+        doomed.push(c)
+      }
+    }
+    for (const c of doomed) {
+      this.endConversationInterrupted(sim, c)
+    }
+  }
 
-    if (!c.closed) {
+  private endConversationInterrupted(sim: Simulation, c?: ActiveConversation | null): void {
+    const conv = c ?? this.activeConvs[0] ?? null
+    if (!conv) return
+    // Capture + drop pending holds for this conversation
+    const pending = this.sayHolds.filter((h) => h.conversationId === conv.id)
+    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== conv.id)
+
+    if (!conv.closed) {
       // Prefer applying a dropped hold as the terminal done say; else re-mark last line
       const hold = pending[pending.length - 1]
       if (hold) {
@@ -694,37 +792,64 @@ export class LunaBrainService {
           hold.turn,
           hold.text,
           true,
+          hold.source ??
+            (hold.agentId && !isLunaAgent(hold.agentId) ? 'template' : undefined),
         )
-        c.closed = true
-      } else if (c.transcript.length > 0 && c.lastText) {
-        const speaker = c.transcript[c.transcript.length - 1]!.agentId
-        const partner = partnerOf(c, speaker)
+        // Mind holds already consumed a decideCall — count the applied outcome
+        if (hold.source !== 'template') this.decisions += 1
+        conv.closed = true
+      } else if (conv.transcript.length > 0 && conv.lastText) {
+        const speaker = conv.transcript[conv.transcript.length - 1]!.agentId
+        const partner = partnerOf(conv, speaker)
         sim.postSay(
-          c.id,
+          conv.id,
           speaker,
           partner,
-          Math.max(0, c.nextTurn - 1),
-          c.lastText,
+          Math.max(0, conv.nextTurn - 1),
+          conv.lastText,
           true,
+          !isLunaAgent(speaker) ? 'template' : undefined,
         )
-        c.closed = true
+        conv.closed = true
       }
     }
-    applyCooldowns(this.pairLastEnd, this.agentLastEnd, c.agentIdA, c.agentIdB, sim.state.tick)
-    this.activeConv = null
+    applyCooldowns(
+      this.pairLastEnd,
+      this.agentLastEnd,
+      conv.agentIdA,
+      conv.agentIdB,
+      sim.state.tick,
+    )
+    this.activeConvs = this.activeConvs.filter((x) => x.id !== conv.id)
+    this.dropConversationPipeline(conv.id)
+    this.syncConversationHold(sim)
   }
 
   private endConversationClean(
     sim: Simulation,
-    _lastSpeaker: string,
+    lastSpeaker: string,
+    c?: ActiveConversation | null,
   ): void {
-    const c = this.activeConv
-    if (!c) return
-    c.closed = true
-    c.turnInFlight = false
-    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== c.id)
-    applyCooldowns(this.pairLastEnd, this.agentLastEnd, c.agentIdA, c.agentIdB, sim.state.tick)
-    this.activeConv = null
+    const target =
+      c ??
+      this.activeConvs.find(
+        (x) => x.agentIdA === lastSpeaker || x.agentIdB === lastSpeaker,
+      ) ??
+      null
+    if (!target) return
+    target.closed = true
+    target.turnInFlight = false
+    this.sayHolds = this.sayHolds.filter((h) => h.conversationId !== target.id)
+    applyCooldowns(
+      this.pairLastEnd,
+      this.agentLastEnd,
+      target.agentIdA,
+      target.agentIdB,
+      sim.state.tick,
+    )
+    this.activeConvs = this.activeConvs.filter((x) => x.id !== target.id)
+    this.dropConversationPipeline(target.id)
+    this.syncConversationHold(sim)
   }
 
   private finishConversationTrailsOff(
@@ -734,11 +859,11 @@ export class LunaBrainService {
     conversationId: string,
     turn: number,
   ): void {
-    const c = this.activeConv
-    if (c && c.id === conversationId && c.closed) return
+    const c = this.convById(conversationId)
+    if (c && c.closed) return
     sim.postSay(conversationId, agentId, partnerId, turn, TRAILS_OFF, true)
     this.decisions += 1
-    if (c && c.id === conversationId) {
+    if (c) {
       c.lastText = TRAILS_OFF
       c.transcript.push({
         agentId,
@@ -746,13 +871,13 @@ export class LunaBrainService {
         text: TRAILS_OFF,
       })
       c.closed = true
-      this.endConversationClean(sim, agentId)
+      this.endConversationClean(sim, agentId, c)
     }
   }
 
   private applySayHold(sim: Simulation, h: PendingSayHold): void {
-    const c = this.activeConv
-    if (!c || c.id !== h.conversationId || c.closed) return
+    const c = this.convById(h.conversationId)
+    if (!c || c.closed) return
     sim.postSay(
       h.conversationId,
       h.agentId,
@@ -760,9 +885,11 @@ export class LunaBrainService {
       h.turn,
       h.text,
       h.done,
+      h.source,
     )
     this.lastExchange.set(h.agentId, h.exchange)
-    this.decisions += 1
+    // Sheep templates are not mind dispatches — do not inflate decisions meter
+    if (h.source !== 'template') this.decisions += 1
     this.onSayApplied(sim, h.agentId, h.partnerId, h.conversationId, h.turn, h.text, h.done)
   }
 
@@ -775,8 +902,8 @@ export class LunaBrainService {
     text: string,
     done: boolean,
   ): void {
-    const c = this.activeConv
-    if (!c || c.id !== conversationId || c.closed) return
+    const c = this.convById(conversationId)
+    if (!c || c.closed) return
     const name = sim.state.agents.find((a) => a.id === agentId)?.name ?? agentId
     c.transcript.push({ agentId, name, text })
     c.lastText = text
@@ -785,25 +912,35 @@ export class LunaBrainService {
     c.nextSpeakerId = partnerId
     if (done || c.nextTurn >= MAX_CONVERSATION_TURNS) {
       c.closed = true
-      this.endConversationClean(sim, agentId)
+      this.endConversationClean(sim, agentId, c)
     }
   }
 
-  private requestConversationTurn(sim: Simulation): void {
-    if (!this.provider || !this.activeConv) return
-    if (this.isBudgetCooldown()) return
-    const c = this.activeConv
+  /**
+   * Request next utterance for a conversation.
+   * Mind turns → provider (budgeted). Sheep turns → sheepTalk templates (0 calls).
+   */
+  private requestConversationTurn(sim: Simulation, c: ActiveConversation): void {
+    if (!this.provider && isLunaAgent(c.nextSpeakerId)) return
+    if (this.isBudgetCooldown() && isLunaAgent(c.nextSpeakerId)) return
     if (c.turnInFlight) return
     if (c.nextTurn >= MAX_CONVERSATION_TURNS) {
-      this.endConversationClean(sim, c.nextSpeakerId)
+      this.endConversationClean(sim, c.nextSpeakerId, c)
       return
     }
 
     const agentId = c.nextSpeakerId
     const partnerId = partnerOf(c, agentId)
     const turn = c.nextTurn
-    const provider = this.provider
 
+    // Sheep path: deterministic template, zero LLM / decideCalls
+    if (!isLunaAgent(agentId)) {
+      this.applySheepTurn(sim, c, agentId, partnerId, turn)
+      return
+    }
+
+    if (!this.provider) return
+    const provider = this.provider
     c.turnInFlight = true
 
     if (provider instanceof MockProvider && provider.preferSync()) {
@@ -811,7 +948,7 @@ export class LunaBrainService {
       const partner = sim.state.agents.find((a) => a.id === partnerId)
       if (!speaker || !partner) {
         c.turnInFlight = false
-        this.endConversationInterrupted(sim)
+        this.endConversationInterrupted(sim, c)
         return
       }
       const tick = sim.state.tick
@@ -863,6 +1000,68 @@ export class LunaBrainService {
       return
     }
     this.pumpDispatch(sim)
+  }
+
+  /**
+   * Sheep template reply — same applied-tick/hold pipeline as mind says so
+   * ffwd advances multi-turn chats without rAF.
+   */
+  private applySheepTurn(
+    sim: Simulation,
+    c: ActiveConversation,
+    agentId: string,
+    partnerId: string,
+    turn: number,
+  ): void {
+    const sheep = sim.state.agents.find((a) => a.id === agentId)
+    const partner = sim.state.agents.find((a) => a.id === partnerId)
+    if (!sheep || !partner) {
+      this.endConversationInterrupted(sim, c)
+      return
+    }
+    c.turnInFlight = true
+    const reply = selectSheepReply({
+      sheep,
+      partner,
+      world: sim.state,
+      conversationId: c.id,
+      turn,
+    })
+    // Force done on last slot even if template said otherwise
+    let done = reply.done
+    if (turn + 1 >= MAX_CONVERSATION_TURNS) done = true
+
+    // Match mock mind delay so multi-turn interleaves under pure advanceTicks
+    const delay =
+      this.provider instanceof MockProvider && this.provider.preferSync()
+        ? MOCK_DELAY_TICKS
+        : 0
+
+    if (delay <= 0) {
+      sim.postSay(c.id, agentId, partnerId, turn, reply.text, done, 'template')
+      // No decideCallCount / decisions — sheep templates cost zero budget
+      this.onSayApplied(sim, agentId, partnerId, c.id, turn, reply.text, done)
+    } else {
+      this.sayHolds.push({
+        agentId,
+        partnerId,
+        conversationId: c.id,
+        turn,
+        readyTick: sim.state.tick + delay,
+        text: reply.text,
+        done,
+        exchange: {
+          agentId,
+          tick: sim.state.tick,
+          system: '(sheep template)',
+          user: reply.templateId,
+          rawResponse: reply.text,
+          ok: true,
+        },
+        requestTick: sim.state.tick,
+        source: 'template',
+      })
+    }
   }
 
   /**
@@ -1055,10 +1254,9 @@ export class LunaBrainService {
       if (entry.kind === 'reflection' && entry.nightKey != null) {
         this.reflectedNights.get(entry.agentId)?.delete(entry.nightKey)
       }
-      if (entry.kind === 'conversation' && this.activeConv) {
-        if (this.activeConv.id === entry.conversationId) {
-          this.activeConv.turnInFlight = false
-        }
+      if (entry.kind === 'conversation') {
+        const ac = this.convById(entry.conversationId)
+        if (ac) ac.turnInFlight = false
       }
       return false
     }
@@ -1074,12 +1272,12 @@ export class LunaBrainService {
       system = buildReflectionSystemPrompt(entry.agentId)
       user = buildReflectionUserPrompt(entry.agentId, events, day)
     } else if (entry.kind === 'conversation') {
-      const conv = this.activeConv
+      const conv = this.convById(entry.conversationId)
       const partnerId =
         entry.partnerId ?? (conv ? partnerOf(conv, entry.agentId) : '')
       const partner = sim.state.agents.find((a) => a.id === partnerId)
-      if (!conv || conv.id !== entry.conversationId || !partner) {
-        if (conv && conv.id === entry.conversationId) conv.turnInFlight = false
+      if (!conv || !partner) {
+        if (conv) conv.turnInFlight = false
         return false
       }
       system = buildConversationSystemPrompt(entry.agentId)
@@ -1192,8 +1390,9 @@ export class LunaBrainService {
             if (kind === 'reflection' && nightKey != null) {
               this.reflectedNights.get(agentId)?.delete(nightKey)
             }
-            if (kind === 'conversation' && this.activeConv) {
-              this.activeConv.turnInFlight = false
+            if (kind === 'conversation') {
+              const ac = this.convById(conversationId)
+              if (ac) ac.turnInFlight = false
             }
             // Drop the rest of the line; no dispatches during cooldown
             this.clearQueueUnmarkReflections()

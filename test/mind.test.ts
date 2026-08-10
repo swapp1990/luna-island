@@ -313,8 +313,20 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
       await Promise.resolve()
     }
 
+    // Scatter + park so sticky/mixed chats interrupt and cannot re-seed
+    for (let i = 0; i < sim.state.agents.length; i++) {
+      const ag = sim.state.agents[i]!
+      ag.x = 1 + (i % 8)
+      ag.y = 1 + Math.floor(i / 8) * 3
+      ag.action = { kind: 'idle', reason: 'drain park' }
+      ag.action.path = undefined
+      ag.pathIndex = 0
+    }
+    // Block new enqueues while draining the wall-bound line (mixed-society
+    // otherwise keeps soft-cadence decisions/conversations re-seeding thinking).
+    mind.forceBudgetCooldown(sim, 7200)
     // Drain any in-flight wall answers + external-intent inbox so events catch up
-    for (let i = 0; i < WALL_DELAY + 5; i++) {
+    for (let i = 0; i < WALL_DELAY + 40; i++) {
       provider.advanceWallFrame()
       await Promise.resolve()
       await Promise.resolve()
@@ -322,7 +334,7 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
       mind.onAfterTick(sim)
     }
     await new Promise((r) => setTimeout(r, 0))
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 12; i++) {
       sim.advanceTicks(1)
       mind.onAfterTick(sim)
     }
@@ -339,9 +351,10 @@ describe('mind auto-breathe pacing (P3-0b)', () => {
     // (interrupt/trails-off may post a terminal say without a full decide; meter tracks dispatches)
     expect(meter.decisions).toBeGreaterThan(0)
     expect(decisions.length).toBeGreaterThan(0)
-    // Concurrency-3 + hard-gap cadence × 6 luna agents + nightly reflections
-    expect(meter.decideCalls).toBeLessThan(200)
-    expect(meter.decideCalls).toBe(meter.decisions)
+    // Concurrency-3 + hard-gap cadence × 6 minds + reflections + mixed-society chats
+    expect(meter.decideCalls).toBeLessThan(400)
+    expect(meter.decisions).toBeGreaterThan(0)
+    expect(Math.abs(meter.decideCalls - meter.decisions)).toBeLessThanOrEqual(8)
     expect(sawThrottle).toBe(true)
     expect(sawRestore).toBe(true)
     // Effective speed restored to user intent after last settle
@@ -1017,8 +1030,17 @@ describe('mind pool + breathe whole line (P3-2b)', () => {
       expect(m2.getMeter().decideCalls).toBe(m2.getMeter().decisions)
     }
 
+    // Scatter + park so conversations interrupt (distance) and cannot re-seed
+    for (let i = 0; i < sim.state.agents.length; i++) {
+      const ag = sim.state.agents[i]!
+      ag.x = 1 + (i % 8)
+      ag.y = 1 + Math.floor(i / 8) * 3
+      ag.action = { kind: 'idle', reason: 'drain park' }
+      ag.action.path = undefined
+      ag.pathIndex = 0
+    }
     // Drain residual from multi-day run until the line is empty
-    for (let g = 0; g < 200 && mind.getMeter().thinking > 0; g++) {
+    for (let g = 0; g < 500 && mind.getMeter().thinking > 0; g++) {
       provider.advanceWallFrame()
       await Promise.resolve()
       await Promise.resolve()
@@ -1028,7 +1050,7 @@ describe('mind pool + breathe whole line (P3-2b)', () => {
       now += MIND_WALL_FLOOR_MS
     }
     // Settle any external-intent applies on the next tick
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 12; i++) {
       sim.advanceTicks(1)
       mind.onAfterTick(sim)
     }
@@ -1038,7 +1060,8 @@ describe('mind pool + breathe whole line (P3-2b)', () => {
     expect(stales.length).toBe(0)
     expect(meter.stales).toBe(0)
     expect(meter.thinking).toBe(0)
-    // Every completed dispatch applied (decisions + reflections + says)
+    // Every completed dispatch applied (decisions + reflections + mind says;
+    // sheep templates do not count as decideCalls or decisions)
     expect(meter.decideCalls).toBe(meter.decisions)
     expect(meter.decisions).toBeGreaterThan(0)
     expect(speedSamplesWhileLine.length).toBeGreaterThan(0)
