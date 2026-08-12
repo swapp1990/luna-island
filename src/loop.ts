@@ -5,7 +5,10 @@ import type { MindBridgeState, SimMode, SimStateBridge } from './bridge'
 import { refreshBridge } from './bridge'
 
 export interface MindTickHook {
-  onAfterTick: (sim: Simulation) => void
+  onAfterTick: (
+    sim: Simulation,
+    opts?: { allowNewConversations?: boolean },
+  ) => void
   getMeter: () => MindBridgeState
 }
 
@@ -38,6 +41,11 @@ export interface LoopController {
   setMindHook: (hook: MindTickHook | null) => void
   /** User-chosen speed (not the temporary breathe throttle). */
   getUserSpeed: () => number
+  /**
+   * Refresh breathe + `__simState` after a mind completion.
+   * Safe to call with no frames (hidden tab / apply-on-resolve).
+   */
+  notifyMindSettled: () => void
 }
 
 const SPEEDS = new Set([0, 1, 8, 64])
@@ -73,6 +81,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let lastSavedTick: number | null = null
   let mindHook: MindTickHook | null = null
   let prevPositions = capturePositions(live)
+  let visibilityUnbind: (() => void) | null = null
 
   /**
    * Whole mind line: queue + in-flight + rate-floor wait (meter.thinking).
@@ -107,7 +116,11 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     if (n <= 0) return
     for (let i = 0; i < n; i++) {
       live.advanceTicks(1)
-      if (mode === 'live') mindHook?.onAfterTick(live)
+      if (mode === 'live') {
+        mindHook?.onAfterTick(live, {
+          allowNewConversations: userSpeed <= 1,
+        })
+      }
       if (respectBreathe && mode === 'live' && mindThinking() > 0 && userSpeed > 1) {
         // Enter breathe: drop remaining batch; next frames run at 1×
         applyBreathe()
@@ -482,6 +495,26 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     applyBreathe()
   }
 
+  /**
+   * After a drain, pin lastTs so the next frame's dt is ~0.
+   * Restoring 64× mid-interval (or after a hitch) would otherwise burst
+   * enough ticks to re-enqueue cadence/chats before the drain is observable.
+   */
+  const pinAfterBreatheRestore = (wasBreathing: boolean) => {
+    if (wasBreathing && speed === userSpeed && userSpeed > 1) {
+      accumulator = 0
+      lastTs = 0
+    }
+  }
+
+  /** Apply-on-resolve / visibility: restore speed + publish meter without rAF. */
+  const notifyMindSettled = () => {
+    const wasBreathing = speed === 1 && userSpeed > 1
+    applyBreathe()
+    pinAfterBreatheRestore(wasBreathing)
+    refreshBridge(getState())
+  }
+
   const selectAgent = (id: string | null) => {
     selectedAgentId = id
     if (id) selectedPlaceId = null
@@ -573,12 +606,24 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     applyScene(performance.now())
     refreshBridge(getState())
     rafId = requestAnimationFrame(frame)
+    if (typeof document !== 'undefined' && !visibilityUnbind) {
+      const onVis = () => {
+        const wasBreathing = speed === 1 && userSpeed > 1
+        applyBreathe()
+        pinAfterBreatheRestore(wasBreathing)
+        refreshBridge(getState())
+      }
+      document.addEventListener('visibilitychange', onVis)
+      visibilityUnbind = () => document.removeEventListener('visibilitychange', onVis)
+    }
   }
 
   const stop = () => {
     running = false
     if (rafId) cancelAnimationFrame(rafId)
     rafId = 0
+    visibilityUnbind?.()
+    visibilityUnbind = null
   }
 
   return {
@@ -607,5 +652,6 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     getPrevAgentPositions: () => prevPositions,
     getDayBounds,
     getUserSpeed: () => userSpeed,
+    notifyMindSettled,
   }
 }

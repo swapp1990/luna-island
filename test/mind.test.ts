@@ -1225,3 +1225,111 @@ describe('personas grounding (P3-1 / P3-2)', () => {
     }
   })
 })
+
+/**
+ * P3-2d: apply-on-resolve — hidden page has no rAF. Completions must post to
+ * the inbox from the request's own promise, not from a frame/pump callback.
+ */
+describe('frameless apply-on-resolve (P3-2d)', () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+  it('hidden page: completions post without frames; advanceTicks applies; queue continues; sweep idle; breathe restores', async () => {
+    const WALL_MS = 30
+    const provider = new MockProvider({ wallDelayMs: WALL_MS })
+    const userSpeed = 64
+    let speed = userSpeed
+    const applyBreathe = (svc: LunaBrainService) => {
+      speed = svc.getMeter().thinking > 0 ? 1 : userSpeed
+    }
+    const mind = new LunaBrainService('mock', {
+      provider,
+      concurrency: 3,
+      wallFloorMs: 0,
+      onPipelineChange: () => applyBreathe(mind),
+    })
+    await mind.init()
+    const sim = new Simulation(42)
+    const nLuna = LUNA_AGENT_IDS.length
+
+    // Last visible frame: enqueue + dispatch first K
+    mind.onAfterTick(sim)
+    applyBreathe(mind)
+    expect(mind.getDecideCallCount()).toBe(3)
+    expect(speed).toBe(1)
+    expect(sim.getExternalInboxSize()).toBe(0)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(0)
+
+    // HIDDEN: no onAfterTick, no frame, no wall-frame pump
+    await sleep(WALL_MS + 25)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // First batch posted to inbox on their own (second batch may already be in flight)
+    expect(sim.getExternalInboxSize()).toBeGreaterThanOrEqual(3)
+    expect(mind.getMeter().decisions).toBeGreaterThanOrEqual(3)
+    expect(sim.getEvents().filter((e) => e.type === 'mind:decision').length).toBe(0)
+    // Next queue entries dispatched without frames (wallFloor 0 → immediate)
+    expect(mind.getDecideCallCount()).toBeGreaterThan(3)
+
+    // Second batch resolves without frames
+    await sleep(WALL_MS + 25)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(sim.getExternalInboxSize()).toBe(nLuna)
+    expect(mind.getMeter().decisions).toBe(nLuna)
+    expect(mind.getMeter().thinking).toBe(0)
+    expect(speed).toBe(64)
+    expect(mind.getSafetySweepHits()).toBe(0)
+
+    // Sweep is a no-op in this path (prove belt did not apply anything)
+    mind.safetySweepOnce()
+    expect(mind.getSafetySweepHits()).toBe(0)
+    expect(sim.getExternalInboxSize()).toBe(nLuna)
+
+    // Bare advanceTicks applies the inbox — no onAfterTick
+    sim.advanceTicks(1)
+    const applied = sim.getEvents().filter((e) => e.type === 'mind:decision')
+    expect(applied.length).toBe(nLuna)
+    expect(sim.getExternalInboxSize()).toBe(0)
+    expect(mind.getMeter().fallbacks).toBe(0)
+    expect(mind.getMeter().stales).toBe(0)
+
+    mind.dispose()
+  })
+
+  it('rate-floor wait dispatches the next batch via setTimeout without frames', async () => {
+    const WALL_MS = 20
+    const FLOOR_MS = 70
+    const provider = new MockProvider({ wallDelayMs: WALL_MS })
+    const mind = new LunaBrainService('mock', {
+      provider,
+      concurrency: 3,
+      wallFloorMs: FLOOR_MS,
+    })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    mind.onAfterTick(sim)
+    expect(mind.getDecideCallCount()).toBe(3)
+
+    await sleep(WALL_MS + 20)
+    await Promise.resolve()
+    // First batch done; rate floor still holds — no new dispatch yet
+    expect(mind.getDecideCallCount()).toBe(3)
+    expect(sim.getExternalInboxSize()).toBe(3)
+    expect(mind.getMeter().thinking).toBeGreaterThan(0)
+
+    // Floor opens via setTimeout — still no onAfterTick / frame
+    await sleep(FLOOR_MS + 20)
+    await Promise.resolve()
+    expect(mind.getDecideCallCount()).toBeGreaterThan(3)
+
+    await sleep(WALL_MS + 20)
+    await Promise.resolve()
+    expect(mind.getMeter().decisions).toBeGreaterThanOrEqual(6)
+    expect(mind.getSafetySweepHits()).toBe(0)
+
+    mind.dispose()
+  })
+})

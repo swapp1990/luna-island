@@ -255,7 +255,7 @@ export function App() {
           return
         }
         loop.setMindHook({
-          onAfterTick: (sim) => m.onAfterTick(sim),
+          onAfterTick: (sim, opts) => m.onAfterTick(sim, opts),
           getMeter: () => m.getMeter(),
         })
         m.onAfterTick(live)
@@ -264,6 +264,7 @@ export function App() {
       const mind = new LunaBrainService(mode, {
         mockWallDelayMs: mode === 'mock' ? mockWallDelayMsFromLocation() : 0,
         concurrency: mindConcurrencyFromLocation(),
+        onPipelineChange: () => loop.notifyMindSettled(),
       })
       mindRef.current = mind
       if (mode === 'auto') {

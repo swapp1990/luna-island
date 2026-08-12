@@ -1027,4 +1027,139 @@ test.describe.serial('lunabrain harness', () => {
 
     await page.screenshot({ path: 'artifacts/mixed-conversation.png', fullPage: false })
   })
+
+  test('P3-2d frameless: ffwd + waits only — 6 minds apply, chats progress, 0 stale/fallback', async ({
+    page,
+  }) => {
+    // Wall-delay mock so completions are async (codex-like). Drive exclusively
+    // via ffwd + wall waits — no visibility / rAF dependence.
+    const url = '/?brain=mock&mindWallMs=200&mindConcurrency=3'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+
+    // Pause so rAF cannot advance ticks — world only moves when we ffwd
+    await page.evaluate(() => (window as any).__simControl.pause())
+
+    const waitApply = async () => {
+      // Kick cadence / dispatch
+      await page.evaluate(() => (window as any).__simControl.ffwd(2))
+      // Promise continuations apply to inbox (no frames required)
+      await page.waitForTimeout(350)
+      // Bare apply
+      await page.evaluate(() => (window as any).__simControl.ffwd(2))
+    }
+
+    // First K (3) dispatch immediately; remaining 3 wait the 15s rolling floor
+    await waitApply()
+    await page.waitForTimeout(15_400)
+    await waitApply()
+    await page.waitForTimeout(350)
+    await page.evaluate(() => (window as any).__simControl.ffwd(4))
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const s = (window as any).__simState
+            return {
+              decisions: (s.mind?.decisions ?? 0) as number,
+              fallbacks: (s.mind?.fallbacks ?? 0) as number,
+              stales: (s.mind?.stales ?? 0) as number,
+            }
+          }),
+        { timeout: 30_000 },
+      )
+      .toEqual(
+        expect.objectContaining({
+          fallbacks: 0,
+          stales: 0,
+        }),
+      )
+
+    const afterDecisions = await page.evaluate(() => {
+      const s = (window as any).__simState
+      return {
+        decisions: s.mind.decisions as number,
+        fallbacks: s.mind.fallbacks as number,
+        stales: (s.mind.stales ?? 0) as number,
+        decideCalls: s.mind.decideCalls as number,
+      }
+    })
+    expect(afterDecisions.decisions).toBeGreaterThanOrEqual(6)
+    expect(afterDecisions.fallbacks).toBe(0)
+    expect(afterDecisions.stales).toBe(0)
+
+    // Conversation turns: pin via seedConversation (pulses + wall waits).
+    // First enqueue may sit behind the 15s rolling floor from the decision batch.
+    await page.evaluate(() =>
+      (window as any).__simControl.seedConversation({
+        agentIdA: 'agent-0',
+        agentIdB: 'agent-1',
+        maxTicks: 2,
+        minSays: 99,
+      }),
+    )
+    await page.waitForTimeout(15_400)
+    let says = 0
+    for (let i = 0; i < 12 && says < 2; i++) {
+      await page.evaluate(() =>
+        (window as any).__simControl.seedConversation({
+          agentIdA: 'agent-0',
+          agentIdB: 'agent-1',
+          maxTicks: 2,
+          minSays: 99,
+        }),
+      )
+      await page.waitForTimeout(350)
+      await page.evaluate(() => (window as any).__simControl.ffwd(2))
+      const counts = await page.evaluate(
+        () => (window as any).__simControl.countEventTypes?.() as Record<string, number>,
+      )
+      says = (counts?.['mind:say'] ?? 0) as number
+    }
+
+    expect(says).toBeGreaterThanOrEqual(2)
+
+    const final = await page.evaluate(() => {
+      const s = (window as any).__simState
+      const counts =
+        typeof (window as any).__simControl.countEventTypes === 'function'
+          ? (window as any).__simControl.countEventTypes()
+          : {}
+      return {
+        decisions: s.mind.decisions as number,
+        fallbacks: s.mind.fallbacks as number,
+        stales: (s.mind.stales ?? 0) as number,
+        says: (counts['mind:say'] as number) ?? 0,
+        staleEvents: (counts['mind:stale'] as number) ?? 0,
+        fallbackEvents: (counts['mind:fallback'] as number) ?? 0,
+      }
+    })
+    expect(final.decisions).toBeGreaterThanOrEqual(6)
+    expect(final.fallbacks).toBe(0)
+    expect(final.stales).toBe(0)
+    expect(final.staleEvents).toBe(0)
+    expect(final.fallbackEvents).toBe(0)
+    expect(final.says).toBeGreaterThanOrEqual(2)
+  })
 })

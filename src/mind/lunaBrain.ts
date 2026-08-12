@@ -131,6 +131,16 @@ export interface LunaBrainOptions {
   wallFloorMs?: number
   /** Injectable clock for rate-window tests. */
   now?: () => number
+  /**
+   * Called after apply-on-resolve / rate-floor retry so the host can refresh
+   * `__simState.mind` and breathe without waiting for a frame.
+   */
+  onPipelineChange?: () => void
+  /**
+   * 1s safety sweep (browser default on). Idempotent belt: only acts if a
+   * continuation missed work. Tests stay off unless set true (must dispose).
+   */
+  safetySweep?: boolean
 }
 
 interface PendingHold {
@@ -269,6 +279,14 @@ export class LunaBrainService {
   private readonly nowFn: () => number
   /** True when pump wanted to dispatch but was blocked only by the rate floor. */
   private rateFloorWaiting = false
+  /** Host hook: refresh bridge + breathe after a completion (no rAF). */
+  private onPipelineChange: (() => void) | null
+  /** Rate-floor retry — setTimeout only; delay may stretch under hidden-tab throttle. */
+  private rateFloorTimer: ReturnType<typeof setTimeout> | null = null
+  /** 1s belt; no-op when apply-on-resolve already drained the line. */
+  private safetySweepTimer: ReturnType<typeof setInterval> | null = null
+  /** Times the sweep actually dispatched or applied missed work. */
+  private safetySweepHits = 0
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
@@ -278,6 +296,9 @@ export class LunaBrainService {
         ? Math.max(0, Math.floor(opts.wallFloorMs))
         : MIND_WALL_FLOOR_MS
     this.nowFn = opts?.now ?? (() => Date.now())
+    this.onPipelineChange = opts?.onPipelineChange ?? null
+    const sweepDefault = typeof window !== 'undefined'
+    if (opts?.safetySweep ?? sweepDefault) this.startSafetySweep()
     if (opts?.provider) {
       this.provider = opts.provider
       if (mode === 'auto') this.mode = 'mock'
@@ -330,6 +351,8 @@ export class LunaBrainService {
 
   dispose(): void {
     this.disposed = true
+    this.clearRateFloorTimer()
+    this.stopSafetySweep()
     this.clearQueueUnmarkReflections()
     this.activeDispatches.clear()
     this.dispatchWallTimes = []
@@ -339,6 +362,20 @@ export class LunaBrainService {
     this.sayHolds = []
     this.activeConvs = []
     this.latestSim = null
+    this.onPipelineChange = null
+  }
+
+  /**
+   * Times the 1s safety sweep actually did work (missed apply / dispatch).
+   * Normal apply-on-resolve path leaves this at 0.
+   */
+  getSafetySweepHits(): number {
+    return this.safetySweepHits
+  }
+
+  /** Test helper: run one sweep pass (does not start the interval). */
+  safetySweepOnce(): void {
+    this.safetySweep()
   }
 
   /** Test/dev: configured worker-pool size. */
@@ -465,6 +502,91 @@ export class LunaBrainService {
     return this.dispatchWallTimes.length < this.concurrency
   }
 
+  private notifySettled(): void {
+    this.onPipelineChange?.()
+  }
+
+  private unrefTimer(id: ReturnType<typeof setTimeout>): void {
+    if (typeof id === 'object' && id && 'unref' in id) {
+      const t = id as { unref?: () => void }
+      t.unref?.()
+    }
+  }
+
+  private clearRateFloorTimer(): void {
+    if (this.rateFloorTimer != null) {
+      clearTimeout(this.rateFloorTimer)
+      this.rateFloorTimer = null
+    }
+  }
+
+  /** Ms until the oldest dispatch falls out of the rolling window (min 1). */
+  private msUntilRateSlot(now: number): number {
+    if (this.wallFloorMs <= 0) return 0
+    const cutoff = now - this.wallFloorMs
+    const live = this.dispatchWallTimes.filter((t) => t > cutoff)
+    if (live.length < this.concurrency) return 0
+    let oldest = live[0]!
+    for (const t of live) if (t < oldest) oldest = t
+    return Math.max(1, oldest + this.wallFloorMs - now)
+  }
+
+  /**
+   * Schedule a single rate-floor retry. Promise completions are not throttled;
+   * this timeout may stretch under hidden-tab timer throttling — that's ok.
+   */
+  private scheduleRateFloorRetry(sim: Simulation): void {
+    if (this.rateFloorTimer != null || this.disposed) return
+    const wait = this.msUntilRateSlot(this.nowFn())
+    if (wait <= 0) return
+    this.rateFloorTimer = setTimeout(() => {
+      this.rateFloorTimer = null
+      if (this.disposed) return
+      const applySim = this.latestSim ?? sim
+      this.pumpDispatch(applySim)
+      this.notifySettled()
+    }, wait)
+    this.unrefTimer(this.rateFloorTimer)
+  }
+
+  private startSafetySweep(): void {
+    if (this.safetySweepTimer != null) return
+    this.safetySweepTimer = setInterval(() => this.safetySweep(), 1000)
+    this.unrefTimer(this.safetySweepTimer)
+  }
+
+  private stopSafetySweep(): void {
+    if (this.safetySweepTimer != null) {
+      clearInterval(this.safetySweepTimer)
+      this.safetySweepTimer = null
+    }
+  }
+
+  /**
+   * Belt: pick up a missed continuation or a dropped rate-floor timer.
+   * No-op when apply-on-resolve already did the work.
+   */
+  private safetySweep(): void {
+    if (this.disposed || !this.isEnabled() || !this.latestSim) return
+    const sim = this.latestSim
+    const beforeCalls = this.decideCallCount
+    const beforeDecisions = this.decisions
+    const beforeFallbacks = this.fallbacks
+    const beforeStales = this.stales
+    const expired = this.expireWallTimeouts(sim)
+    this.pumpDispatch(sim)
+    const didWork =
+      expired > 0 ||
+      this.decideCallCount !== beforeCalls ||
+      this.decisions !== beforeDecisions ||
+      this.fallbacks !== beforeFallbacks ||
+      this.stales !== beforeStales
+    if (didWork) {
+      this.safetySweepHits += 1
+      this.notifySettled()
+    }
+  }
+
   /** Conversation lane: block turn N+1 until turn N is applied (no in-flight/hold). */
   private isConversationLaneBlocked(entry: MindQueueEntry): boolean {
     if (entry.kind !== 'conversation' || !entry.conversationId) return false
@@ -554,8 +676,13 @@ export class LunaBrainService {
   /**
    * Call after each live sim tick (or after each tick inside ffwd).
    * Posts ready holds; may kick off new async decisions / conversations / reflections.
+   * @param opts.allowNewConversations default true. Loop passes false while
+   *   userSpeed > 1 so high-speed / breathe restore is not wedged by re-seeding chats.
    */
-  onAfterTick(sim: Simulation): void {
+  onAfterTick(
+    sim: Simulation,
+    opts?: { allowNewConversations?: boolean },
+  ): void {
     if (!this.isEnabled() || this.disposed) return
     if (this.mode === 'off' || !this.provider) return
 
@@ -591,40 +718,7 @@ export class LunaBrainService {
     this.syncConversationHold(sim)
 
     // Wall-timeout for each in-flight request (queue wait does not consume it)
-    const now = this.nowFn()
-    const timedOut: InFlight[] = []
-    for (const flight of this.activeDispatches.values()) {
-      if (now - flight.startedWall >= MIND_WALL_TIMEOUT_MS) timedOut.push(flight)
-    }
-    for (const flight of timedOut) {
-      this.activeDispatches.delete(flight.agentId)
-      if (flight.kind === 'reflection' && flight.nightKey != null) {
-        this.reflectedNights.get(flight.agentId)?.delete(flight.nightKey)
-      }
-      if (flight.kind === 'conversation') {
-        const ac = this.convById(flight.conversationId)
-        // Graceful trails-off end — not a fallback storm
-        this.finishConversationTrailsOff(
-          sim,
-          flight.agentId,
-          flight.partnerId ?? (ac ? partnerOf(ac, flight.agentId) : ''),
-          flight.conversationId ?? ac?.id ?? '',
-          flight.turn ?? ac?.nextTurn ?? 0,
-        )
-      } else {
-        this.fallbacks += 1
-        sim.postMindFallback(
-          flight.agentId,
-          {
-            reason: 'wall timeout',
-            latencyMs: MIND_WALL_TIMEOUT_MS,
-            variant: flight.kind === 'reflection' ? 'reflection' : 'decision',
-          },
-          'Mind request timed out — continuing on instinct',
-        )
-      }
-    }
-    if (timedOut.length > 0) this.pumpDispatch(sim)
+    this.expireWallTimeouts(sim)
 
     // Drop queue entries for agents that no longer exist (world reset mid-line)
     const valid = new Set(sim.state.agents.map((a) => a.id))
@@ -639,6 +733,7 @@ export class LunaBrainService {
     }
 
     // Hard client cooldown: no further enqueues / dispatches until reset
+    const now = this.nowFn()
     if (this.isBudgetCooldown(now)) {
       this.syncConversationHold(sim)
       return
@@ -683,7 +778,9 @@ export class LunaBrainService {
     }
 
     // Try to start new conversations (max 2; ≤1 mind↔mind)
-    this.tryStartConversations(sim)
+    if (opts?.allowNewConversations !== false) {
+      this.tryStartConversations(sim)
+    }
 
     // Cadence: request decisions for luna agents (skip conversation participants)
     for (const agentId of LUNA_AGENT_IDS) {
@@ -1191,6 +1288,49 @@ export class LunaBrainService {
   }
 
   /**
+   * Expire in-flight requests past MIND_WALL_TIMEOUT_MS.
+   * Called from onAfterTick and the safety sweep (hidden tabs have no frames).
+   * @returns number of flights expired
+   */
+  private expireWallTimeouts(sim: Simulation): number {
+    const now = this.nowFn()
+    const timedOut: InFlight[] = []
+    for (const flight of this.activeDispatches.values()) {
+      if (now - flight.startedWall >= MIND_WALL_TIMEOUT_MS) timedOut.push(flight)
+    }
+    for (const flight of timedOut) {
+      this.activeDispatches.delete(flight.agentId)
+      if (flight.kind === 'reflection' && flight.nightKey != null) {
+        this.reflectedNights.get(flight.agentId)?.delete(flight.nightKey)
+      }
+      if (flight.kind === 'conversation') {
+        const ac = this.convById(flight.conversationId)
+        // Graceful trails-off end — not a fallback storm
+        this.finishConversationTrailsOff(
+          sim,
+          flight.agentId,
+          flight.partnerId ?? (ac ? partnerOf(ac, flight.agentId) : ''),
+          flight.conversationId ?? ac?.id ?? '',
+          flight.turn ?? ac?.nextTurn ?? 0,
+        )
+      } else {
+        this.fallbacks += 1
+        sim.postMindFallback(
+          flight.agentId,
+          {
+            reason: 'wall timeout',
+            latencyMs: MIND_WALL_TIMEOUT_MS,
+            variant: flight.kind === 'reflection' ? 'reflection' : 'decision',
+          },
+          'Mind request timed out — continuing on instinct',
+        )
+      }
+    }
+    if (timedOut.length > 0) this.pumpDispatch(sim)
+    return timedOut.length
+  }
+
+  /**
    * Concurrency-K worker pool: fill free slots from the priority FIFO.
    * Observation/prompts are built at dispatch time (not enqueue) so the prompt
    * tick matches the world when the request actually leaves.
@@ -1201,6 +1341,7 @@ export class LunaBrainService {
     if (this.disposed || !this.provider) return
     if (this.isBudgetCooldown()) {
       this.rateFloorWaiting = false
+      this.clearRateFloorTimer()
       return
     }
 
@@ -1212,6 +1353,7 @@ export class LunaBrainService {
       }
       if (this.queue.isEmpty()) {
         this.rateFloorWaiting = false
+        this.clearRateFloorTimer()
         break
       }
 
@@ -1219,6 +1361,7 @@ export class LunaBrainService {
       if (!this.canStartByRate(now)) {
         // Work is waiting but rate floor blocks — keep breathe engaged
         this.rateFloorWaiting = this.queue.size() > 0
+        if (this.rateFloorWaiting) this.scheduleRateFloorRetry(sim)
         break
       }
 
@@ -1239,6 +1382,7 @@ export class LunaBrainService {
 
     if (!started && this.queue.isEmpty()) {
       this.rateFloorWaiting = false
+      this.clearRateFloorTimer()
     }
   }
 
@@ -1372,6 +1516,7 @@ export class LunaBrainService {
             )
           }
           this.pumpDispatch(this.latestSim ?? sim)
+          this.notifySettled()
           return
         } catch (err) {
           if (this.disposed) return
@@ -1408,6 +1553,7 @@ export class LunaBrainService {
               resetsInSec,
               budget,
             )
+            this.notifySettled()
             return
           }
           this.activeDispatches.delete(agentId)
@@ -1424,6 +1570,7 @@ export class LunaBrainService {
               turn ?? 0,
             )
             this.pumpDispatch(this.latestSim ?? sim)
+            this.notifySettled()
             return
           }
           this.fallbacks += 1
@@ -1441,6 +1588,7 @@ export class LunaBrainService {
               : `Mind provider error: ${msg}`,
           )
           this.pumpDispatch(applySim)
+          this.notifySettled()
           return
         }
       }
