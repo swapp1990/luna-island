@@ -235,6 +235,8 @@ export function generateWorld(seed: number): WorldState {
       mindNoteLog: [],
       sayLog: [],
       mindStats: {},
+      proposals: [],
+      rules: [],
     }
   }
 
@@ -797,5 +799,7 @@ export function generateWorld(seed: number): WorldState {
     mindNoteLog: [],
     sayLog: [],
     mindStats: {},
+    proposals: [],
+    rules: [],
   }
 }

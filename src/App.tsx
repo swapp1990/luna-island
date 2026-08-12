@@ -18,6 +18,7 @@ import { BuildingPanel } from './ui/BuildingPanel'
 import { ResourceBar, resourcesFromWorld, type ResourceSnapshot } from './ui/ResourceBar'
 import { Ticker } from './ui/Ticker'
 import { Charts } from './ui/Charts'
+import { TownBoard } from './ui/TownBoard'
 import { PortraitDock } from './ui/PortraitDock'
 import {
   brainModeFromLocation,
@@ -26,7 +27,16 @@ import {
   mockWallDelayMsFromLocation,
 } from './mind/lunaBrain'
 import { isLunaAgent } from './mind/personas'
-import type { AgentState, EconomyStat, Place, SimEvent } from './sim/types'
+import type {
+  AgentState,
+  EconomyStat,
+  ExternalIntentMeta,
+  Intent,
+  Place,
+  Proposal,
+  Rule,
+  SimEvent,
+} from './sim/types'
 
 const DEFAULT_SEED = 42
 const HUD_HZ = 4
@@ -119,6 +129,8 @@ export function App() {
   >([])
   const [sayLog, setSayLog] = useState<import('./sim/types').SayRecord[]>([])
   const [stats, setStats] = useState<EconomyStat[]>([])
+  const [proposals, setProposals] = useState<Proposal[]>([])
+  const [rules, setRules] = useState<Rule[]>([])
   const [following, setFollowing] = useState(false)
   const [scrubMin, setScrubMin] = useState(0)
   const [scrubMax, setScrubMax] = useState(0)
@@ -171,6 +183,13 @@ export function App() {
         })),
       )
       setStats(sim.state.stats.map((st) => ({ ...st })))
+      setProposals(
+        (sim.state.proposals ?? []).map((p) => ({
+          ...p,
+          votes: { ...p.votes },
+        })),
+      )
+      setRules((sim.state.rules ?? []).map((r) => ({ ...r })))
       setResources(resourcesFromWorld(sim.state))
       setFollowing(loop.getFollow())
       const agentId = s.selectedAgentId
@@ -376,6 +395,45 @@ export function App() {
             }
             return out
           },
+          postIntent: (agentId: string, intent: Intent, reasoning?: string) => {
+            const live = liveRef.current
+            const loop = loopRef.current
+            if (!live || !loop) return false
+            const meta: ExternalIntentMeta = {
+              reasoning: reasoning ?? intent.reason,
+              source: 'luna',
+              provider: 'mock',
+            }
+            live.postExternalIntent(agentId, intent, meta)
+            loop.ffwd(1)
+            apiRef.current?.syncFromLoop()
+            return true
+          },
+          ensureWallet: (agentId: string, minCoins: number) => {
+            const live = liveRef.current
+            if (!live) return false
+            const agent = live.state.agents.find((a) => a.id === agentId)
+            if (!agent) return false
+            const need = Math.max(0, Math.ceil(minCoins) - agent.wallet)
+            if (need <= 0) return true
+            return live.transferCoins(
+              'treasury',
+              agentId,
+              need,
+              `e2e top-up ${need} coins`,
+              { kind: 'e2e-topup' },
+            )
+          },
+          setSympathy: (agentId: string, otherId: string, value: number) => {
+            const live = liveRef.current
+            if (!live) return
+            const agent = live.state.agents.find((a) => a.id === agentId)
+            if (!agent) return
+            if (!agent.sympathy) agent.sympathy = {}
+            const v = Math.max(0, Math.min(1, value))
+            if (v === 0) delete agent.sympathy[otherId]
+            else agent.sympathy[otherId] = v
+          },
           seedConversation: (opts?: {
             agentIdA?: string
             agentIdB?: string
@@ -496,6 +554,13 @@ export function App() {
         })),
       )
       setStats(live.state.stats.map((st) => ({ ...st })))
+      setProposals(
+        (live.state.proposals ?? []).map((p) => ({
+          ...p,
+          votes: { ...p.votes },
+        })),
+      )
+      setRules((live.state.rules ?? []).map((r) => ({ ...r })))
       setResources(resourcesFromWorld(live.state))
       const b0 = loop.getDayBounds()
       setScrubMin(b0.startTick)
@@ -703,6 +768,14 @@ export function App() {
           setAgentEvents(sim.getEvents())
           setHud(loop.getState())
         }}
+      />
+      <TownBoard
+        proposals={proposals}
+        rules={rules}
+        events={allEvents}
+        agents={allAgents}
+        replayTick={hud.tick}
+        inspectorOpen={selectedAgent !== null || selectedPlace !== null}
       />
       <Charts
         stats={stats}

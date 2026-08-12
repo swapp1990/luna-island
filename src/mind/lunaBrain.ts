@@ -264,6 +264,8 @@ export class LunaBrainService {
   private budgetEventEmitted = false
   /** Night keys already reflected (or in-flight/hold) per agent — one reflection per night. */
   private reflectedNights = new Map<string, Set<number>>()
+  /** One extra decision opportunity per (agent, open proposal). */
+  private proposalBumpDone = new Set<string>()
   /** Latest live sim (for prompt rebuild at dispatch). */
   private latestSim: Simulation | null = null
   /**
@@ -800,7 +802,9 @@ export class LunaBrainService {
       const urgent = anyNeedCritical(agent)
       const softOk = since >= MIND_MIN_GAP_TICKS && (finished || urgent)
       const hardOk = since >= MIND_HARD_GAP_TICKS
-      if (!softOk && !hardOk) continue
+      const bumpId = this.unusedProposalBump(sim, agentId)
+      if (!softOk && !hardOk && !bumpId) continue
+      if (!softOk && !hardOk && bumpId) this.markProposalBump(agentId, bumpId)
 
       this.requestDecision(sim, agentId)
     }
@@ -814,6 +818,19 @@ export class LunaBrainService {
     return this.activeConvs.some(
       (c) => c.agentIdA === agentId || c.agentIdB === agentId,
     )
+  }
+
+  private unusedProposalBump(sim: Simulation, agentId: string): string | null {
+    const open = (sim.state.proposals ?? []).filter((p) => p.status === 'open')
+    for (const p of open) {
+      const key = `${agentId}:${p.id}`
+      if (!this.proposalBumpDone.has(key)) return p.id
+    }
+    return null
+  }
+
+  private markProposalBump(agentId: string, proposalId: string): void {
+    this.proposalBumpDone.add(`${agentId}:${proposalId}`)
   }
 
   /** Start eligible pairs up to capacity (deterministic order). */

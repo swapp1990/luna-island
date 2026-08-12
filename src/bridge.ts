@@ -1,3 +1,5 @@
+import type { Intent } from './sim/types'
+
 export type SimMode = 'live' | 'replay'
 
 /** Mind meter on the window bridge (Phase 3 LunaBrain). */
@@ -102,6 +104,19 @@ export interface SimControlBridge {
   }) => { ok: boolean; says: number }
   /** E2e/dev: event type histogram on the view sim. */
   countEventTypes?: () => Record<string, number>
+  /**
+   * Additive (e2e): post a mind intent onto the live sim and advance 1 tick
+   * so it applies. Used to seed propose/vote/sanction/claim.
+   */
+  postIntent?: (
+    agentId: string,
+    intent: Intent,
+    reasoning?: string,
+  ) => boolean
+  /** Additive (e2e): treasury → agent so civic fees can be paid. */
+  ensureWallet?: (agentId: string, minCoins: number) => boolean
+  /** Additive (e2e): set one sympathy edge (electorate seeding). */
+  setSympathy?: (agentId: string, otherId: string, value: number) => void
 }
 
 declare global {

@@ -1,4 +1,4 @@
-import type { ActionKind, AgentState, Intent, Place, WorldState } from '../sim/types'
+import type { ActionKind, AgentState, Intent, Place, VoteChoice, WorldState } from '../sim/types'
 import { pickPlaceForAgent, placeHasCapacity } from '../sim/spots'
 
 const ACTION_KINDS = new Set<ActionKind>([
@@ -13,12 +13,20 @@ const ACTION_KINDS = new Set<ActionKind>([
   'work',
   'buy',
   'commission',
+  'propose',
+  'vote',
+  'sanction',
+  'claim',
 ])
 
 export interface MindIntentJson {
   action: string
   target?: string
   reasoning: string
+  text?: string
+  choice?: string
+  reason?: string
+  ruleId?: string
 }
 
 export type ParseMindResult =
@@ -83,17 +91,54 @@ export function parseMindJson(text: string): ParseMindResult {
   if (obj.target !== undefined && typeof obj.target !== 'string') {
     return { ok: false, error: 'target must be string' }
   }
+  const action = obj.action as ActionKind
+  if (action === 'propose') {
+    if (typeof obj.text !== 'string') {
+      return { ok: false, error: 'propose requires text string' }
+    }
+    const text = obj.text.trim()
+    if (text.length === 0) return { ok: false, error: 'propose text empty' }
+    if (text.length > 200) return { ok: false, error: 'propose text exceeds 200 chars' }
+  } else if (action === 'vote') {
+    if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
+      return { ok: false, error: 'vote requires target proposal id' }
+    }
+    if (obj.choice !== 'yes' && obj.choice !== 'no') {
+      return { ok: false, error: 'vote requires choice yes|no' }
+    }
+  } else if (action === 'sanction') {
+    if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
+      return { ok: false, error: 'sanction requires target name' }
+    }
+    if (typeof obj.reason !== 'string') {
+      return { ok: false, error: 'sanction requires reason string' }
+    }
+    const censure = obj.reason.trim()
+    if (censure.length === 0) return { ok: false, error: 'sanction reason empty' }
+    if (censure.length > 120) return { ok: false, error: 'sanction reason exceeds 120 chars' }
+    if (obj.ruleId !== undefined && typeof obj.ruleId !== 'string') {
+      return { ok: false, error: 'ruleId must be string' }
+    }
+  } else if (action === 'claim') {
+    if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
+      return { ok: false, error: 'claim requires target place' }
+    }
+  }
   // Build a partial — target resolution needs world
   return {
     ok: true,
     intent: {
-      kind: obj.action as ActionKind,
+      kind: action,
       reason: obj.reasoning,
     },
     raw: {
       action: obj.action,
       target: typeof obj.target === 'string' ? obj.target : undefined,
       reasoning: obj.reasoning,
+      text: typeof obj.text === 'string' ? obj.text : undefined,
+      choice: typeof obj.choice === 'string' ? obj.choice : undefined,
+      reason: typeof obj.reason === 'string' ? obj.reason : undefined,
+      ruleId: typeof obj.ruleId === 'string' ? obj.ruleId : undefined,
     },
   }
 }
@@ -226,6 +271,37 @@ export function resolveMindIntent(
   const reason = raw.reasoning
   const target = raw.target?.trim()
 
+  if (kind === 'propose') {
+    return {
+      kind: 'propose',
+      reason,
+      text: (raw.text ?? '').trim().slice(0, 200),
+    }
+  }
+
+  if (kind === 'vote') {
+    const choice: VoteChoice = raw.choice === 'no' ? 'no' : 'yes'
+    return {
+      kind: 'vote',
+      reason,
+      proposalId: target ?? '',
+      choice,
+    }
+  }
+
+  if (kind === 'sanction') {
+    const other = target
+      ? world.agents.find((a) => a.name.toLowerCase() === target.toLowerCase())
+      : undefined
+    return {
+      kind: 'sanction',
+      reason,
+      targetAgentId: other?.id ?? '',
+      text: (raw.reason ?? '').trim().slice(0, 120),
+      ruleId: raw.ruleId?.trim() || undefined,
+    }
+  }
+
   // Agent name → socialize near them
   if (target) {
     const other = world.agents.find(
@@ -286,6 +362,11 @@ export function resolveMindIntent(
       case 'walk':
       case 'commission':
         break
+      case 'claim':
+        if (target && !PLACE_KINDS.has(target)) {
+          place = world.places.find((p) => p.id === target) ?? null
+        }
+        break
       default:
         break
     }
@@ -303,6 +384,19 @@ export function resolveMindIntent(
       reason,
       targetX: kind === 'wander' ? Math.round(agent.x + 1) : undefined,
       targetY: kind === 'wander' ? Math.round(agent.y) : undefined,
+    }
+  }
+
+  if (kind === 'claim') {
+    if (!place) {
+      return { kind: 'wander', reason, targetX: Math.round(agent.x), targetY: Math.round(agent.y) }
+    }
+    return {
+      kind: 'claim',
+      reason,
+      targetPlaceId: place.id,
+      targetX: place.x,
+      targetY: place.y,
     }
   }
 

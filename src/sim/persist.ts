@@ -1,8 +1,8 @@
 import { ensureMindFields, Simulation, type DayArchiveMeta, type SimSnapshot } from './sim'
 import type { EconomyStat, SimEvent, Tick, WorldState } from './types'
 
-/** Current on-disk save schema version (v4 adds sayLog; v3 mindNoteLog; v2 externalIntentLog + mindStats). */
-export const SAVE_FORMAT_VERSION = 4 as const
+/** Current on-disk save schema version (v5 proposals+rules; v4 sayLog; v3 mindNoteLog; v2 externalIntentLog + mindStats). */
+export const SAVE_FORMAT_VERSION = 5 as const
 
 /** Oldest format we can still load (upgrades with empty mind fields as needed). */
 export const SAVE_FORMAT_MIN_VERSION = 1 as const
@@ -105,7 +105,7 @@ export function serializeSave(sim: Simulation): SaveGame {
 
 /**
  * Rebuild a Simulation from a save payload.
- * Accepts formatVersion 1–4 (upgrade: empty mind fields as needed).
+ * Accepts formatVersion 1–5 (upgrade: empty mind / institution fields as needed).
  * Rejects other versions / structural invalidity without half-loading.
  */
 export function restoreSave(raw: unknown): Simulation {
@@ -113,7 +113,7 @@ export function restoreSave(raw: unknown): Simulation {
     throw new SaveFormatError('Save is not an object')
   }
   const ver = raw.formatVersion
-  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== SAVE_FORMAT_VERSION) {
+  if (ver !== 1 && ver !== 2 && ver !== 3 && ver !== 4 && ver !== 5 && ver !== SAVE_FORMAT_VERSION) {
     throw new SaveFormatError(
       `Unsupported save format version: ${String(raw.formatVersion)} (expected ${SAVE_FORMAT_MIN_VERSION}–${SAVE_FORMAT_VERSION})`,
     )
@@ -154,11 +154,13 @@ export function restoreSave(raw: unknown): Simulation {
   // Prefer top-level events (full timeline); fall back to head snapshot events
   const events = (raw.events as SimEvent[]).map(cloneEvent)
   const head = cloneSaveSnapshot(raw.snapshot as SaveSnapshot)
-  // v1–v3 → v4: ensure mind fields (cloneSaveSnapshot already does; belt-and-suspenders)
+  // v1–v4 → v5: ensure mind + institution fields (cloneSaveSnapshot already does)
   ensureMindFields(head.state)
-  // Older loads: empty logs when missing
+  // Older loads: empty logs / registries when missing
   if (!Array.isArray(head.state.mindNoteLog)) head.state.mindNoteLog = []
   if (!Array.isArray(head.state.sayLog)) head.state.sayLog = []
+  if (!Array.isArray(head.state.proposals)) head.state.proposals = []
+  if (!Array.isArray(head.state.rules)) head.state.rules = []
   // Ensure head state tick matches declared tick when present
   if (head.state.tick !== raw.tick) {
     head.state.tick = raw.tick as number

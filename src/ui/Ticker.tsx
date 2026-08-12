@@ -206,6 +206,67 @@ export function buildTickerRows(
       continue
     }
 
+    if (ev.type === 'institution:proposed') {
+      const name = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const text = (ev.data?.text as string) ?? ''
+      const first = ev.data?.firstProposal === true
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `inst-prop-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: first
+          ? `${pad2(t.hour)}:${pad2(t.minute)} · 📜 The island's first proposal — ${name}: "${text}"`
+          : `${pad2(t.hour)}:${pad2(t.minute)} · 📜 ${name} proposed: "${text}"`,
+      })
+      continue
+    }
+
+    if (ev.type === 'institution:closed') {
+      const status = (ev.data?.status as string) ?? 'failed'
+      const yes = (ev.data?.yes as number) ?? 0
+      const no = (ev.data?.no as number) ?? 0
+      const first = ev.data?.firstRule === true
+      const text = (ev.data?.text as string) ?? ''
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `inst-close-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: first
+          ? `${pad2(t.hour)}:${pad2(t.minute)} · 🗳️ The island's first rule is posted: "${text}" (${yes}–${no})`
+          : `${pad2(t.hour)}:${pad2(t.minute)} · 🗳️ Proposal ${status} (${yes}–${no})`,
+      })
+      continue
+    }
+
+    if (ev.type === 'institution:sanctioned') {
+      const from = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const to = (ev.data?.targetName as string) ?? (ev.data?.targetId as string) ?? 'someone'
+      const why = (ev.data?.reason as string) ?? ''
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `inst-sanc-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · ⚖️ ${from} sanctioned ${to}: "${why}"`,
+      })
+      continue
+    }
+
+    if (ev.type === 'institution:claimed') {
+      const name = (ev.data?.agentName as string) ?? ev.agentId ?? 'Someone'
+      const kind = (ev.data?.placeKind as string) ?? 'place'
+      const t = toSimTime(ev.tick)
+      rows.push({
+        key: `inst-claim-${ev.seq}`,
+        tick: ev.tick,
+        agentId: ev.agentId ?? null,
+        text: `${pad2(t.hour)}:${pad2(t.minute)} · 🏷️ ${name} claimed the ${kind}`,
+      })
+      continue
+    }
+
     if (ev.type === 'mind:budget') {
       const t = toSimTime(ev.tick)
       const reason =

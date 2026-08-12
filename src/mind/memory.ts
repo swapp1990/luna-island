@@ -52,7 +52,8 @@ export function episodicMemories(
       e.agentId === agentId ||
       (e.type.startsWith('relationship:') && relationshipInvolves(e, agentId)) ||
       (e.type === 'mind:say' &&
-        (e.agentId === agentId || e.data?.partnerId === agentId))
+        (e.agentId === agentId || e.data?.partnerId === agentId)) ||
+      (e.type === 'institution:sanctioned' && e.data?.targetId === agentId)
     if (!mine) continue
 
     const when = stamp(e.tick)
@@ -150,6 +151,29 @@ export function episodicMemories(
               ? `spent ${amount} coins`
               : `paid out ${amount} coins`
         }
+        break
+      }
+      case 'institution:proposed': {
+        const text = String(e.data?.text ?? '')
+        const clip = text.length > 60 ? `${text.slice(0, 57)}…` : text
+        line = `proposed: "${clip}"`
+        break
+      }
+      case 'institution:sanctioned': {
+        const why = String(e.data?.reason ?? '')
+        const clip = why.length > 50 ? `${why.slice(0, 47)}…` : why
+        if (e.agentId === agentId) {
+          const to = String(e.data?.targetName ?? e.data?.targetId ?? 'someone')
+          line = `sanctioned ${to}: "${clip}"`
+        } else if (e.data?.targetId === agentId) {
+          const from = String(e.data?.agentName ?? e.agentId ?? 'someone')
+          line = `censured by ${from}: "${clip}"`
+        }
+        break
+      }
+      case 'institution:claimed': {
+        const kind = String(e.data?.placeKind ?? 'place')
+        line = `claimed the ${kind}`
         break
       }
       default:

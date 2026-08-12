@@ -150,7 +150,6 @@ describe('say record/replay (P3-2)', () => {
     )
 
     const save = serializeSave(sim)
-    expect(save.formatVersion).toBe(4)
     expect(save.formatVersion).toBe(SAVE_FORMAT_VERSION)
     expect(save.snapshot.state.sayLog.length).toBe(2)
     const restored = restoreSave(save)

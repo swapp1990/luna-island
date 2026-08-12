@@ -1,6 +1,6 @@
 import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
 import { toSimTime } from '../sim/time'
-import { marketPriceFromStock } from '../sim/sim'
+import { CLAIM_COST, marketPriceFromStock, PROPOSE_COST, proposalTally } from '../sim/sim'
 import { personaFor } from './personas'
 import {
   memoryLinesForPrompt,
@@ -19,6 +19,10 @@ const ACTION_KINDS = [
   'work',
   'buy',
   'commission',
+  'propose',
+  'vote',
+  'sanction',
+  'claim',
 ] as const
 
 const GROUNDING =
@@ -33,12 +37,14 @@ const WORLD_RULES = `WORLD RULES (scaffold only — you choose what to do):
 - Sleep at home on a bed slot; drink at well; socialize near others (plaza).
 - Commission a private home costs 30 coins when you can afford it.
 - Social recharge needs another agent within ~1.5 tiles.
+- Civic mechanisms exist and anyone may use them: propose (2 coins) posts agent-authored text for a day; vote records a yes or no on an open proposal; sanction (1 coin) posts a public censure; claim (15 coins) transfers a commons place to the claimer. Posted rules may be followed or broken. Breaking may draw sanctions from others.
 - You cannot invent new action kinds or break occupancy/economy rules.`
 
 const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object, no markdown:
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
 target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, or a villager name.
+Civic extras when used: propose needs "text" (≤200); vote needs target=<proposal id> and "choice":"yes"|"no"; sanction needs target=<name> and "reason" (≤120) and optional "ruleId"; claim needs target=<place kind or id>.
 If unsure, prefer a safe need-serving action (eat/forage/sleep/work).`
 
 export function buildSystemPrompt(agentId: string): string {
@@ -83,6 +89,59 @@ function placeKindLabel(p: Place): string {
   return p.kind
 }
 
+function clipObs(s: string, max: number): string {
+  if (s.length <= max) return s
+  return `${s.slice(0, max - 1)}…`
+}
+
+/** Compact civic facts — display only; no verdict about whether rules are kept. */
+function civicObservationLines(
+  agent: AgentState,
+  world: WorldState,
+  recentEvents: readonly SimEvent[],
+): string[] {
+  const lines: string[] = []
+  const open = (world.proposals ?? []).filter((p) => p.status === 'open')
+  if (open.length > 0) {
+    lines.push('Open proposals:')
+    for (const p of open) {
+      const tally = proposalTally(p)
+      const left = Math.max(0, p.closesTick - world.tick)
+      const proposer = world.agents.find((a) => a.id === p.proposerId)?.name ?? p.proposerId
+      lines.push(
+        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" yes ${tally.yes} / no ${tally.no} · ${left} min left`,
+      )
+    }
+  }
+  const active = (world.rules ?? []).filter((r) => r.active).slice(0, 5)
+  if (active.length > 0) {
+    lines.push('Posted rules:')
+    for (const r of active) {
+      const who = world.agents.find((a) => a.id === r.proposerId)?.name ?? r.proposerId
+      lines.push(`- ${r.id} (${who}): "${clipObs(r.text, 80)}"`)
+    }
+  }
+  const sanctions = recentEvents
+    .filter((e) => e.type === 'institution:sanctioned')
+    .slice(-3)
+  if (sanctions.length > 0) {
+    lines.push('Recent sanctions:')
+    for (const e of sanctions) {
+      const from = String(e.data?.agentName ?? e.agentId ?? 'someone')
+      const to = String(e.data?.targetName ?? e.data?.targetId ?? 'someone')
+      const why = clipObs(String(e.data?.reason ?? ''), 80)
+      lines.push(`- ${from} → ${to}: "${why}"`)
+    }
+  }
+  if (agent.wallet >= PROPOSE_COST) {
+    lines.push(`You can afford the proposal fee (${PROPOSE_COST} coins).`)
+  }
+  if (agent.wallet >= CLAIM_COST) {
+    lines.push(`You can afford the claim fee (${CLAIM_COST} coins).`)
+  }
+  return lines
+}
+
 export function buildUserPrompt(
   agent: AgentState,
   world: WorldState,
@@ -109,6 +168,7 @@ export function buildUserPrompt(
   const standing = standingFacts(agent, world)
   const noteLog = mindNoteLog ?? world.mindNoteLog ?? []
   const memories = memoryLinesForPrompt(agent.id, recentEvents, noteLog, 8)
+  const civic = civicObservationLines(agent, world, recentEvents)
 
   const lines = [
     `Time: Day ${t.day} ${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')} (tick ${world.tick})`,
@@ -120,6 +180,7 @@ export function buildUserPrompt(
     `Nearby: ${near.length ? near.map((n) => `${n.name}(sym ${n.sympathy}, ${n.action})`).join('; ') : 'none'}`,
     `Standing facts:`,
     ...standing.map((s) => `- ${s}`),
+    ...civic,
     `Your memories:`,
     ...(memories.length ? memories.map((m) => `- ${m}`) : ['- (none yet)']),
     `Recent trace:`,

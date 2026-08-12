@@ -126,7 +126,6 @@ describe('mind external intents — record/replay', () => {
 
     const save = serializeSave(sim)
     expect(save.formatVersion).toBe(SAVE_FORMAT_VERSION)
-    expect(save.formatVersion).toBe(4)
     expect(save.snapshot.state.externalIntentLog.length).toBe(1)
 
     const restored = restoreSave(save)

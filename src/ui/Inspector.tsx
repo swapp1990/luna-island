@@ -48,6 +48,14 @@ function actionVerb(kind: string, workPhase?: string | null): string {
       return 'Working'
     case 'commission':
       return 'Commissioning a house'
+    case 'propose':
+      return 'Posting a proposal'
+    case 'vote':
+      return 'Voting'
+    case 'sanction':
+      return 'Posting a sanction'
+    case 'claim':
+      return 'Claiming a place'
     case 'drink':
       return 'Drinking'
     case 'socialize':
@@ -109,6 +117,28 @@ function formatLogRow(ev: SimEvent): { tick: number; text: string } {
   } else if (ev.type === 'mind:say') {
     const text = (ev.data?.text as string) ?? ''
     what = `💬 "${text}"`
+  } else if (ev.type === 'institution:proposed') {
+    const text = (ev.data?.text as string) ?? ''
+    what = `📜 Proposed: "${text}"`
+  } else if (ev.type === 'institution:voted') {
+    const choice = (ev.data?.choice as string) ?? 'vote'
+    what = `🗳️ Voted ${choice}`
+  } else if (ev.type === 'institution:sanctioned') {
+    const target = (ev.data?.targetName as string) ?? (ev.data?.targetId as string) ?? 'someone'
+    const from = (ev.data?.agentName as string) ?? ev.agentId ?? 'someone'
+    const why = (ev.data?.reason as string) ?? ''
+    what =
+      ev.agentId && ev.data?.targetId
+        ? `⚖️ ${from} sanctioned ${target}: "${why}"`
+        : `⚖️ Sanction: "${why}"`
+  } else if (ev.type === 'institution:claimed') {
+    const kind = (ev.data?.placeKind as string) ?? 'place'
+    what = `🏷️ Claimed the ${kind}`
+  } else if (ev.type === 'institution:closed') {
+    const status = (ev.data?.status as string) ?? 'closed'
+    const yes = (ev.data?.yes as number) ?? 0
+    const no = (ev.data?.no as number) ?? 0
+    what = `🗳️ Proposal ${status} (${yes}–${no})`
   }
   const reason = ev.reason && ev.type === 'action:start' ? ` — ${ev.reason}` : ''
   return { tick: ev.tick, text: `${when} — ${what}${reason}` }
@@ -247,9 +277,15 @@ export function Inspector(props: {
         (e.type === 'action:start' ||
           e.type === 'action:end' ||
           e.type === 'need:critical' ||
-          e.type === 'mind:say') &&
+          e.type === 'mind:say' ||
+          e.type === 'institution:proposed' ||
+          e.type === 'institution:voted' ||
+          e.type === 'institution:sanctioned' ||
+          e.type === 'institution:claimed' ||
+          e.type === 'institution:closed') &&
         (e.agentId === agent.id ||
-          (e.type === 'mind:say' && e.data?.partnerId === agent.id)),
+          (e.type === 'mind:say' && e.data?.partnerId === agent.id) ||
+          (e.type === 'institution:sanctioned' && e.data?.targetId === agent.id)),
     )
     .slice()
     .reverse()

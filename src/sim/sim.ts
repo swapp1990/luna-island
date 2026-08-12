@@ -39,10 +39,13 @@ import type {
   Needs,
   OwnerId,
   Place,
+  Proposal,
   Rng,
+  Rule,
   SayRecord,
   SimEvent,
   Tick,
+  VoteChoice,
   WorldState,
 } from './types'
 import { emptyInventory } from './types'
@@ -73,6 +76,31 @@ const HAUL_SIZE = 5
 const BUY_MAX_UNITS = 2
 /** Commission cost (agent → treasury) for a private home. */
 const COMMISSION_COST = 30
+/** Civic fees (agent → treasury). */
+export const PROPOSE_COST = 2
+export const SANCTION_COST = 1
+export const CLAIM_COST = 15
+/** Proposal stays open this many ticks (one sim day). */
+export const PROPOSAL_WINDOW_TICKS = 1440
+/** Mechanical island-wide cap on simultaneous open proposals. */
+export const MAX_OPEN_PROPOSALS = 2
+/** Passage requires yes > no AND at least this many votes. */
+export const PROPOSAL_QUORUM = 8
+/** Sheep vote yes when sympathy toward the proposer is at least this. */
+export const SHEEP_SYMPATHY_YES = 0.25
+/**
+ * Luna mind agent ids — sheep are everyone else.
+ * Must stay aligned with LUNA_AGENT_IDS in src/mind/personas.ts.
+ * Kept here so src/sim never imports the mind layer.
+ */
+const LUNA_MIND_IDS: ReadonlySet<string> = new Set([
+  'agent-0',
+  'agent-1',
+  'agent-2',
+  'agent-4',
+  'agent-8',
+  'agent-11',
+])
 /** Worked ticks to complete a house (progress += 1/N per tick). */
 const CONSTRUCTION_TICKS = 900
 /** Worked ticks between each 1-unit material consume on a site. */
@@ -175,7 +203,58 @@ function cloneIntent(intent: Intent): Intent {
     targetX: intent.targetX,
     targetY: intent.targetY,
     reason: intent.reason,
+    text: intent.text,
+    proposalId: intent.proposalId,
+    choice: intent.choice,
+    targetAgentId: intent.targetAgentId,
+    ruleId: intent.ruleId,
   }
+}
+
+function cloneProposal(p: Proposal): Proposal {
+  return {
+    id: p.id,
+    proposerId: p.proposerId,
+    text: p.text,
+    createdTick: p.createdTick,
+    closesTick: p.closesTick,
+    votes: { ...p.votes },
+    status: p.status,
+  }
+}
+
+function cloneRule(r: Rule): Rule {
+  return {
+    id: r.id,
+    text: r.text,
+    proposerId: r.proposerId,
+    enactedTick: r.enactedTick,
+    active: r.active,
+  }
+}
+
+function cloneProposals(list: Proposal[] | undefined): Proposal[] {
+  if (!list || list.length === 0) return []
+  return list.map(cloneProposal)
+}
+
+function cloneRules(list: Rule[] | undefined): Rule[] {
+  if (!list || list.length === 0) return []
+  return list.map(cloneRule)
+}
+
+export function proposalTally(p: Proposal): { yes: number; no: number; total: number } {
+  let yes = 0
+  let no = 0
+  for (const choice of Object.values(p.votes)) {
+    if (choice === 'yes') yes++
+    else if (choice === 'no') no++
+  }
+  return { yes, no, total: yes + no }
+}
+
+export function isSheepAgent(agentId: string): boolean {
+  return !LUNA_MIND_IDS.has(agentId)
 }
 
 function cloneExternalMeta(meta: ExternalIntentMeta): ExternalIntentMeta {
@@ -272,15 +351,19 @@ function deepCloneWorld(state: WorldState): WorldState {
     mindNoteLog: cloneMindNoteLog(state.mindNoteLog),
     sayLog: cloneSayLog(state.sayLog),
     mindStats: cloneMindStats(state.mindStats),
+    proposals: cloneProposals(state.proposals),
+    rules: cloneRules(state.rules),
   }
 }
 
-/** Ensure older snapshots / v1–v3 saves have the Phase-3 mind fields. */
+/** Ensure older snapshots / v1–v4 saves have mind + institution fields. */
 export function ensureMindFields(state: WorldState): void {
   if (!state.externalIntentLog) state.externalIntentLog = []
   if (!state.mindNoteLog) state.mindNoteLog = []
   if (!state.sayLog) state.sayLog = []
   if (!state.mindStats) state.mindStats = {}
+  if (!state.proposals) state.proposals = []
+  if (!state.rules) state.rules = []
 }
 
 /** Ordered pair key for sympathy streak / met maps. */
@@ -893,6 +976,405 @@ export class Simulation {
       reason,
     })
     return true
+  }
+
+  private openProposals(): Proposal[] {
+    ensureMindFields(this.state)
+    return this.state.proposals.filter((p) => p.status === 'open')
+  }
+
+  /**
+   * Post a proposal: 2 coins proposer→treasury, one open per proposer,
+   * max 2 open island-wide. Refusal is a no-op with an honest event.
+   */
+  propose(agentId: string, text: string): boolean {
+    ensureMindFields(this.state)
+    const agent = this.state.agents.find((a) => a.id === agentId)
+    if (!agent) return false
+    const clipped = String(text ?? '').trim().slice(0, 200)
+    if (clipped.length === 0) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:propose-refused',
+        agentId,
+        data: { agentName: agent.name, why: 'empty-text' },
+        reason: `${agent.name} tried to propose with no text`,
+      })
+      return false
+    }
+    const open = this.openProposals()
+    if (open.some((p) => p.proposerId === agentId)) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:propose-refused',
+        agentId,
+        data: { agentName: agent.name, why: 'already-open', text: clipped },
+        reason: `${agent.name} already has an open proposal`,
+      })
+      return false
+    }
+    if (open.length >= MAX_OPEN_PROPOSALS) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:propose-refused',
+        agentId,
+        data: { agentName: agent.name, why: 'island-full', text: clipped },
+        reason: `${agent.name} could not propose — the board already has ${MAX_OPEN_PROPOSALS} open proposals`,
+      })
+      return false
+    }
+    if (agent.wallet < PROPOSE_COST) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:propose-refused',
+        agentId,
+        data: { agentName: agent.name, why: 'cannot-afford', text: clipped, cost: PROPOSE_COST },
+        reason: `${agent.name} could not afford the ${PROPOSE_COST}-coin proposal fee`,
+      })
+      return false
+    }
+    const paid = this.transferCoins(
+      agentId,
+      'treasury',
+      PROPOSE_COST,
+      `${agent.name} paid ${PROPOSE_COST} coins to post a proposal`,
+      { kind: 'propose' },
+    )
+    if (!paid) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:propose-refused',
+        agentId,
+        data: { agentName: agent.name, why: 'transfer-failed', text: clipped },
+        reason: `${agent.name} could not pay the proposal fee`,
+      })
+      return false
+    }
+    const id = `prop-${agentId}-${this.state.tick}`
+    const proposal: Proposal = {
+      id,
+      proposerId: agentId,
+      text: clipped,
+      createdTick: this.state.tick,
+      closesTick: this.state.tick + PROPOSAL_WINDOW_TICKS,
+      votes: {},
+      status: 'open',
+    }
+    this.state.proposals.push(proposal)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'institution:proposed',
+      agentId,
+      data: {
+        proposalId: id,
+        text: clipped,
+        proposerId: agentId,
+        agentName: agent.name,
+        closesTick: proposal.closesTick,
+        firstProposal: this.state.proposals.length === 1,
+      },
+      reason: `${agent.name} proposed: "${clipped}"`,
+    })
+    return true
+  }
+
+  /**
+   * Record one vote per villager per proposal, only while open.
+   * `sheep` marks electorate votes (world process) vs mind/intent votes.
+   */
+  vote(agentId: string, proposalId: string, choice: VoteChoice, sheep = false): boolean {
+    ensureMindFields(this.state)
+    const agent = this.state.agents.find((a) => a.id === agentId)
+    if (!agent) return false
+    if (choice !== 'yes' && choice !== 'no') {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:vote-refused',
+        agentId,
+        data: { agentName: agent.name, proposalId, why: 'bad-choice' },
+        reason: `${agent.name} tried to cast an invalid vote`,
+      })
+      return false
+    }
+    const proposal = this.state.proposals.find((p) => p.id === proposalId)
+    if (!proposal) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:vote-refused',
+        agentId,
+        data: { agentName: agent.name, proposalId, why: 'missing' },
+        reason: `${agent.name} voted on a proposal that does not exist`,
+      })
+      return false
+    }
+    if (proposal.status !== 'open') {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:vote-refused',
+        agentId,
+        data: { agentName: agent.name, proposalId, why: 'closed', status: proposal.status },
+        reason: `${agent.name} voted after the proposal closed`,
+      })
+      return false
+    }
+    if (proposal.votes[agentId] !== undefined) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:vote-refused',
+        agentId,
+        data: { agentName: agent.name, proposalId, why: 'already-voted' },
+        reason: `${agent.name} already voted on this proposal`,
+      })
+      return false
+    }
+    proposal.votes[agentId] = choice
+    this.events.append({
+      tick: this.state.tick,
+      type: 'institution:voted',
+      agentId,
+      data: {
+        proposalId,
+        choice,
+        agentName: agent.name,
+        sheep,
+      },
+      reason: `${agent.name} voted ${choice} on "${proposal.text}"`,
+    })
+    return true
+  }
+
+  /**
+   * Public censure: 1 coin sanctioner→treasury. No mechanical effect on the target.
+   */
+  sanction(agentId: string, targetId: string, reason: string, ruleId?: string): boolean {
+    ensureMindFields(this.state)
+    const agent = this.state.agents.find((a) => a.id === agentId)
+    if (!agent) return false
+    const clipped = String(reason ?? '').trim().slice(0, 120)
+    if (clipped.length === 0) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:sanction-refused',
+        agentId,
+        data: { agentName: agent.name, targetId, why: 'empty-reason' },
+        reason: `${agent.name} tried to sanction with no reason`,
+      })
+      return false
+    }
+    const target = this.state.agents.find((a) => a.id === targetId)
+    if (!target) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:sanction-refused',
+        agentId,
+        data: { agentName: agent.name, targetId, why: 'missing-target' },
+        reason: `${agent.name} sanctioned someone who is not here`,
+      })
+      return false
+    }
+    if (agent.wallet < SANCTION_COST) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:sanction-refused',
+        agentId,
+        data: {
+          agentName: agent.name,
+          targetId,
+          targetName: target.name,
+          why: 'cannot-afford',
+          cost: SANCTION_COST,
+        },
+        reason: `${agent.name} could not afford the ${SANCTION_COST}-coin sanction fee`,
+      })
+      return false
+    }
+    const paid = this.transferCoins(
+      agentId,
+      'treasury',
+      SANCTION_COST,
+      `${agent.name} paid ${SANCTION_COST} coin to post a sanction`,
+      { kind: 'sanction' },
+    )
+    if (!paid) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:sanction-refused',
+        agentId,
+        data: { agentName: agent.name, targetId, targetName: target.name, why: 'transfer-failed' },
+        reason: `${agent.name} could not pay the sanction fee`,
+      })
+      return false
+    }
+    const cited = ruleId && String(ruleId).trim().length > 0 ? String(ruleId).trim() : undefined
+    this.events.append({
+      tick: this.state.tick,
+      type: 'institution:sanctioned',
+      agentId,
+      data: {
+        targetId,
+        targetName: target.name,
+        agentName: agent.name,
+        reason: clipped,
+        ruleId: cited,
+      },
+      reason: `${agent.name} sanctioned ${target.name}: "${clipped}"`,
+    })
+    return true
+  }
+
+  /**
+   * Privatize a commons place: 15 coins claimer→treasury, then transferOwnership.
+   */
+  claim(agentId: string, placeId: string): boolean {
+    ensureMindFields(this.state)
+    const agent = this.state.agents.find((a) => a.id === agentId)
+    if (!agent) return false
+    const place = this.state.places.find((p) => p.id === placeId)
+    if (!place) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:claim-refused',
+        agentId,
+        data: { agentName: agent.name, placeId, why: 'missing-place' },
+        reason: `${agent.name} tried to claim a place that does not exist`,
+      })
+      return false
+    }
+    const owner = this.state.owners[placeId] ?? 'commons'
+    if (owner !== 'commons') {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:claim-refused',
+        agentId,
+        data: {
+          agentName: agent.name,
+          placeId,
+          placeKind: place.kind,
+          why: 'not-commons',
+          owner,
+        },
+        reason: `${agent.name} cannot claim ${place.kind} ${placeId} — it is not commons`,
+      })
+      return false
+    }
+    if (agent.wallet < CLAIM_COST) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:claim-refused',
+        agentId,
+        data: {
+          agentName: agent.name,
+          placeId,
+          placeKind: place.kind,
+          why: 'cannot-afford',
+          cost: CLAIM_COST,
+        },
+        reason: `${agent.name} could not afford the ${CLAIM_COST}-coin claim fee`,
+      })
+      return false
+    }
+    const paid = this.transferCoins(
+      agentId,
+      'treasury',
+      CLAIM_COST,
+      `${agent.name} paid ${CLAIM_COST} coins to claim ${place.kind} ${placeId}`,
+      { kind: 'claim', placeId },
+    )
+    if (!paid) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:claim-refused',
+        agentId,
+        data: { agentName: agent.name, placeId, placeKind: place.kind, why: 'transfer-failed' },
+        reason: `${agent.name} could not pay the claim fee`,
+      })
+      return false
+    }
+    const transferred = this.transferOwnership(placeId, agentId, 'claimed it')
+    if (!transferred) {
+      // Fee already paid — fee is the mechanics; ownership no-op is honest.
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:claim-refused',
+        agentId,
+        data: { agentName: agent.name, placeId, placeKind: place.kind, why: 'ownership-unchanged' },
+        reason: `${agent.name} paid to claim ${place.kind} ${placeId} but ownership did not change`,
+      })
+      return false
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'institution:claimed',
+      agentId,
+      data: {
+        placeId,
+        placeKind: place.kind,
+        agentName: agent.name,
+      },
+      reason: `${agent.name} claimed the ${place.kind}`,
+    })
+    return true
+  }
+
+  /**
+   * Sheep electorate: at 18:00, every sheep votes on each open proposal
+   * they have not voted on. yes if sympathy toward proposer ≥ 0.25.
+   * Agent-index order, then proposal array order.
+   */
+  private stepSheepElectorate(): void {
+    ensureMindFields(this.state)
+    const open = this.openProposals()
+    if (open.length === 0) return
+    for (const agent of this.state.agents) {
+      if (!isSheepAgent(agent.id)) continue
+      for (const proposal of open) {
+        if (proposal.status !== 'open') continue
+        if (proposal.votes[agent.id] !== undefined) continue
+        const sympathy = agent.sympathy?.[proposal.proposerId] ?? 0
+        const choice: VoteChoice = sympathy >= SHEEP_SYMPATHY_YES ? 'yes' : 'no'
+        this.vote(agent.id, proposal.id, choice, true)
+      }
+    }
+  }
+
+  /** Close proposals whose window has ended. Passed → append to world.rules. */
+  private closeExpiredProposals(): void {
+    ensureMindFields(this.state)
+    const tick = this.state.tick
+    for (const proposal of this.state.proposals) {
+      if (proposal.status !== 'open') continue
+      if (tick < proposal.closesTick) continue
+      const tally = proposalTally(proposal)
+      const passed = tally.yes > tally.no && tally.total >= PROPOSAL_QUORUM
+      proposal.status = passed ? 'passed' : 'failed'
+      if (passed) {
+        this.state.rules.push({
+          id: proposal.id,
+          text: proposal.text,
+          proposerId: proposal.proposerId,
+          enactedTick: tick,
+          active: true,
+        })
+      }
+      const firstRule = passed && this.state.rules.filter((r) => r.active).length === 1
+      this.events.append({
+        tick,
+        type: 'institution:closed',
+        agentId: proposal.proposerId,
+        data: {
+          proposalId: proposal.id,
+          status: proposal.status,
+          yes: tally.yes,
+          no: tally.no,
+          total: tally.total,
+          text: proposal.text,
+          firstRule,
+        },
+        reason: passed
+          ? `Proposal passed (${tally.yes}–${tally.no})`
+          : `Proposal failed (${tally.yes}–${tally.no})`,
+      })
+    }
   }
 
   private coinBalance(party: CoinParty): number {
@@ -2034,6 +2516,55 @@ export class Simulation {
       return
     }
 
+    // Instant civic acts: world mechanism, then idle
+    if (kind === 'propose' || kind === 'vote' || kind === 'sanction' || kind === 'claim') {
+      let ok = false
+      if (kind === 'propose') {
+        ok = this.propose(agent.id, intent.text ?? '')
+      } else if (kind === 'vote') {
+        const choice = intent.choice === 'no' ? 'no' : intent.choice === 'yes' ? 'yes' : null
+        ok = choice != null && this.vote(agent.id, intent.proposalId ?? '', choice)
+      } else if (kind === 'sanction') {
+        ok = this.sanction(
+          agent.id,
+          intent.targetAgentId ?? '',
+          intent.text ?? '',
+          intent.ruleId,
+        )
+      } else {
+        ok = this.claim(agent.id, intent.targetPlaceId ?? '')
+      }
+      this.events.append({
+        tick: this.state.tick,
+        type: 'action:start',
+        agentId: agent.id,
+        data: {
+          kind,
+          target:
+            intent.proposalId ??
+            intent.targetAgentId ??
+            targetPlaceId ??
+            intent.text ??
+            '',
+          agentName: agent.name,
+          ok,
+          choice: intent.choice,
+          text: intent.text,
+          ruleId: intent.ruleId,
+        },
+        reason,
+      })
+      agent.action = {
+        kind: 'idle',
+        reason: ok ? `Finished ${kind}` : `Could not ${kind}`,
+      }
+      agent.actionTicks = 0
+      agent.pathIndex = 0
+      agent.actionStartNeeds = cloneNeeds(agent.needs)
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+
     // Bed slots: shared-home residents sleep on distinct deterministic tiles
     if (kind === 'sleep' && place && place.kind === 'home') {
       const bed = bedSlotForAgent(this.state, agent, place)
@@ -2140,6 +2671,8 @@ export class Simulation {
     // Wage day at 18:00: treasury → employees (partial if insolvent)
     if (prev.hour === 17 && next.hour === 18) {
       this.stepWagePayments()
+      // Sheep electorate: same 18:00 world-process beat (not a brain decision)
+      this.stepSheepElectorate()
     }
 
     // Hourly: recompute stall price + append economy stats
@@ -2152,6 +2685,9 @@ export class Simulation {
     this.applyExternalIntentsForTick()
     this.applyMindNotesForTick()
     this.applySaysForTick()
+
+    // Close after last-second mind votes on this tick
+    this.closeExpiredProposals()
 
     this.stepAgents()
     this.stepSympathy()
@@ -2467,6 +3003,11 @@ export class Simulation {
           targetPlaceId: intent.targetPlaceId,
           targetX: intent.targetX,
           targetY: intent.targetY,
+          text: intent.text,
+          proposalId: intent.proposalId,
+          choice: intent.choice,
+          targetAgentId: intent.targetAgentId,
+          ruleId: intent.ruleId,
         },
         reasoning: meta.reasoning,
         source: 'luna',

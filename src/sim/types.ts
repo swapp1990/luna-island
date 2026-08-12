@@ -108,6 +108,36 @@ export type ActionKind =
   | 'work'
   | 'buy'
   | 'commission'
+  | 'propose'
+  | 'vote'
+  | 'sanction'
+  | 'claim'
+
+export type VoteChoice = 'yes' | 'no'
+export type ProposalStatus = 'open' | 'passed' | 'failed'
+
+/** Posted civic proposal. Tallies are public facts. */
+export interface Proposal {
+  id: string
+  proposerId: string
+  text: string
+  createdTick: Tick
+  closesTick: Tick
+  votes: Record<string, VoteChoice>
+  status: ProposalStatus
+}
+
+/**
+ * Posted rule. Display / observation data ONLY — action mechanics must never
+ * read `text` (or otherwise consult a rule) to allow, block, or alter an act.
+ */
+export interface Rule {
+  id: string
+  text: string
+  proposerId: string
+  enactedTick: Tick
+  active: boolean
+}
 
 /** Mid-work haul phases (mechanical, not a brain script). */
 export type WorkPhase = 'tend' | 'hauling' | 'returning'
@@ -271,6 +301,13 @@ export interface WorldState {
   sayLog: SayRecord[]
   /** Sparse per-agent mind counters (optional; empty object when none). */
   mindStats: Record<string, AgentMindStats>
+  /** Open + closed civic proposals (v5). */
+  proposals: Proposal[]
+  /**
+   * Standing rules registry (v5). Observation/display only — never consulted
+   * by action mechanics.
+   */
+  rules: Rule[]
 }
 
 export interface SimEvent {
@@ -291,6 +328,16 @@ export interface Intent {
   targetX?: number
   targetY?: number
   reason: string
+  /** Proposal text (propose) or public censure text (sanction). */
+  text?: string
+  /** Proposal id (vote). */
+  proposalId?: string
+  /** Vote choice. */
+  choice?: VoteChoice
+  /** Sanction target agent id. */
+  targetAgentId?: string
+  /** Optional rule id cited by a sanction (display only). */
+  ruleId?: string
 }
 
 /** THE brain seam. UtilityBrain (Phase 1) and LunaBrain (Phase 3, LLM) both implement this. */
