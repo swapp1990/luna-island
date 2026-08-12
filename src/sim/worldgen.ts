@@ -1,5 +1,33 @@
 import { createRng } from './rng'
-import { emptyInventory, type Place, type TerrainKind, type Tile, type WorldState } from './types'
+import {
+  emptyInventory,
+  type Place,
+  type TerrainKind,
+  type Tile,
+  type WorldPreset,
+  type WorldState,
+} from './types'
+
+/** Fact sheet per preset — same rules, different numbers. */
+export const PRESET_FACTS = {
+  default: { bushes: 10, bushRegrowInterval: 100, farmYield: 14, spawnFood: 4 },
+  lean: { bushes: 6, bushRegrowInterval: 300, farmYield: 8, spawnFood: 2 },
+} as const
+
+export function resolveWorldPreset(preset?: WorldPreset | string): WorldPreset {
+  return preset === 'lean' ? 'lean' : 'default'
+}
+
+export interface PresetFacts {
+  bushes: number
+  bushRegrowInterval: number
+  farmYield: number
+  spawnFood: number
+}
+
+export function presetFacts(preset?: WorldPreset | string): PresetFacts {
+  return PRESET_FACTS[resolveWorldPreset(preset)]
+}
 
 const WIDTH = 48
 const HEIGHT = 48
@@ -189,7 +217,9 @@ function markPathCorridor(tiles: Tile[], plazaX: number, plazaY: number, places:
   }
 }
 
-export function generateWorld(seed: number): WorldState {
+export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
+  const resolved = resolveWorldPreset(preset)
+  const facts = presetFacts(resolved)
   const rng = createRng(seed)
   // Derive noise salts from rng so seed fully controls island
   const elevSalt = (rng.int(0xffffffff) ^ (seed * 0x9e3779b9)) >>> 0
@@ -237,6 +267,7 @@ export function generateWorld(seed: number): WorldState {
       mindStats: {},
       proposals: [],
       rules: [],
+      preset: resolved,
     }
   }
 
@@ -540,8 +571,8 @@ export function generateWorld(seed: number): WorldState {
         jobSlots: 2,
         wage: 6,
         growth: 0,
-        // Food-balance guard (Dispatch K): yield 14 (allowed 12; still ≫10 collapses).
-        production: { good: 'food', cycleWorkedTicks: 1440, yield: 14 },
+        // Food-balance guard (Dispatch K): yield 14 default / 8 lean.
+        production: { good: 'food', cycleWorkedTicks: 1440, yield: facts.farmYield },
         inventory: emptyInventory(),
       })
       farmCount++
@@ -733,7 +764,7 @@ export function generateWorld(seed: number): WorldState {
     }
   }
 
-  // 10 berry-bushes on grass/forest, 4–12 tiles from plaza (was 8; K food-balance)
+  // Berry-bushes on grass/forest, 4–12 tiles from plaza (10 default / 6 lean)
   const bushCandidates: Array<[number, number]> = []
   for (let y = 0; y < HEIGHT; y++) {
     for (let x = 0; x < WIDTH; x++) {
@@ -755,7 +786,7 @@ export function generateWorld(seed: number): WorldState {
   }
   let bushCount = 0
   for (const [bx, by] of bushCandidates) {
-    if (bushCount >= 10) break
+    if (bushCount >= facts.bushes) break
     let tooClose = false
     for (const p of places) {
       if (p.kind !== 'berry-bush') continue
@@ -801,5 +832,6 @@ export function generateWorld(seed: number): WorldState {
     mindStats: {},
     proposals: [],
     rules: [],
+    preset: resolved,
   }
 }

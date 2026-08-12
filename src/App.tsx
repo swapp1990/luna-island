@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Simulation } from './sim/sim'
 import { dayStartTick, toSimTime } from './sim/time'
-import { serializeSave, restoreSave, SaveFormatError } from './sim/persist'
+import {
+  serializeSave,
+  serializeStory,
+  restoreSave,
+  SaveFormatError,
+} from './sim/persist'
 import {
   loadAutosave,
   putAutosave,
@@ -36,6 +41,7 @@ import type {
   Proposal,
   Rule,
   SimEvent,
+  WorldPreset,
 } from './sim/types'
 
 const DEFAULT_SEED = 42
@@ -364,11 +370,27 @@ export function App() {
             apiRef.current?.syncFromLoop()
           },
           saveNow: () => apiRef.current?.performSave() ?? Promise.resolve(false),
-          newWorld: (seed: number) => {
+          newWorld: (seed: number, preset?: WorldPreset) => {
             void (async () => {
               await clearAutosave()
-              apiRef.current?.mountWorld(new Simulation(seed))
+              apiRef.current?.mountWorld(new Simulation(seed, { preset }))
             })()
+          },
+          exportWorldJson: () => {
+            const live = liveRef.current
+            if (!live) return ''
+            return JSON.stringify(serializeSave(live))
+          },
+          exportStoryJson: () => {
+            const live = liveRef.current
+            if (!live) return JSON.stringify({
+              decisions: [],
+              reflections: [],
+              says: [],
+              sanctions: [],
+              proposals: [],
+            })
+            return JSON.stringify(serializeStory(live))
           },
           forceMindBudgetCooldown: (resetsInSec = 3600) => {
             const m = mindRef.current

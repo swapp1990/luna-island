@@ -992,3 +992,82 @@ describe('ticker mind rows (P3-2)', () => {
     )
   })
 })
+
+describe('P3-5 conversation headroom (flatline regression)', () => {
+  it('6 minds + wall-delay + 2 sim-days at 1×: conversations start after day 1', async () => {
+    const WALL = 8
+    const provider = new MockProvider({ wallDelayFrames: WALL })
+    let now = 1_000_000
+    const mind = new LunaBrainService('mock', {
+      provider,
+      concurrency: 3,
+      wallFloorMs: 15_000,
+      now: () => now,
+    })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    const pinPairs = () => {
+      isolateAgents(sim, [
+        'agent-0',
+        'agent-1',
+        'agent-2',
+        'agent-3',
+        'agent-4',
+        'agent-5',
+      ])
+      forceSocialPair(sim, 'agent-0', 'agent-3')
+      const a = sim.state.agents.find((x) => x.id === 'agent-1')!
+      const b = sim.state.agents.find((x) => x.id === 'agent-5')!
+      const plaza = sim.state.places.find((p) => p.kind === 'plaza')!
+      a.x = plaza.x + 4
+      a.y = plaza.y
+      b.x = plaza.x + 5
+      b.y = plaza.y
+      a.action = {
+        kind: 'socialize',
+        targetPlaceId: plaza.id,
+        targetX: plaza.x + 4,
+        targetY: plaza.y,
+        reason: 'test socialize',
+      }
+      b.action = {
+        kind: 'socialize',
+        targetPlaceId: plaza.id,
+        targetX: plaza.x + 5,
+        targetY: plaza.y,
+        reason: 'test socialize',
+      }
+      a.action.path = undefined
+      b.action.path = undefined
+      a.pathIndex = 0
+      b.pathIndex = 0
+      a.needs = { hunger: 0.7, energy: 0.7, social: 0.45 }
+      b.needs = { hunger: 0.7, energy: 0.7, social: 0.45 }
+    }
+
+    const TWO_DAYS = 2 * 1440
+    for (let i = 0; i < TWO_DAYS; i++) {
+      pinPairs()
+      sim.advanceTicks(1)
+      mind.onAfterTick(sim)
+      provider.advanceWallFrame()
+      await Promise.resolve()
+      await Promise.resolve()
+      now += 1000
+    }
+
+    expect(sim.state.tick).toBeGreaterThanOrEqual(TWO_DAYS)
+    expect(mind.getMeter().decisions).toBeGreaterThan(10)
+
+    const saysAfterDay1 = sim
+      .getEvents()
+      .filter((e) => e.type === 'mind:say' && e.tick >= 1440)
+    const ids = new Set<string>()
+    for (const e of saysAfterDay1) {
+      const id = e.data?.conversationId
+      if (typeof id === 'string') ids.add(id)
+    }
+    expect(ids.size).toBeGreaterThanOrEqual(3)
+  })
+})

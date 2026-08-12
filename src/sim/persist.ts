@@ -38,6 +38,46 @@ export class SaveFormatError extends Error {
   }
 }
 
+/** Qualitative story extract — full texts/reasonings from the event trace. */
+export interface StoryExport {
+  decisions: Array<Record<string, unknown>>
+  reflections: Array<Record<string, unknown>>
+  says: Array<Record<string, unknown>>
+  sanctions: Array<Record<string, unknown>>
+  proposals: Array<Record<string, unknown>>
+}
+
+function storyRow(e: SimEvent): Record<string, unknown> {
+  return {
+    seq: e.seq,
+    tick: e.tick,
+    type: e.type,
+    agentId: e.agentId,
+    reason: e.reason,
+    ...(e.data ?? {}),
+  }
+}
+
+/**
+ * Pull the qualitative record out of the event trace for harness analysis.
+ * Full decision reasonings, reflection notes, say texts, sanction/proposal copy.
+ */
+export function serializeStory(sim: Simulation): StoryExport {
+  const decisions: StoryExport['decisions'] = []
+  const reflections: StoryExport['reflections'] = []
+  const says: StoryExport['says'] = []
+  const sanctions: StoryExport['sanctions'] = []
+  const proposals: StoryExport['proposals'] = []
+  for (const e of sim.getEvents()) {
+    if (e.type === 'mind:decision') decisions.push(storyRow(e))
+    else if (e.type === 'mind:reflection') reflections.push(storyRow(e))
+    else if (e.type === 'mind:say') says.push(storyRow(e))
+    else if (e.type === 'institution:sanctioned') sanctions.push(storyRow(e))
+    else if (e.type === 'institution:proposed') proposals.push(storyRow(e))
+  }
+  return { decisions, reflections, says, sanctions, proposals }
+}
+
 function cloneEvent(e: SimEvent): SimEvent {
   return { ...e, data: e.data ? { ...e.data } : undefined }
 }

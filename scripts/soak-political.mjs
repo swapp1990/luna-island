@@ -4,7 +4,7 @@
  * consciously raised mind budgets. Appends a JSONL journal and prints
  * notable civic/mind events to stdout for the orchestrator's monitor.
  *
- * Usage: node scripts/soak-political.mjs [--minutes 120] [--port 5178] [--seed 42]
+ * Usage: node scripts/soak-political.mjs [--minutes 120] [--port 5178] [--seed 42] [--preset lean]
  */
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -18,6 +18,7 @@ const arg = (name, dflt) => {
 const MINUTES = Number(arg('minutes', '120'))
 const PORT = Number(arg('port', '5178'))
 const SEED = Number(arg('seed', '42'))
+const PRESET = arg('preset', 'default') === 'lean' ? 'lean' : 'default'
 const JOURNAL = path.resolve('artifacts', `soak-political-${Date.now()}.jsonl`)
 fs.mkdirSync('artifacts', { recursive: true })
 
@@ -84,11 +85,14 @@ try {
   await page.goto(`http://127.0.0.1:${PORT}/?brain=codex`)
   await page.waitForFunction(() => window.__simState?.ready, null, { timeout: 30000 })
 
-  await page.evaluate((seed) => window.__simControl.newWorld(seed), SEED)
+  await page.evaluate(({ seed, preset }) => window.__simControl.newWorld(seed, preset), {
+    seed: SEED,
+    preset: PRESET,
+  })
   await page.waitForFunction(() => window.__simState?.ready && window.__simState.tick < 100, null, { timeout: 30000 })
   await page.evaluate(() => window.__simControl.setSpeed(1))
   const provider = await page.evaluate(() => window.__simState.mind.provider)
-  log(`world ${SEED} live at 1x, provider=${provider}, minds=6, soaking ${MINUTES}min → ${JOURNAL}`)
+  log(`world ${SEED} preset=${PRESET} live at 1x, provider=${provider}, minds=6, soaking ${MINUTES}min → ${JOURNAL}`)
   if (provider !== 'codex') log('WARNING: provider is not codex — aborting')
   if (provider !== 'codex') await shutdown(2)
 
@@ -118,8 +122,18 @@ try {
     log(`t+${snap.wallMin}m D${snap.day} ${snap.hour}:${String(snap.minute).padStart(2, '0')} decisions=${snap.mind.decisions} say=${snap.counts['mind:say'] || 0} budgetH=${snap.mind.budgetH}`)
   }
 
-  log('soak window complete — saving world')
-  await page.evaluate(async () => { window.__simControl.pause(); await window.__simControl.saveNow() })
+  log('soak window complete — exporting world + story, then IDB save')
+  await page.evaluate(() => window.__simControl.pause())
+  const exportTs = Date.now()
+  const worldJson = await page.evaluate(() => window.__simControl.exportWorldJson())
+  const storyJson = await page.evaluate(() => window.__simControl.exportStoryJson())
+  const worldPath = path.resolve('artifacts', `soak-${exportTs}-world.json`)
+  const storyPath = path.resolve('artifacts', `soak-${exportTs}-story.json`)
+  fs.writeFileSync(worldPath, worldJson)
+  fs.writeFileSync(storyPath, storyJson)
+  log(`wrote ${worldPath}`)
+  log(`wrote ${storyPath}`)
+  await page.evaluate(async () => { await window.__simControl.saveNow() })
   const finale = await page.evaluate((civic) => window.__simControl.countEventTypes(civic), CIVIC)
   log(`FINAL ${JSON.stringify(finale)}`)
   log(`journal: ${JOURNAL}`)

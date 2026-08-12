@@ -1,5 +1,8 @@
 export type Tick = number // 1 tick = 1 sim minute; 1440 ticks = 1 day
 
+/** World-gen intensity. Same rules; lean is a harsher fact sheet. */
+export type WorldPreset = 'default' | 'lean'
+
 export interface SimTime { day: number; hour: number; minute: number; tick: Tick }
 
 export type TerrainKind = 'water' | 'sand' | 'grass' | 'forest' | 'rock'
@@ -268,6 +271,10 @@ export interface WorldState {
   tiles: Tile[] // row-major, length = width*height
   places: Place[]
   agents: AgentState[]
+  /**
+   * World-gen preset (v5 additive). Missing on older saves → treat as 'default'.
+   */
+  preset?: WorldPreset
   /** Village commons wallet. */
   treasury: number
   /** Ownership registry: every place → agent id or 'commons'. */

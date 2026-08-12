@@ -1,6 +1,6 @@
 import { createRng } from './rng'
 import { EventTrace } from './events'
-import { generateWorld } from './worldgen'
+import { generateWorld, presetFacts } from './worldgen'
 import { dayStartTick, toSimTime } from './time'
 import { fnv1aHex, stableStringify } from './stableStringify'
 import { spawnAgents } from './spawn'
@@ -46,6 +46,7 @@ import type {
   SimEvent,
   Tick,
   VoteChoice,
+  WorldPreset,
   WorldState,
 } from './types'
 import { emptyInventory } from './types'
@@ -61,8 +62,6 @@ const EAT_MAX_UNITS = 2
 const FORAGE_TICKS_PER_UNIT = 5
 const FORAGE_CARRY_CAP = 3
 const BUSH_STOCK_MAX = 6
-/** Bush regrowth interval (was 240; K food-balance). */
-const BUSH_REGROW_INTERVAL = 100
 const DRINK_DURATION = 5
 const MOVE_SPEED = 1.0 // tiles per tick
 const COLLAPSE_MOVE_FACTOR = 0.4
@@ -342,6 +341,7 @@ function deepCloneWorld(state: WorldState): WorldState {
     tiles: state.tiles.map((t) => ({ ...t })),
     places: state.places.map(deepClonePlace),
     agents: state.agents.map(deepCloneAgent),
+    preset: state.preset ?? 'default',
     treasury: state.treasury,
     owners: { ...state.owners },
     stats: state.stats.map((s) => ({ ...s })),
@@ -364,6 +364,7 @@ export function ensureMindFields(state: WorldState): void {
   if (!state.mindStats) state.mindStats = {}
   if (!state.proposals) state.proposals = []
   if (!state.rules) state.rules = []
+  if (!state.preset) state.preset = 'default'
 }
 
 /** Ordered pair key for sympathy streak / met maps. */
@@ -562,6 +563,7 @@ export class Simulation {
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
+      preset?: WorldPreset
     },
   )
   constructor(
@@ -576,6 +578,7 @@ export class Simulation {
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
+      preset?: WorldPreset
     },
   ) {
     this.snapshots = opts?.snapshots ?? new SnapshotStore()
@@ -597,7 +600,7 @@ export class Simulation {
       ensureMindFields(this.state)
       if (opts.rngState !== undefined) this.rng.setState(opts.rngState)
     } else {
-      this.state = generateWorld(seed)
+      this.state = generateWorld(seed, opts?.preset)
       // Agent rng starts fresh from seed (worldgen uses its own internal rng from seed)
       this.rng = createRng(seed)
       spawnAgents(this.state, this.rng)
@@ -605,7 +608,12 @@ export class Simulation {
         this.events.append({
           tick: 0,
           type: 'world:created',
-          data: { seed, width: this.state.width, height: this.state.height },
+          data: {
+            seed,
+            width: this.state.width,
+            height: this.state.height,
+            preset: this.state.preset ?? 'default',
+          },
         })
         this.events.append({
           tick: 0,
@@ -3020,10 +3028,11 @@ export class Simulation {
     })
   }
 
-  /** World process: +1 food per bush every 240 ticks, capped at 6. */
+  /** World process: +1 food per bush every N ticks (preset fact), capped at 6. */
   private stepBushRegrowth(): void {
     if (this.state.tick <= 0) return
-    if (this.state.tick % BUSH_REGROW_INTERVAL !== 0) return
+    const interval = presetFacts(this.state.preset).bushRegrowInterval
+    if (this.state.tick % interval !== 0) return
     for (const place of this.state.places) {
       if (place.kind !== 'berry-bush') continue
       const stock = place.inventory.food ?? 0
@@ -3622,6 +3631,7 @@ export class Simulation {
         intentPlayback: playback,
         notePlayback,
         sayPlayback,
+        preset: this.state.preset,
       })
       if (target > 0) fresh.advanceTicks(target)
       return fresh

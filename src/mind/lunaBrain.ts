@@ -141,6 +141,12 @@ export interface LunaBrainOptions {
    * continuation missed work. Tests stay off unless set true (must dispose).
    */
   safetySweep?: boolean
+  /**
+   * Test-only: never start NEW conversations (existing turns still run).
+   * Also set by `?noNewConversations=1` so drain e2e does not rely on
+   * production headroom.
+   */
+  suppressNewConversations?: boolean
 }
 
 interface PendingHold {
@@ -289,14 +295,21 @@ export class LunaBrainService {
   private safetySweepTimer: ReturnType<typeof setInterval> | null = null
   /** Times the sweep actually dispatched or applied missed work. */
   private safetySweepHits = 0
+  /** Test/e2e: block new conversation starts (not in-progress turns). */
+  private readonly suppressNewConversations: boolean
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
     this.concurrency = resolveLunaConcurrency({ explicit: opts?.concurrency })
+    this.suppressNewConversations =
+      opts?.suppressNewConversations === true || noNewConversationsFromLocation()
+    const floorFromLoc = mindWallFloorMsFromLocation()
     this.wallFloorMs =
       opts?.wallFloorMs != null
         ? Math.max(0, Math.floor(opts.wallFloorMs))
-        : MIND_WALL_FLOOR_MS
+        : floorFromLoc != null
+          ? floorFromLoc
+          : MIND_WALL_FLOOR_MS
     this.nowFn = opts?.now ?? (() => Date.now())
     this.onPipelineChange = opts?.onPipelineChange ?? null
     const sweepDefault = typeof window !== 'undefined'
@@ -835,16 +848,13 @@ export class LunaBrainService {
 
   /** Start eligible pairs up to capacity (deterministic order). */
   private tryStartConversations(sim: Simulation): void {
-    // Only open new chats when the mind line is quiet. Otherwise mixed-society
-    // pairs re-seed forever and auto-breathe never restores high speed.
-    // In-flight / queued turns for *existing* conversations still progress above.
-    if (
-      this.queue.size() > 0 ||
-      this.activeDispatches.size > 0 ||
-      this.rateFloorWaiting
-    ) {
-      return
-    }
+    // Test-only: ?noNewConversations=1 (or explicit opt) forces the old
+    // quiet-line drain — production uses headroom instead.
+    if (this.suppressNewConversations) return
+    // Headroom: start when at most K−2 lanes are in flight (K=3 → ≤1 busy),
+    // always leaving a lane for decisions. Queue / rate-floor wait no longer
+    // block new chats. Speeds > 1× still suppress via allowNewConversations.
+    if (this.activeDispatches.size > this.concurrency - 2) return
     while (this.activeConvs.length < MAX_ACTIVE_CONVERSATIONS) {
       const busy = this.busyConversationAgentIds()
       const allowMindMind = this.mindMindActiveCount() < 1
@@ -860,9 +870,8 @@ export class LunaBrainService {
       const conv = startConversation(sim, pair.a, pair.b)
       this.activeConvs.push(conv)
       this.requestConversationTurn(sim, conv)
-      // One start per quiet tick — leave room for the first turn to schedule
-      // without immediately filling both slots over a busy rate window.
-      if (this.queue.size() > 0 || this.activeDispatches.size > 0) break
+      // At most one new conversation per tick (eligibility otherwise unchanged).
+      break
     }
   }
 
@@ -1917,4 +1926,26 @@ export function mockWallDelayMsFromLocation(): number {
  */
 export function mindConcurrencyFromLocation(): number {
   return resolveLunaConcurrency()
+}
+
+/** `?noNewConversations=1` — test-only quiet-line stand-in. */
+export function noNewConversationsFromLocation(): boolean {
+  if (typeof window === 'undefined') return false
+  const q = new URLSearchParams(window.location.search)
+  const raw = q.get('noNewConversations')
+  return raw === '1' || raw === 'true'
+}
+
+/**
+ * Optional rate-floor override from `?mindWallFloorMs=` (0 = unlimited).
+ * Unset → production default (15s).
+ */
+export function mindWallFloorMsFromLocation(): number | null {
+  if (typeof window === 'undefined') return null
+  const q = new URLSearchParams(window.location.search)
+  const raw = q.get('mindWallFloorMs')
+  if (raw == null || raw === '') return null
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return null
+  return Math.min(60_000, Math.floor(n))
 }

@@ -1,5 +1,6 @@
 import { isWalkable } from './pathfind'
 import { emptyInventory, type AgentState, type Place, type Rng, type WorldState } from './types'
+import { presetFacts } from './worldgen'
 
 /** Home tile + 8 neighbors — same order as bed slots in spots.ts. */
 const HOME_OFFSETS: Array<[number, number]> = [
@@ -145,7 +146,7 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
       pathIndex: 0,
       criticalFired: { hunger: false, energy: false, social: false },
       actionStartNeeds: { ...needs },
-      inventory: { ...emptyInventory(), food: 4 },
+      inventory: { ...emptyInventory(), food: presetFacts(world.preset).spawnFood },
       wallet: 20,
       collapsed: false,
       employedAt: null,

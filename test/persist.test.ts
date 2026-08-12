@@ -53,6 +53,17 @@ describe('persistence serialize/restore', () => {
     ).toThrow(SaveFormatError)
   })
 
+  it('exportWorldJson-equivalent JSON round-trip keeps state hash', () => {
+    const sim = new Simulation(42)
+    sim.advanceTicks(800)
+    const json = JSON.stringify(serializeSave(sim))
+    const restored = restoreSave(JSON.parse(json))
+    expect(restored.hash()).toBe(sim.hash())
+    expect(restored.state.tick).toBe(sim.state.tick)
+    const parsed = JSON.parse(json) as { formatVersion: number }
+    expect(parsed.formatVersion).toBe(SAVE_FORMAT_VERSION)
+  })
+
   it('restored sim can seek archived day (stateAt)', () => {
     const sim = new Simulation(42)
     // Cross into Day 2 so Day 1 is archived

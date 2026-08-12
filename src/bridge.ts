@@ -1,4 +1,4 @@
-import type { Intent } from './sim/types'
+import type { Intent, WorldPreset } from './sim/types'
 
 export type SimMode = 'live' | 'replay'
 
@@ -85,7 +85,14 @@ export interface SimControlBridge {
   /** Additive: force autosave now. Resolves true on success. */
   saveNow: () => Promise<boolean>
   /** Additive: wipe autosave and start a fresh world with the given seed. */
-  newWorld: (seed: number) => void
+  newWorld: (seed: number, preset?: WorldPreset) => void
+  /** Exact v5 save-format payload as a JSON string (no download dialog). */
+  exportWorldJson: () => string
+  /**
+   * Qualitative extract `{ decisions, reflections, says, sanctions, proposals }`
+   * with full texts/reasonings from the event trace.
+   */
+  exportStoryJson: () => string
   /**
    * Additive (e2e/dev): force mind budget cooldown + one mind:budget event.
    * Does not hit the sidecar.

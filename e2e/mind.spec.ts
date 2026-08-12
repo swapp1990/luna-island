@@ -179,7 +179,7 @@ test.describe.serial('lunabrain harness', () => {
     page,
   }) => {
     // mindWallMs forces async mock path so thinking/inFlight is observable (codex-like)
-    const url = '/?brain=mock&mindWallMs=1200'
+    const url = '/?brain=mock&mindWallMs=1200&noNewConversations=1'
     await page.goto(url)
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
