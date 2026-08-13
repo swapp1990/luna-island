@@ -11,6 +11,7 @@ const SELECTABLE_PLACE_KINDS = new Set([
   'well',
   'home',
   'construction-site',
+  'notice-board',
 ])
 
 export interface TerrainHandle {
@@ -1013,6 +1014,40 @@ function addPlace(
       slab.receiveShadow = true
       root.add(slab)
     }
+  } else if (place.kind === 'notice-board') {
+    const group = new THREE.Group()
+    group.position.set(place.x, 0, place.y)
+    if (plaza) {
+      const dx = plaza.x - place.x
+      const dz = plaza.y - place.y
+      group.rotation.y = Math.atan2(dx, dz)
+    }
+    const postGeo = track(new THREE.BoxGeometry(0.08, 0.85, 0.08))
+    const postMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 }),
+    )
+    const post = new THREE.Mesh(postGeo, postMat)
+    post.position.y = baseY + 0.42
+    post.castShadow = true
+    group.add(post)
+    const boardGeo = track(new THREE.BoxGeometry(0.55, 0.42, 0.04))
+    const boardMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x8b6914, roughness: 0.85 }),
+    )
+    const board = new THREE.Mesh(boardGeo, boardMat)
+    board.position.set(0, baseY + 0.72, 0.04)
+    board.castShadow = true
+    group.add(board)
+    const slatGeo = track(new THREE.BoxGeometry(0.48, 0.03, 0.01))
+    const slatMat = track(
+      new THREE.MeshStandardMaterial({ color: 0xd9c89a, roughness: 0.7 }),
+    )
+    for (const oy of [-0.1, 0, 0.1]) {
+      const slat = new THREE.Mesh(slatGeo, slatMat)
+      slat.position.set(0, baseY + 0.72 + oy, 0.065)
+      group.add(slat)
+    }
+    root.add(group)
   } else if (place.kind === 'berry-bush') {
     // Cluster of 3 overlapping low spheres + up to 6 berry dots (stock-driven)
     const bushMat = track(new THREE.MeshStandardMaterial({ color: BUSH_GREEN, roughness: 0.75 }))

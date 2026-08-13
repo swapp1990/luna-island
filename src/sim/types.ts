@@ -28,6 +28,7 @@ export type PlaceKind =
   | 'quarry'
   | 'storehouse'
   | 'construction-site'
+  | 'notice-board'
 
 /** Extensible goods union. */
 export type Good = 'food' | 'wood' | 'stone'
@@ -115,6 +116,7 @@ export type ActionKind =
   | 'vote'
   | 'sanction'
   | 'claim'
+  | 'examine'
 
 export type VoteChoice = 'yes' | 'no'
 export type ProposalStatus = 'open' | 'passed' | 'failed'
@@ -236,6 +238,11 @@ export interface MindNoteRecord {
   agentId: string
   notes: string[]
   meta: MindNoteMeta
+  /**
+   * Distilled world-facts from this night's reflection (v5 additive).
+   * Missing on older notes — treat as none.
+   */
+  learned?: string[]
 }
 
 /** One applied conversation utterance (recorded for replay; reason-free — text IS content). */

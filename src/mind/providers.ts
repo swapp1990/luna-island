@@ -121,7 +121,14 @@ export class MockProvider implements MindProvider {
       if (Math.abs(h) % 2 === 0) {
         notes.push(`I hope the plaza is quiet and the pantry stays full.`)
       }
-      const text = JSON.stringify({ notes: notes.slice(0, 1 + (Math.abs(h) % 3)) })
+      const learned =
+        Math.abs(h) % 3 === 0
+          ? ['Eating filled me when I was hungry.']
+          : []
+      const text = JSON.stringify({
+        notes: notes.slice(0, 1 + (Math.abs(h) % 3)),
+        learned,
+      })
       const approxChars = prompt.system.length + prompt.user.length + text.length
       return { text, latencyMs: 1, approxChars }
     }

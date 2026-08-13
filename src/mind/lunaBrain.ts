@@ -162,6 +162,7 @@ interface PendingNoteHold {
   agentId: string
   readyTick: number
   notes: string[]
+  learned?: string[]
   meta: MindNoteMeta
   exchange: MindExchange
   requestTick: number
@@ -252,6 +253,8 @@ export class LunaBrainService {
   private noteHolds: PendingNoteHold[] = []
   private sayHolds: PendingSayHold[] = []
   private lastExchange = new Map<string, MindExchange>()
+  /** Last decision (not conversation/reflection) exchange — Mind tab / e2e. */
+  private lastDecisionExchange = new Map<string, MindExchange>()
   private decideCallCount = 0
   private totalLatency = 0
   private latencySamples = 0
@@ -451,6 +454,11 @@ export class LunaBrainService {
 
   getLastExchange(agentId: string): MindExchange | undefined {
     return this.lastExchange.get(agentId)
+  }
+
+  /** Last decision prompt/response (ignores conversation turns). */
+  getLastDecisionExchange(agentId: string): MindExchange | undefined {
+    return this.lastDecisionExchange.get(agentId)
   }
 
   isBudgetCooldown(now = Date.now()): boolean {
@@ -718,7 +726,15 @@ export class LunaBrainService {
     const readyNotes = this.noteHolds.filter((h) => h.readyTick <= tick)
     this.noteHolds = this.noteHolds.filter((h) => h.readyTick > tick)
     for (const h of readyNotes) {
-      this.applyReflectionNotes(sim, h.agentId, h.notes, h.meta, h.exchange, h.nightKey)
+      this.applyReflectionNotes(
+        sim,
+        h.agentId,
+        h.notes,
+        h.meta,
+        h.exchange,
+        h.nightKey,
+        h.learned,
+      )
     }
 
     // Flush conversation say holds
@@ -1701,9 +1717,10 @@ export class LunaBrainService {
     meta: MindNoteMeta,
     exchange: MindExchange,
     nightKey: number,
+    learned?: string[],
   ): void {
     this.markReflected(agentId, nightKey)
-    sim.postMindNotes(agentId, notes, meta)
+    sim.postMindNotes(agentId, notes, meta, learned)
     this.decisions += 1
     this.lastExchange.set(agentId, exchange)
   }
@@ -1765,12 +1782,21 @@ export class LunaBrainService {
         ? MOCK_DELAY_TICKS
         : 0
     if (delay <= 0) {
-      this.applyReflectionNotes(sim, agentId, parsed.notes, meta, exchange, nightKey)
+      this.applyReflectionNotes(
+        sim,
+        agentId,
+        parsed.notes,
+        meta,
+        exchange,
+        nightKey,
+        parsed.learned,
+      )
     } else {
       this.noteHolds.push({
         agentId,
         readyTick: sim.state.tick + delay,
         notes: parsed.notes,
+        learned: parsed.learned,
         meta,
         exchange,
         requestTick,
@@ -1838,6 +1864,7 @@ export class LunaBrainService {
       ok: parsed.ok,
     }
     this.lastExchange.set(agentId, exchange)
+    this.lastDecisionExchange.set(agentId, exchange)
 
     if (!parsed.ok) {
       this.fallbacks += 1

@@ -1,11 +1,17 @@
 import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
 import { toSimTime } from '../sim/time'
-import { CLAIM_COST, marketPriceFromStock, PROPOSE_COST, proposalTally } from '../sim/sim'
+import { proposalTally } from '../sim/sim'
 import { personaFor } from './personas'
 import {
   memoryLinesForPrompt,
   standingFacts,
 } from './memory'
+import {
+  feltConsequenceLines,
+  formatNearbyPlaceLine,
+  knowledgeLinesForPrompt,
+  nearbyPlacesForObservation,
+} from './knowledge'
 
 const ACTION_KINDS = [
   'idle',
@@ -23,6 +29,7 @@ const ACTION_KINDS = [
   'vote',
   'sanction',
   'claim',
+  'examine',
 ] as const
 
 const GROUNDING =
@@ -32,19 +39,14 @@ const WORLD_RULES = `WORLD RULES (scaffold only — you choose what to do):
 - Time: 1 tick = 1 sim minute; day 06:00 start; night 21:00–06:00.
 - Needs 0..1: hunger, energy, social decay over time; critical near 0.
 - One standing agent per tile; using a place = stand on a free slot tile.
-- Eat carried food; forage berry-bushes; buy food at stall for coins.
-- Work workplaces (farm/stall/forestry/quarry/sites) for wages; haul goods.
-- Sleep at home on a bed slot; drink at well; socialize near others (plaza).
-- Commission a private home costs 30 coins when you can afford it.
-- Social recharge needs another agent within ~1.5 tiles.
-- Civic mechanisms exist and anyone may use them: propose (2 coins) posts agent-authored text for a day; vote records a yes or no on an open proposal; sanction (1 coin) posts a public censure; claim (15 coins) transfers a commons place to the claimer. Posted rules may be followed or broken. Breaking may draw sanctions from others.
+- You feel your needs. The world contains places and things whose workings you learn by living, examining, and listening.
 - You cannot invent new action kinds or break occupancy/economy rules.`
 
 const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object, no markdown:
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
-target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, or a villager name.
-Civic extras when used: propose needs "text" (≤200); vote needs target=<proposal id> and "choice":"yes"|"no"; sanction needs target=<name> and "reason" (≤120) and optional "ruleId"; claim needs target=<place kind or id>.
+target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, or a villager name.
+propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target.
 If unsure, prefer a safe need-serving action (eat/forage/sleep/work).`
 
 export function buildSystemPrompt(agentId: string): string {
@@ -96,7 +98,7 @@ function clipObs(s: string, max: number): string {
 
 /** Compact civic facts — display only; no verdict about whether rules are kept. */
 function civicObservationLines(
-  agent: AgentState,
+  _agent: AgentState,
   world: WorldState,
   recentEvents: readonly SimEvent[],
 ): string[] {
@@ -133,12 +135,6 @@ function civicObservationLines(
       lines.push(`- ${from} → ${to}: "${why}"`)
     }
   }
-  if (agent.wallet >= PROPOSE_COST) {
-    lines.push(`You can afford the proposal fee (${PROPOSE_COST} coins).`)
-  }
-  if (agent.wallet >= CLAIM_COST) {
-    lines.push(`You can afford the claim fee (${CLAIM_COST} coins).`)
-  }
   return lines
 }
 
@@ -151,7 +147,6 @@ export function buildUserPrompt(
   const t = toSimTime(world.tick)
   const stall = world.places.find((p) => p.kind === 'stall')
   const stock = stall?.inventory?.food ?? 0
-  const price = marketPriceFromStock(stock)
   const job = agent.employedAt
     ? world.places.find((p) => p.id === agent.employedAt)
     : null
@@ -168,6 +163,9 @@ export function buildUserPrompt(
   const standing = standingFacts(agent, world)
   const noteLog = mindNoteLog ?? world.mindNoteLog ?? []
   const memories = memoryLinesForPrompt(agent.id, recentEvents, noteLog, 8)
+  const known = knowledgeLinesForPrompt(agent.id, recentEvents, noteLog, 6)
+  const felt = feltConsequenceLines(agent.id, recentEvents, world.tick, 5)
+  const nearbyPlaces = nearbyPlacesForObservation(agent, world, recentEvents)
   const civic = civicObservationLines(agent, world, recentEvents)
 
   const lines = [
@@ -176,11 +174,20 @@ export function buildUserPrompt(
     `Wallet: ${agent.wallet} coins | Inventory: food ${inv.food} wood ${inv.wood} stone ${inv.stone}`,
     `Job: ${job ? `${placeKindLabel(job)} (${job.wage ?? 0}/day)` : 'unemployed'}`,
     `Current action: ${agent.action.kind}${agent.action.targetPlaceId ? ` @${agent.action.targetPlaceId}` : ''} — ${agent.action.reason}`,
-    `Market: food price ${price}, stall stock ${stock}`,
+    `Stall stock: ${stock}`,
     `Nearby: ${near.length ? near.map((n) => `${n.name}(sym ${n.sympathy}, ${n.action})`).join('; ') : 'none'}`,
+    `Nearby places: ${
+      nearbyPlaces.length
+        ? nearbyPlaces.map(formatNearbyPlaceLine).join('; ')
+        : 'none'
+    }`,
     `Standing facts:`,
     ...standing.map((s) => `- ${s}`),
     ...civic,
+    `Recently felt:`,
+    ...(felt.length ? felt.map((f) => `- ${f}`) : ['- (nothing yet)']),
+    `Known:`,
+    ...(known.length ? known.map((k) => `- ${k}`) : ['- (nothing yet)']),
     `Your memories:`,
     ...(memories.length ? memories.map((m) => `- ${m}`) : ['- (none yet)']),
     `Recent trace:`,
@@ -198,8 +205,9 @@ export function buildReflectionSystemPrompt(agentId: string): string {
 ${GROUNDING}
 
 You are reflecting on your day before sleep. Reply ONLY with one JSON object, no markdown:
-{"notes":["…","…"]}
-Rules: 1–3 notes; each ≤120 characters; first person ("I"); concrete facts from today's events and intentions for tomorrow. No invented possessions or numbers.`
+{"notes":["…","…"],"learned":["…up to 2 short world-facts you now believe…"]}
+Rules: 1–3 notes; each ≤120 characters; first person ("I"); concrete facts from today's events and intentions for tomorrow. No invented possessions or numbers.
+learned: 0–2 short world-facts distilled from what you felt, examined, or were told — not laws, beliefs.`
 }
 
 /** Compact day-trace lines for reflection (agent's own events that day, incl. mind:say as partner). */
@@ -236,7 +244,7 @@ export function buildReflectionUserPrompt(
       : dayLines
   return `Here are today's events for you (Day ${day}):\n${
     clipped.length ? clipped.join('\n') : '(quiet day — little happened)'
-  }\n\nReply ONLY {"notes":["…"]}.`
+  }\n\nReply ONLY {"notes":["…"],"learned":["…"]}.`
 }
 
 function pad2(n: number): string {

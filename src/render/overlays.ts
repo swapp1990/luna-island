@@ -149,7 +149,10 @@ function formatStatusBubbleBody(
       case 'drink':
         return '🚶 → the well'
       case 'sleep':
-        return '🏠 Heading home'
+        return placeKind === 'home' ? '🏠 Heading home' : '🚶 Looking for rest'
+      case 'examine':
+        if (placeKind === 'notice-board') return '🚶 → the notice board'
+        return '🚶 Going to look closer'
       case 'socialize':
         return '🚶 → plaza'
       case 'wander':
@@ -189,7 +192,11 @@ function formatStatusBubbleBody(
     case 'drink':
       return '💧 At the well'
     case 'sleep':
-      return '😴 Sleeping'
+      return placeKind === 'home' ? '😴 Sleeping' : '😴 Sleeping on the ground'
+    case 'examine':
+      return placeKind === 'notice-board'
+        ? '📌 Reading the notice board'
+        : '📌 Looking closely'
     case 'socialize': {
       const other = nearestAgentWithin(agent, agents)
       return other
@@ -247,6 +254,8 @@ const PLACE_LABEL: Record<string, string> = {
   well: 'Well',
   home: 'Home',
   'construction-site': 'Build site',
+  'notice-board': 'Notice board',
+  plaza: 'Plaza',
 }
 
 const GOOD_ICON: Record<string, string> = {

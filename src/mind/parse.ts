@@ -17,6 +17,7 @@ const ACTION_KINDS = new Set<ActionKind>([
   'vote',
   'sanction',
   'claim',
+  'examine',
 ])
 
 export interface MindIntentJson {
@@ -34,7 +35,7 @@ export type ParseMindResult =
   | { ok: false; error: string }
 
 export type ParseReflectionResult =
-  | { ok: true; notes: string[] }
+  | { ok: true; notes: string[]; learned: string[] }
   | { ok: false; error: string }
 
 export type ParseSayResult =
@@ -122,6 +123,10 @@ export function parseMindJson(text: string): ParseMindResult {
   } else if (action === 'claim') {
     if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
       return { ok: false, error: 'claim requires target place' }
+    }
+  } else if (action === 'examine') {
+    if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
+      return { ok: false, error: 'examine requires target place' }
     }
   }
   // Build a partial — target resolution needs world
@@ -213,7 +218,25 @@ export function parseReflectionJson(text: string): ParseReflectionResult {
   if (notes.length < 1 || notes.length > 3) {
     return { ok: false, error: 'need 1–3 notes' }
   }
-  return { ok: true, notes }
+  const learned: string[] = []
+  if (obj.learned !== undefined) {
+    if (!Array.isArray(obj.learned)) {
+      return { ok: false, error: 'learned must be array' }
+    }
+    for (const n of obj.learned) {
+      if (typeof n !== 'string') {
+        return { ok: false, error: 'learned item must be string' }
+      }
+      const trimmed = n.trim()
+      if (!trimmed) continue
+      if (trimmed.length > 120) {
+        return { ok: false, error: 'learned exceeds 120 chars' }
+      }
+      learned.push(trimmed)
+      if (learned.length >= 2) break
+    }
+  }
+  return { ok: true, notes, learned }
 }
 
 function dist2(ax: number, ay: number, bx: number, by: number): number {
@@ -257,7 +280,25 @@ const PLACE_KINDS = new Set([
   'quarry',
   'storehouse',
   'construction-site',
+  'notice-board',
 ])
+
+const PLACE_ALIASES: Record<string, string> = {
+  board: 'notice-board',
+  'notice board': 'notice-board',
+  'town board': 'notice-board',
+  'notice-board': 'notice-board',
+  bush: 'berry-bush',
+  bushes: 'berry-bush',
+  'berry bush': 'berry-bush',
+  site: 'construction-site',
+  'construction site': 'construction-site',
+}
+
+function resolvePlaceKindTarget(raw: string): string {
+  const key = raw.trim().toLowerCase()
+  return PLACE_ALIASES[key] ?? key
+}
 
 /**
  * Resolve model {action,target,reasoning} into a sim Intent with place/coords.
@@ -319,8 +360,9 @@ export function resolveMindIntent(
 
   // Place kind → nearest matching place
   let place: Place | null = null
-  if (target && PLACE_KINDS.has(target)) {
-    place = pickNearestPlace(world, agent, target, true)
+  const kindTarget = target ? resolvePlaceKindTarget(target) : ''
+  if (kindTarget && PLACE_KINDS.has(kindTarget)) {
+    place = pickNearestPlace(world, agent, kindTarget, true)
   }
 
   // Defaults by action when no/invalid target
@@ -363,8 +405,16 @@ export function resolveMindIntent(
       case 'commission':
         break
       case 'claim':
-        if (target && !PLACE_KINDS.has(target)) {
+        if (target && !PLACE_KINDS.has(kindTarget)) {
           place = world.places.find((p) => p.id === target) ?? null
+        }
+        break
+      case 'examine':
+        if (!place && target) {
+          place = world.places.find((p) => p.id === target) ?? null
+        }
+        if (!place) {
+          place = pickNearestPlace(world, agent, 'notice-board', true)
         }
         break
       default:

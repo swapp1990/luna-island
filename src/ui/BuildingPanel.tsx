@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { AgentState, Good, Place, SimEvent } from '../sim/types'
+import type { AgentState, Good, Place, Proposal, Rule, SimEvent } from '../sim/types'
 import { workersOfPlace } from '../sim/selectors'
 import { toSimTime } from '../sim/time'
+import { proposalTally } from '../sim/sim'
 import { GOOD_ICON, SlotGrid } from './SlotGrid'
 
 type TabId = 'overview' | 'log'
@@ -24,6 +25,7 @@ const PLACE_ICON: Record<string, string> = {
   'construction-site': '🏗️',
   plaza: '🏛️',
   'berry-bush': '🫐',
+  'notice-board': '📋',
 }
 
 const PLACE_NAME: Record<string, string> = {
@@ -37,6 +39,7 @@ const PLACE_NAME: Record<string, string> = {
   'construction-site': 'Construction site',
   plaza: 'Plaza',
   'berry-bush': 'Berry bush',
+  'notice-board': 'Notice board',
 }
 
 function ownerLabel(
@@ -182,6 +185,60 @@ function ProductionBar(props: { place: Place }) {
   )
 }
 
+function clipCivic(s: string, max: number): string {
+  if (s.length <= max) return s
+  return `${s.slice(0, max - 1)}…`
+}
+
+function CivicState(props: {
+  proposals: readonly Proposal[]
+  rules: readonly Rule[]
+  replayTick: number
+  agents: readonly AgentState[]
+}) {
+  const open = props.proposals.filter((p) => p.status === 'open')
+  const standing = props.rules.filter((r) => r.active).slice(0, 5)
+  const nameOf = (id: string) => props.agents.find((a) => a.id === id)?.name ?? id
+  return (
+    <div data-testid="building-civic">
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: 0.6,
+          textTransform: 'uppercase',
+          opacity: 0.55,
+          marginBottom: 6,
+        }}
+      >
+        Civic
+      </div>
+      {open.length === 0 && standing.length === 0 ? (
+        <div style={{ fontSize: 12, opacity: 0.6 }}>No proposals or posted rules</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+          {open.map((p) => {
+            const tally = proposalTally(p)
+            return (
+              <div key={p.id} data-testid="building-civic-proposal">
+                <div style={{ fontWeight: 600 }}>{clipCivic(p.text, 80)}</div>
+                <div style={{ opacity: 0.7, fontSize: 11 }}>
+                  {nameOf(p.proposerId)} · yes {tally.yes} / no {tally.no}
+                </div>
+              </div>
+            )
+          })}
+          {standing.map((r) => (
+            <div key={r.id} data-testid="building-civic-rule" style={{ opacity: 0.85 }}>
+              Rule: {clipCivic(r.text, 80)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function BuildingPanel(props: {
   place: Place
   agents: readonly AgentState[]
@@ -191,6 +248,8 @@ export function BuildingPanel(props: {
   dayStartTick?: number
   onSelectAgent: (id: string) => void
   onClose: () => void
+  proposals?: readonly Proposal[]
+  rules?: readonly Rule[]
 }) {
   const { place, agents, onSelectAgent, onClose } = props
   const dayStart = props.dayStartTick ?? 0
@@ -341,6 +400,14 @@ export function BuildingPanel(props: {
         <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
           {place.production ? <ProductionBar place={place} /> : null}
           {place.construction ? <MaterialsLine place={place} /> : null}
+          {place.kind === 'notice-board' ? (
+            <CivicState
+              proposals={props.proposals ?? []}
+              rules={props.rules ?? []}
+              replayTick={props.replayTick}
+              agents={agents}
+            />
+          ) : null}
 
           <div>
             <div

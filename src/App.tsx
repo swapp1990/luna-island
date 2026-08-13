@@ -175,6 +175,9 @@ export function App() {
           agentId: r.agentId,
           notes: r.notes.slice(),
           meta: { ...r.meta },
+          ...(r.learned && r.learned.length > 0
+            ? { learned: r.learned.slice() }
+            : {}),
         })),
       )
       setSayLog(
@@ -389,6 +392,7 @@ export function App() {
               says: [],
               sanctions: [],
               proposals: [],
+              discoveries: [],
             })
             return JSON.stringify(serializeStory(live))
           },
@@ -429,6 +433,17 @@ export function App() {
             live.postExternalIntent(agentId, intent, meta)
             loop.ffwd(1)
             apiRef.current?.syncFromLoop()
+            return true
+          },
+          setNeeds: (agentId: string, needs: { hunger?: number; energy?: number; social?: number }) => {
+            const live = liveRef.current
+            if (!live) return false
+            const agent = live.state.agents.find((a) => a.id === agentId)
+            if (!agent) return false
+            const clamp = (n: number) => Math.max(0, Math.min(1, n))
+            if (typeof needs.hunger === 'number') agent.needs.hunger = clamp(needs.hunger)
+            if (typeof needs.energy === 'number') agent.needs.energy = clamp(needs.energy)
+            if (typeof needs.social === 'number') agent.needs.social = clamp(needs.social)
             return true
           },
           ensureWallet: (agentId: string, minCoins: number) => {
@@ -830,6 +845,8 @@ export function App() {
           events={agentEvents}
           replayTick={hud.tick}
           dayStartTick={viewDayStart}
+          proposals={proposals}
+          rules={rules}
           onSelectAgent={(id) => {
             const loop = loopRef.current
             if (!loop) return
@@ -864,7 +881,9 @@ export function App() {
           }
           lastExchange={
             selectedAgent && mindRef.current
-              ? mindRef.current.getLastExchange(selectedAgent.id) ?? null
+              ? mindRef.current.getLastDecisionExchange(selectedAgent.id) ??
+                mindRef.current.getLastExchange(selectedAgent.id) ??
+                null
               : null
           }
           mindNoteLog={mindNoteLog}

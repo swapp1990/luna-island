@@ -458,10 +458,13 @@ describe('prompt neutrality + parse', () => {
     for (const re of forbidden) {
       expect(sys, `matched ${re}`).not.toMatch(re)
     }
-    // Mechanisms are described (exist / cost / anyone may)
-    expect(sys).toMatch(/anyone may/i)
-    expect(sys).toMatch(/2 coins/)
-    expect(sys).toMatch(/may be followed or broken/i)
+    // Mechanics live in the world now — system prompt only names the verbs
+    expect(sys).not.toMatch(/anyone may/i)
+    expect(sys).not.toMatch(/2 coins/)
+    expect(sys).not.toMatch(/may be followed or broken/i)
+    expect(sys).toMatch(
+      /You feel your needs\. The world contains places and things whose workings you learn by living, examining, and listening\./,
+    )
   })
 
   it('parse accepts civic actions and rejects invalid payloads', () => {
@@ -529,7 +532,7 @@ describe('prompt neutrality + parse', () => {
     }
   })
 
-  it('observations include open tallies, rules, sanctions, afford notes', () => {
+  it('observations include open tallies, rules, sanctions (no fee explanations)', () => {
     const sim = new Simulation(SEED)
     fund(sim, 'agent-0', 20)
     sim.propose('agent-0', 'Quiet nights at the plaza')
@@ -549,8 +552,8 @@ describe('prompt neutrality + parse', () => {
     expect(user).toContain('Posted rules:')
     expect(user).toContain('Be kind at the well')
     expect(user).toContain('Recent sanctions:')
-    expect(user).toContain('You can afford the proposal fee')
-    expect(user).toContain('You can afford the claim fee')
+    expect(user).not.toContain('You can afford the proposal fee')
+    expect(user).not.toContain('You can afford the claim fee')
   })
 })
 

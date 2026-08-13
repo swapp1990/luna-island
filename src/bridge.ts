@@ -120,6 +120,11 @@ export interface SimControlBridge {
     intent: Intent,
     reasoning?: string,
   ) => boolean
+  /** Additive (e2e): set one need 0..1 (ground-sleep / felt probes). */
+  setNeeds?: (
+    agentId: string,
+    needs: { hunger?: number; energy?: number; social?: number },
+  ) => boolean
   /** Additive (e2e): treasury → agent so civic fees can be paid. */
   ensureWallet?: (agentId: string, minCoins: number) => boolean
   /** Additive (e2e): set one sympathy edge (electorate seeding). */

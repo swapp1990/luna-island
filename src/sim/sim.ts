@@ -50,6 +50,13 @@ import type {
   WorldState,
 } from './types'
 import { emptyInventory } from './types'
+import {
+  examineKnowledgeFor,
+  PLACE_VIEW_RADIUS,
+  placeKindLabel,
+  SLEEP_BED_ENERGY,
+  SLEEP_GROUND_ENERGY,
+} from './examine'
 
 const SNAPSHOT_INTERVAL = 180
 const REDECIDE_INTERVAL = 30
@@ -293,6 +300,7 @@ function cloneMindNoteLog(log: MindNoteRecord[] | undefined): MindNoteRecord[] {
     agentId: r.agentId,
     notes: r.notes.slice(),
     meta: cloneMindNoteMeta(r.meta),
+    ...(r.learned && r.learned.length > 0 ? { learned: r.learned.slice() } : {}),
   }))
 }
 
@@ -512,7 +520,10 @@ export class Simulation {
     agentId: string
     notes: string[]
     meta: MindNoteMeta
+    learned?: string[]
   }> = []
+  /** Trace-derived: agentId → place kinds already noticed (discovery:noticed). */
+  private noticedKinds = new Map<string, Set<string>>()
   /**
    * Live inbox: conversation utterances posted mid-tick, applied next step.
    */
@@ -625,6 +636,7 @@ export class Simulation {
       this.snapshots.add(this.makeSnapshot())
       this.snapshots.pin(0)
     }
+    this.rebuildNoticedCache()
   }
 
   /**
@@ -651,11 +663,15 @@ export class Simulation {
     agentId: string,
     notes: string[],
     meta: MindNoteMeta,
+    learned?: string[],
   ): void {
     this.mindNoteInbox.push({
       agentId,
       notes: notes.map((n) => String(n)),
       meta: cloneMindNoteMeta(meta),
+      ...(learned && learned.length > 0
+        ? { learned: learned.map((n) => String(n)) }
+        : {}),
     })
   }
 
@@ -1442,6 +1458,7 @@ export class Simulation {
     for (const agent of world.agents) {
       this.stepNeeds(agent, positions)
       this.stepMovementAndAction(agent)
+      this.emitPlaceNotices(agent)
       this.maybeRedecide(agent, hour)
     }
     // World rule 3: after movement, later-indexed co-standers yield a free tile.
@@ -1467,14 +1484,17 @@ export class Simulation {
       canRestoreThisTick(this.state, agent, place)
     // Collapse blocks restores except eat/sleep (eat is inventory-based, not place restore)
     const restoreAllowed = !agent.collapsed
-    const sleeping = agent.action.kind === 'sleep' && canRestore
+    const sleeping =
+      agent.action.kind === 'sleep' && this.isPerforming(agent)
+    const onBed = sleeping && this.isSleepingOnBed(agent)
 
     // Hunger decay always
     agent.needs.hunger = clamp01(agent.needs.hunger - (1 / 960) * j.hunger)
 
-    // Energy: decay awake, regen asleep (only on home slot tile within capacity)
+    // Energy: decay awake; bed slots full rate, anywhere else half rate
     if (sleeping) {
-      agent.needs.energy = clamp01(agent.needs.energy + (1 / 420) * j.energy)
+      const rate = onBed ? SLEEP_BED_ENERGY : SLEEP_GROUND_ENERGY
+      agent.needs.energy = clamp01(agent.needs.energy + rate * j.energy)
     } else {
       agent.needs.energy = clamp01(agent.needs.energy - (1 / 1080) * j.energy)
     }
@@ -1662,9 +1682,17 @@ export class Simulation {
         }
         const moreFood = (agent.inventory.food ?? 0) >= 1
         if (!ok || unitsDone >= EAT_MAX_UNITS || !moreFood) {
+          const before = agent.actionStartNeeds.hunger
+          const after = agent.needs.hunger
           this.endAction(
             agent,
-            `ate a meal, hunger ${pct(agent.actionStartNeeds.hunger)}%→${pct(agent.needs.hunger)}%`,
+            `ate a meal, hunger ${pct(before)}%→${pct(after)}%`,
+            {
+              need: 'hunger',
+              before,
+              after,
+              felt: `ate berries: hunger ${pct(before)}%→${pct(after)}%`,
+            },
           )
           agent.action = {
             kind: 'idle',
@@ -1731,9 +1759,18 @@ export class Simulation {
         agent.needs.energy = clamp01(agent.needs.energy + 0.02)
       }
       if (agent.actionTicks >= DRINK_DURATION) {
+        const before = agent.actionStartNeeds.energy
+        const after = agent.needs.energy
+        const delta = Math.round((after - before) * 100)
         this.endAction(
           agent,
-          `drank from the well, energy ${pct(agent.actionStartNeeds.energy)}%→${pct(agent.needs.energy)}%`,
+          `drank from the well, energy ${pct(before)}%→${pct(after)}%`,
+          {
+            need: 'energy',
+            before,
+            after,
+            felt: `drank at the well: energy ${delta >= 0 ? '+' : ''}${delta}%`,
+          },
         )
         agent.action = { kind: 'idle', reason: 'Refreshed' }
         agent.actionTicks = 0
@@ -1743,17 +1780,38 @@ export class Simulation {
     }
 
     if (kind === 'sleep') {
-      // energy regen applied in stepNeeds while restoring on home slot
+      // energy regen applied in stepNeeds (bed full rate, ground half)
       const curr = toSimTime(this.state.tick)
       const prev = toSimTime(Math.max(0, this.state.tick - 1))
       const crossed7am =
         this.state.tick > 0 && prev.hour === 6 && curr.hour === 7
       if (agent.needs.energy >= 0.95 || crossed7am) {
-        this.endAction(
-          agent,
-          `woke up, energy ${pct(agent.actionStartNeeds.energy)}%→${pct(agent.needs.energy)}%`,
-        )
+        const before = agent.actionStartNeeds.energy
+        const after = agent.needs.energy
+        const onBed = this.isSleepingOnBed(agent)
+        const felt = onBed
+          ? `slept in your bed: energy ${pct(before)}%→${pct(after)}%`
+          : `slept on the ground: energy ${pct(before)}%→${pct(after)}%`
+        this.endAction(agent, felt, {
+          need: 'energy',
+          before,
+          after,
+          shelter: onBed ? 'bed' : 'ground',
+          felt,
+        })
         agent.action = { kind: 'idle', reason: 'Rested and ready' }
+        agent.actionTicks = 0
+        agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      }
+      return
+    }
+
+    if (kind === 'examine') {
+      if (place && isStanding(agent) && isSlotTile(this.state, place, agent.x, agent.y)) {
+        this.completeExamine(agent, place)
+      } else if (!place || agent.actionTicks >= 3) {
+        this.endAction(agent, 'nothing to examine here')
+        agent.action = { kind: 'idle', reason: 'Looked around' }
         agent.actionTicks = 0
         agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       }
@@ -2276,15 +2334,97 @@ export class Simulation {
     })
   }
 
-  private endAction(agent: AgentState, outcome: string): void {
+  private endAction(
+    agent: AgentState,
+    outcome: string,
+    extra?: Record<string, unknown>,
+  ): void {
     if (agent.action.kind === 'idle') return
     this.events.append({
       tick: this.state.tick,
       type: 'action:end',
       agentId: agent.id,
-      data: { kind: agent.action.kind, outcome },
+      data: { kind: agent.action.kind, outcome, ...(extra ?? {}) },
       reason: outcome,
     })
+  }
+
+  /** True when this sleeper is standing on a home bed slot. */
+  private isSleepingOnBed(agent: AgentState): boolean {
+    if (agent.action.kind !== 'sleep') return false
+    const place = agent.action.targetPlaceId
+      ? this.state.places.find((p) => p.id === agent.action.targetPlaceId)
+      : undefined
+    if (!place || place.kind !== 'home') return false
+    if (!isStanding(agent)) return false
+    return isSlotTile(this.state, place, agent.x, agent.y)
+  }
+
+  private completeExamine(agent: AgentState, place: Place): void {
+    const knowledge = examineKnowledgeFor(place)
+    const label = placeKindLabel(place.kind)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'discovery:examined',
+      agentId: agent.id,
+      data: {
+        target: place.id,
+        placeKind: place.kind,
+        knowledge,
+        agentName: agent.name,
+      },
+      reason: `${agent.name} examined the ${label}`,
+    })
+    this.endAction(agent, `examined the ${label}`, {
+      target: place.id,
+      placeKind: place.kind,
+      knowledge,
+    })
+    agent.action = { kind: 'idle', reason: `Examined the ${label}` }
+    agent.actionTicks = 0
+    agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+  }
+
+  private rebuildNoticedCache(): void {
+    this.noticedKinds.clear()
+    for (const e of this.events.getAll()) {
+      if (e.type !== 'discovery:noticed' || !e.agentId) continue
+      const kind = String(e.data?.kind ?? '')
+      if (!kind) continue
+      let set = this.noticedKinds.get(e.agentId)
+      if (!set) {
+        set = new Set()
+        this.noticedKinds.set(e.agentId, set)
+      }
+      set.add(kind)
+    }
+  }
+
+  private emitPlaceNotices(agent: AgentState): void {
+    const r2 = PLACE_VIEW_RADIUS * PLACE_VIEW_RADIUS
+    let seen = this.noticedKinds.get(agent.id)
+    for (const p of this.state.places) {
+      const dx = p.x - agent.x
+      const dy = p.y - agent.y
+      if (dx * dx + dy * dy > r2) continue
+      if (seen?.has(p.kind)) continue
+      if (!seen) {
+        seen = new Set()
+        this.noticedKinds.set(agent.id, seen)
+      }
+      seen.add(p.kind)
+      this.events.append({
+        tick: this.state.tick,
+        type: 'discovery:noticed',
+        agentId: agent.id,
+        data: {
+          kind: p.kind,
+          placeId: p.id,
+          agentName: agent.name,
+        },
+        reason: `${agent.name} noticed a ${placeKindLabel(p.kind)}`,
+      })
+    }
   }
 
   private maybeRedecide(agent: AgentState, hour: number): void {
@@ -2792,10 +2932,14 @@ export class Simulation {
             agentId: rec.agentId,
             notes: rec.notes.slice(),
             meta: cloneMindNoteMeta(rec.meta),
+            ...(rec.learned && rec.learned.length > 0
+              ? { learned: rec.learned.slice() }
+              : {}),
           })
         }
         this.forceMindNotes(rec.agentId, rec.notes, rec.meta, {
           recordLog: false,
+          learned: rec.learned,
         })
       }
       return
@@ -2809,6 +2953,7 @@ export class Simulation {
     for (const item of batch) {
       this.forceMindNotes(item.agentId, item.notes, item.meta, {
         recordLog: true,
+        learned: item.learned,
       })
     }
   }
@@ -2821,10 +2966,14 @@ export class Simulation {
     agentId: string,
     notes: string[],
     meta: MindNoteMeta,
-    opts: { recordLog: boolean },
+    opts: { recordLog: boolean; learned?: string[] },
   ): void {
     const agent = this.state.agents.find((a) => a.id === agentId)
     const cleanNotes = notes.map((n) => String(n)).filter((n) => n.length > 0)
+    const cleanLearned = (opts.learned ?? [])
+      .map((n) => String(n).trim())
+      .filter((n) => n.length > 0)
+      .slice(0, 2)
     if (cleanNotes.length === 0) return
 
     if (opts.recordLog) {
@@ -2833,6 +2982,7 @@ export class Simulation {
         agentId,
         notes: cleanNotes.slice(),
         meta: cloneMindNoteMeta(meta),
+        ...(cleanLearned.length > 0 ? { learned: cleanLearned } : {}),
       })
     }
 
@@ -2842,6 +2992,7 @@ export class Simulation {
       agentId,
       data: {
         notes: cleanNotes.slice(),
+        ...(cleanLearned.length > 0 ? { learned: cleanLearned } : {}),
         provider: meta.provider,
         latencyMs: meta.latencyMs,
         approxChars: meta.approxChars,
@@ -3490,6 +3641,7 @@ export class Simulation {
               due,
               partial,
               placeId: place.id,
+              placeKind: place.kind,
             },
           )
         }

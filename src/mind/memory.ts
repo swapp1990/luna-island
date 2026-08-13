@@ -176,6 +176,19 @@ export function episodicMemories(
         line = `claimed the ${kind}`
         break
       }
+      case 'discovery:examined': {
+        const kind = String(e.data?.placeKind ?? e.data?.target ?? 'place')
+        const label =
+          kind === 'notice-board'
+            ? 'notice board'
+            : kind === 'berry-bush'
+              ? 'berry bush'
+              : kind === 'construction-site'
+                ? 'construction site'
+                : kind
+        line = `examined the ${label}`
+        break
+      }
       default:
         break
     }

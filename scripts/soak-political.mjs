@@ -63,6 +63,8 @@ const CIVIC = [
   'agent:collapsed',
   'construction:commissioned',
   'ownership:transfer',
+  'discovery:examined',
+  'discovery:noticed',
 ]
 
 let browser

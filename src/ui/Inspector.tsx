@@ -5,6 +5,7 @@ import { SlotGrid } from './SlotGrid'
 import type { MindExchange } from '../mind/lunaBrain'
 import { isLunaAgent } from '../mind/personas'
 import { episodicMemories, reflectionMemories } from '../mind/memory'
+import { knowledgeLinesForPrompt } from '../mind/knowledge'
 import { conversationsForAgent } from '../mind/conversation'
 import type { SayRecord } from '../sim/types'
 
@@ -254,12 +255,19 @@ export function Inspector(props: {
   }, [agent?.id])
 
   const memoryRows = useMemo(() => {
-    if (!agent) return { reflections: [] as ReturnType<typeof reflectionMemories>, episodics: [] as ReturnType<typeof episodicMemories> }
+    if (!agent) {
+      return {
+        reflections: [] as ReturnType<typeof reflectionMemories>,
+        episodics: [] as ReturnType<typeof episodicMemories>,
+        known: [] as string[],
+      }
+    }
     const upTo = events.filter((e) => e.tick <= replayTick)
     const notes = (props.mindNoteLog ?? []).filter((r) => r.tick <= replayTick)
     return {
       reflections: reflectionMemories(agent.id, notes),
       episodics: episodicMemories(agent.id, upTo),
+      known: knowledgeLinesForPrompt(agent.id, upTo, notes, 6),
     }
   }, [agent, events, replayTick, props.mindNoteLog])
 
@@ -282,7 +290,8 @@ export function Inspector(props: {
           e.type === 'institution:voted' ||
           e.type === 'institution:sanctioned' ||
           e.type === 'institution:claimed' ||
-          e.type === 'institution:closed') &&
+          e.type === 'institution:closed' ||
+          e.type === 'discovery:examined') &&
         (e.agentId === agent.id ||
           (e.type === 'mind:say' && e.data?.partnerId === agent.id) ||
           (e.type === 'institution:sanctioned' && e.data?.targetId === agent.id)),
@@ -684,6 +693,53 @@ export function Inspector(props: {
                     <span>↩ {fallbacks}</span>
                     <span>{meanLat}ms</span>
                     <span>~{chars}ch</span>
+                  </div>
+
+                  <div
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      letterSpacing: 0.6,
+                      textTransform: 'uppercase',
+                      opacity: 0.55,
+                      marginBottom: 6,
+                    }}
+                  >
+                    Known
+                  </div>
+                  <div
+                    data-testid="mind-known"
+                    style={{
+                      maxHeight: 120,
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      marginBottom: 12,
+                    }}
+                  >
+                    {memoryRows.known.length === 0 ? (
+                      <div data-testid="mind-known-empty" style={{ opacity: 0.5 }}>
+                        Nothing believed yet — live, examine, listen.
+                      </div>
+                    ) : (
+                      memoryRows.known.map((k, i) => (
+                        <div
+                          key={`k-${i}-${k.slice(0, 16)}`}
+                          data-testid="mind-known-line"
+                          style={{
+                            fontSize: 11,
+                            padding: '4px 6px',
+                            borderRadius: 6,
+                            background: 'rgba(120, 180, 140, 0.08)',
+                            border: '1px solid rgba(120, 180, 140, 0.18)',
+                            lineHeight: 1.35,
+                          }}
+                        >
+                          {k}
+                        </div>
+                      ))
+                    )}
                   </div>
 
                   <div

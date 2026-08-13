@@ -45,6 +45,8 @@ export interface StoryExport {
   says: Array<Record<string, unknown>>
   sanctions: Array<Record<string, unknown>>
   proposals: Array<Record<string, unknown>>
+  /** Additive: examine / first-notice discoveries. */
+  discoveries: Array<Record<string, unknown>>
 }
 
 function storyRow(e: SimEvent): Record<string, unknown> {
@@ -68,14 +70,18 @@ export function serializeStory(sim: Simulation): StoryExport {
   const says: StoryExport['says'] = []
   const sanctions: StoryExport['sanctions'] = []
   const proposals: StoryExport['proposals'] = []
+  const discoveries: StoryExport['discoveries'] = []
   for (const e of sim.getEvents()) {
     if (e.type === 'mind:decision') decisions.push(storyRow(e))
     else if (e.type === 'mind:reflection') reflections.push(storyRow(e))
     else if (e.type === 'mind:say') says.push(storyRow(e))
     else if (e.type === 'institution:sanctioned') sanctions.push(storyRow(e))
     else if (e.type === 'institution:proposed') proposals.push(storyRow(e))
+    else if (e.type === 'discovery:examined' || e.type === 'discovery:noticed') {
+      discoveries.push(storyRow(e))
+    }
   }
-  return { decisions, reflections, says, sanctions, proposals }
+  return { decisions, reflections, says, sanctions, proposals, discoveries }
 }
 
 function cloneEvent(e: SimEvent): SimEvent {

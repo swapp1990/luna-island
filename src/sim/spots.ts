@@ -13,6 +13,7 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   quarry: 1.2,
   storehouse: 1.5,
   'construction-site': 1.0,
+  'notice-board': 1.0,
 }
 
 /**
@@ -26,6 +27,7 @@ const PLACE_SLOT_KINDS = new Set([
   'forage',
   'work',
   'buy',
+  'examine',
 ])
 
 const NEIGHBOR8: Array<[number, number]> = [

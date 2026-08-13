@@ -1,0 +1,265 @@
+/** Per-agent world-model — derived only from felt history, examines, and heard says. */
+
+import { PLACE_VIEW_RADIUS, placeKindLabel } from '../sim/examine'
+import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
+
+/** Last ~12 sim-hours. */
+export const FELT_WINDOW_TICKS = 12 * 60
+export const FELT_MAX_LINES = 5
+export const KNOWN_MAX_LINES = 6
+
+export interface KnowledgeFact {
+  text: string
+  source: 'examine' | 'learned' | 'told' | 'felt'
+  tick: number
+}
+
+function pct(n: number): number {
+  return Math.round(Math.max(0, Math.min(1, n)) * 100)
+}
+
+function clip(s: string, max: number): string {
+  if (s.length <= max) return s
+  return `${s.slice(0, max - 1)}…`
+}
+
+function num(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/** Cause→effect lines from this agent's own recent events (most recent first). */
+export function feltConsequenceLines(
+  agentId: string,
+  events: readonly SimEvent[],
+  nowTick: number,
+  maxLines = FELT_MAX_LINES,
+): string[] {
+  const since = nowTick - FELT_WINDOW_TICKS
+  const lines: string[] = []
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (e.tick < since) break
+    if (e.agentId !== agentId && !(e.type === 'coins:transfer' && e.data?.to === agentId)) {
+      continue
+    }
+    const line = feltLineFromEvent(e, agentId)
+    if (!line) continue
+    lines.push(line)
+    if (lines.length >= maxLines) break
+  }
+  return lines
+}
+
+export function feltLineFromEvent(e: SimEvent, agentId: string): string | null {
+  if (typeof e.data?.felt === 'string' && e.data.felt.length > 0) {
+    return e.data.felt
+  }
+
+  if (e.type === 'action:end') {
+    const kind = String(e.data?.kind ?? '')
+    const before = num(e.data?.before)
+    const after = num(e.data?.after)
+    if (kind === 'eat' && before != null && after != null) {
+      return `ate berries: hunger ${pct(before)}%→${pct(after)}%`
+    }
+    if (kind === 'drink' && before != null && after != null) {
+      const delta = Math.round((after - before) * 100)
+      if (delta !== 0 && Math.abs(after - before) < 0.15) {
+        return `drank at the well: energy ${delta >= 0 ? '+' : ''}${delta}%`
+      }
+      return `drank at the well: energy ${pct(before)}%→${pct(after)}%`
+    }
+    if (kind === 'sleep' && before != null && after != null) {
+      const shelter = e.data?.shelter === 'bed' ? 'in your bed' : 'on the ground'
+      return `slept ${shelter}: energy ${pct(before)}%→${pct(after)}%`
+    }
+  }
+
+  if (e.type === 'coins:transfer') {
+    const amount = num(e.data?.amount)
+    if (amount == null || amount <= 0) return null
+    if (e.data?.to !== agentId) return null
+    if (e.data?.kind !== 'wage') return null
+    const placeKind = String(e.data?.placeKind ?? 'workplace')
+    return `worked the ${placeKind}: +${amount} coins at day's end`
+  }
+
+  return null
+}
+
+function examinedFacts(agentId: string, events: readonly SimEvent[]): KnowledgeFact[] {
+  const out: KnowledgeFact[] = []
+  for (const e of events) {
+    if (e.type !== 'discovery:examined' || e.agentId !== agentId) continue
+    const knowledge = String(e.data?.knowledge ?? '').trim()
+    if (!knowledge) continue
+    out.push({ text: knowledge, source: 'examine', tick: e.tick })
+  }
+  return out
+}
+
+function toldFacts(agentId: string, events: readonly SimEvent[]): KnowledgeFact[] {
+  const out: KnowledgeFact[] = []
+  for (const e of events) {
+    if (e.type !== 'mind:say') continue
+    if (e.data?.partnerId !== agentId) continue
+    if (e.agentId === agentId) continue
+    const raw = String(e.data?.text ?? '').trim()
+    if (!raw) continue
+    const who = String(e.data?.agentName ?? e.agentId ?? 'someone')
+    out.push({
+      text: `${who} told me: "${clip(raw, 80)}"`,
+      source: 'told',
+      tick: e.tick,
+    })
+  }
+  return out
+}
+
+function learnedFacts(
+  agentId: string,
+  mindNoteLog: readonly MindNoteRecord[],
+): KnowledgeFact[] {
+  const out: KnowledgeFact[] = []
+  for (const rec of mindNoteLog) {
+    if (rec.agentId !== agentId) continue
+    for (const fact of rec.learned ?? []) {
+      const text = fact.trim()
+      if (!text) continue
+      out.push({ text, source: 'learned', tick: rec.tick })
+    }
+  }
+  return out
+}
+
+function feltFacts(agentId: string, events: readonly SimEvent[]): KnowledgeFact[] {
+  const out: KnowledgeFact[] = []
+  for (const e of events) {
+    const line = feltLineFromEvent(e, agentId)
+    if (!line) continue
+    if (e.agentId !== agentId && !(e.type === 'coins:transfer' && e.data?.to === agentId)) {
+      continue
+    }
+    out.push({ text: line, source: 'felt', tick: e.tick })
+  }
+  return out
+}
+
+const SOURCE_RANK: Record<KnowledgeFact['source'], number> = {
+  examine: 0,
+  learned: 1,
+  told: 2,
+  felt: 3,
+}
+
+/**
+ * Deterministic Known lines: examine + learned + told + felt, newest first,
+ * unique by text, up to `maxLines`.
+ */
+export function compileKnowledge(
+  agentId: string,
+  events: readonly SimEvent[],
+  mindNoteLog: readonly MindNoteRecord[],
+): KnowledgeFact[] {
+  const all = [
+    ...examinedFacts(agentId, events),
+    ...learnedFacts(agentId, mindNoteLog),
+    ...toldFacts(agentId, events),
+    ...feltFacts(agentId, events),
+  ]
+  all.sort((a, b) => {
+    const rk = SOURCE_RANK[a.source] - SOURCE_RANK[b.source]
+    if (rk !== 0) return rk
+    if (a.tick !== b.tick) return b.tick - a.tick
+    return a.text < b.text ? -1 : a.text > b.text ? 1 : 0
+  })
+  const seen = new Set<string>()
+  const out: KnowledgeFact[] = []
+  for (const f of all) {
+    if (seen.has(f.text)) continue
+    seen.add(f.text)
+    out.push(f)
+  }
+  return out
+}
+
+export function knowledgeLinesForPrompt(
+  agentId: string,
+  events: readonly SimEvent[],
+  mindNoteLog: readonly MindNoteRecord[],
+  maxLines = KNOWN_MAX_LINES,
+): string[] {
+  return compileKnowledge(agentId, events, mindNoteLog)
+    .slice(0, maxLines)
+    .map((f) => f.text)
+}
+
+export function usedOrExaminedPlaceIds(
+  agentId: string,
+  events: readonly SimEvent[],
+): Set<string> {
+  const ids = new Set<string>()
+  for (const e of events) {
+    if (e.agentId !== agentId) continue
+    if (e.type === 'discovery:examined') {
+      const t = e.data?.target
+      if (typeof t === 'string' && t.length > 0) ids.add(t)
+    }
+    if (e.type === 'action:start') {
+      const t = e.data?.target
+      if (typeof t === 'string' && t.length > 0 && !/^\d+,\d+$/.test(t)) ids.add(t)
+      const pid = e.data?.placeId
+      if (typeof pid === 'string' && pid.length > 0) ids.add(pid)
+    }
+  }
+  return ids
+}
+
+export function noticedKinds(agentId: string, events: readonly SimEvent[]): Set<string> {
+  const kinds = new Set<string>()
+  for (const e of events) {
+    if (e.type !== 'discovery:noticed' || e.agentId !== agentId) continue
+    const kind = String(e.data?.kind ?? '')
+    if (kind) kinds.add(kind)
+  }
+  return kinds
+}
+
+export interface NearbyPlaceLine {
+  place: Place
+  unfamiliar: boolean
+  dist2: number
+}
+
+/** Places within view, tagged unfamiliar when never examined or used. */
+export function nearbyPlacesForObservation(
+  agent: AgentState,
+  world: WorldState,
+  events: readonly SimEvent[],
+  radius = PLACE_VIEW_RADIUS,
+): NearbyPlaceLine[] {
+  const r2 = radius * radius
+  const known = usedOrExaminedPlaceIds(agent.id, events)
+  const out: NearbyPlaceLine[] = []
+  for (const p of world.places) {
+    const dx = p.x - agent.x
+    const dy = p.y - agent.y
+    const d = dx * dx + dy * dy
+    if (d > r2) continue
+    out.push({
+      place: p,
+      unfamiliar: !known.has(p.id),
+      dist2: d,
+    })
+  }
+  out.sort((a, b) => {
+    if (a.dist2 !== b.dist2) return a.dist2 - b.dist2
+    return a.place.id < b.place.id ? -1 : a.place.id > b.place.id ? 1 : 0
+  })
+  return out.slice(0, 8)
+}
+
+export function formatNearbyPlaceLine(row: NearbyPlaceLine): string {
+  const label = placeKindLabel(row.place.kind)
+  return row.unfamiliar ? `${label} (unfamiliar)` : label
+}
