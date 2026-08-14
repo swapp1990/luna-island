@@ -27,7 +27,6 @@ import {
 } from './luna-budget'
 import {
   createMindWorkerPool,
-  stripFences,
   type McpTransport,
   type MindWorkerPool,
 } from './luna-mcp-worker'
@@ -36,8 +35,27 @@ import {
   GROK_KILL_MS,
   runGrokWithDeps,
 } from './luna-grok'
+import {
+  REFLECT_EFFORT,
+  classifyMindRequest,
+  effortOverrideFor,
+  ensureMindHome,
+  mcpServerArgs,
+  mindHomePath,
+  recopyAuth,
+  resolveDecideEffort,
+  withCodexHome,
+  type MindHomeFs,
+} from './luna-mind-home'
+import {
+  CODEX_KILL_MS,
+  runCodexWithDeps,
+  type CodexSpawnChild,
+  type CodexSpawnOptions,
+} from './luna-codex-exec'
 
 export { DEFAULT_GROK_MODEL, GROK_KILL_MS, runGrokWithDeps } from './luna-grok'
+export { runCodexWithDeps } from './luna-codex-exec'
 
 export {
   BudgetTracker,
@@ -51,7 +69,7 @@ export type { BudgetSnapshot, SidecarDeps, WorkerHealth }
 const SCRATCH = path.join(os.tmpdir(), 'luna-mind')
 // Measured: a cold `codex exec` round-trip takes ~30s on this machine — the
 // original 25s ceiling killed healthy calls. The sim never blocks on a mind.
-const KILL_MS = 60_000
+const KILL_MS = CODEX_KILL_MS
 
 function parseEnvInt(name: string, fallback: number): number {
   const raw = process.env[name]
@@ -109,30 +127,34 @@ function readBody(req: Connect.IncomingMessage): Promise<string> {
   })
 }
 
+export interface CodexMcpSpawnOpts {
+  env?: Record<string, string | undefined>
+  win32?: boolean
+  spawnImpl?: (
+    command: string,
+    args: string[],
+    options: CodexSpawnOptions,
+  ) => CodexSpawnChild
+}
+
 /**
  * Spawn `codex mcp-server` matching today's exec guarantees.
  * mcp-server has no `--skip-git-repo-check` flag; `-c skip_git_repo_check=true`
  * plus per-request `config` is the equivalent. Sandbox via `-c` and per-request.
  */
-export function spawnCodexMcpTransport(scratchDir: string): McpTransport {
-  const child = spawn(
-    'codex',
-    [
-      'mcp-server',
-      '-c',
-      'sandbox_mode="read-only"',
-      '-c',
-      'approval_policy="never"',
-      '-c',
-      'skip_git_repo_check=true',
-    ],
-    {
-      cwd: scratchDir,
-      env: { ...process.env },
-      shell: process.platform === 'win32',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    },
-  )
+export function spawnCodexMcpTransport(
+  scratchDir: string,
+  opts?: CodexMcpSpawnOpts,
+): McpTransport {
+  const env = opts?.env ?? withCodexHome({ ...process.env }, mindHomePath(os.tmpdir()))
+  const spawnImpl = opts?.spawnImpl ?? spawn
+  const win32 = opts?.win32 ?? process.platform === 'win32'
+  const child = spawnImpl('codex', mcpServerArgs(), {
+    cwd: scratchDir,
+    env,
+    shell: win32,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   child.stderr?.on('data', (d: Buffer) => {
     const msg = d.toString('utf8').trim()
     if (!msg) return
@@ -160,61 +182,23 @@ export function spawnCodexMcpTransport(scratchDir: string): McpTransport {
   }
 }
 
-export function runCodex(system: string, user: string): Promise<{ text: string; latencyMs: number }> {
-  const prompt = `${system}\n\n---\n\n${user}\n`
-  const t0 = Date.now()
-  return new Promise((resolve, reject) => {
-    // --skip-git-repo-check: scratch cwd is intentionally not a git repo
-    const child = spawn(
-      'codex',
-      ['exec', '-s', 'read-only', '--skip-git-repo-check', '-'],
-      {
-        cwd: SCRATCH,
-        env: { ...process.env },
-        shell: process.platform === 'win32',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      },
-    )
-    let stdout = ''
-    let stderr = ''
-    let settled = false
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), 500)
-      reject(new Error(`codex kill-timeout after ${KILL_MS}ms`))
-    }, KILL_MS)
-
-    child.stdout?.on('data', (d: Buffer) => {
-      stdout += d.toString('utf8')
-    })
-    child.stderr?.on('data', (d: Buffer) => {
-      stderr += d.toString('utf8')
-    })
-    child.on('error', (err) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      const latencyMs = Date.now() - t0
-      if (code !== 0 && !stdout.trim()) {
-        reject(
-          new Error(
-            `codex exit ${code}: ${stderr.slice(0, 400) || 'no output'}`,
-          ),
-        )
-        return
-      }
-      resolve({ text: stripFences(stdout), latencyMs })
-    })
-    child.stdin?.write(prompt)
-    child.stdin?.end()
+export function runCodex(
+  system: string,
+  user: string,
+  opts?: {
+    effort?: string
+    recopyAuth?: () => void
+    env?: Record<string, string | undefined>
+  },
+): Promise<{ text: string; latencyMs: number }> {
+  return runCodexWithDeps(system, user, {
+    scratchDir: SCRATCH,
+    env: opts?.env ?? withCodexHome({ ...process.env }, mindHomePath(os.tmpdir())),
+    effort: opts?.effort,
+    win32: process.platform === 'win32',
+    now: () => Date.now(),
+    recopyAuth: opts?.recopyAuth,
+    spawnImpl: (command, args, options) => spawn(command, args, options),
   })
 }
 
@@ -248,25 +232,29 @@ function attachMiddleware(
   deps: SidecarDeps,
   scratchDir: string,
   getWorker: () => WorkerHealth,
+  mindHome: boolean,
 ): void {
   middlewares.use(async (req, res, next) => {
     const url = req.url?.split('?')[0] ?? ''
     if (url === '/api/luna/health' && req.method === 'GET') {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify(healthPayload(deps.budget, scratchDir, getWorker())))
+      res.end(
+        JSON.stringify(healthPayload(deps.budget, scratchDir, getWorker(), mindHome)),
+      )
       return
     }
     if (url === '/api/luna/decide' && req.method === 'POST') {
       try {
         // Budget is the first gate inside handleDecide — before busy / runner.
         const raw = await readBody(req)
-        let body: { system?: string; user?: string; engine?: string }
+        let body: { system?: string; user?: string; engine?: string; kind?: string }
         try {
           body = JSON.parse(raw) as {
             system?: string
             user?: string
             engine?: string
+            kind?: string
           }
         } catch {
           res.statusCode = 400
@@ -295,8 +283,58 @@ function attachMiddleware(
   })
 }
 
+function realMindFs(): MindHomeFs {
+  return {
+    mkdir: (dirPath) => {
+      fs.mkdirSync(dirPath, { recursive: true })
+    },
+    writeFile: (filePath, data) => {
+      fs.writeFileSync(filePath, data, 'utf8')
+    },
+    readFile: (filePath) => fs.readFileSync(filePath, 'utf8'),
+  }
+}
+
 export function lunaSidecarPlugin(): Plugin {
   ensureScratch()
+  const mindFs = realMindFs()
+  const mindLog = (msg: string) => {
+    // eslint-disable-next-line no-console
+    console.log(msg)
+  }
+  const mind = ensureMindHome({
+    tmpdir: os.tmpdir(),
+    homedir: os.homedir(),
+    env: process.env,
+    fs: mindFs,
+    log: mindLog,
+  })
+  const reflectMind = ensureMindHome({
+    tmpdir: os.tmpdir(),
+    homedir: os.homedir(),
+    env: process.env,
+    fs: mindFs,
+    variant: 'reflect',
+    log: mindLog,
+  })
+  const homeEffort = resolveDecideEffort(process.env)
+  const mindEnv = withCodexHome({ ...process.env }, mind.home)
+  const reflectEnv = withCodexHome({ ...process.env }, reflectMind.home)
+  const recopyMindAuth = () => {
+    recopyAuth({
+      tmpdir: os.tmpdir(),
+      homedir: os.homedir(),
+      fs: mindFs,
+      log: mindLog,
+    })
+    recopyAuth({
+      tmpdir: os.tmpdir(),
+      homedir: os.homedir(),
+      fs: mindFs,
+      variant: 'reflect',
+      log: mindLog,
+    })
+  }
   const limits = {
     maxPerHour: parseEnvInt('LUNA_MAX_PER_HOUR', DEFAULT_MAX_PER_HOUR),
     maxPerDay: parseEnvInt('LUNA_MAX_PER_DAY', DEFAULT_MAX_PER_DAY),
@@ -309,11 +347,20 @@ export function lunaSidecarPlugin(): Plugin {
   // One mcp-server multiplexes overlapping `codex` tool calls (measured:
   // two in-flight calls finished in ~max, not ~sum). HTTP still caps at K.
   const pool: MindWorkerPool = createMindWorkerPool({
-    createTransport: () => spawnCodexMcpTransport(SCRATCH),
-    fallback: runCodex,
+    createTransport: () =>
+      spawnCodexMcpTransport(SCRATCH, {
+        env: mindEnv,
+      }),
+    fallback: (system, user, effort) =>
+      runCodex(system, user, {
+        effort,
+        recopyAuth: recopyMindAuth,
+        env: mindEnv,
+      }),
     maxWorkers: 1,
     scratchDir: SCRATCH,
     killMs: KILL_MS,
+    onUnauthorized: recopyMindAuth,
   })
   const defaultEngine = resolveDefaultEngine()
   const workerLabel = defaultEngine === 'grok' ? 'grok' : 'mcp'
@@ -322,18 +369,42 @@ export function lunaSidecarPlugin(): Plugin {
   const deps: SidecarDeps = {
     busy,
     budget,
-    runner: (system, user) => pool.decide(system, user),
+    runner: (system, user, meta) => {
+      const kind = classifyMindRequest({ system, user, kind: meta?.kind })
+      if (kind === 'reflect') {
+        const effort = effortOverrideFor(kind, REFLECT_EFFORT)
+        return runCodex(system, user, {
+          effort,
+          recopyAuth: recopyMindAuth,
+          env: reflectEnv,
+        }).then((r) => ({ ...r, worker: 'exec' as const }))
+      }
+      const effort = effortOverrideFor(kind, homeEffort)
+      return pool.decide(system, user, effort)
+    },
     grokRunner: (system, user) => runGrok(system, user),
     defaultEngine,
   }
   return {
     name: 'luna-sidecar',
     configureServer(server) {
-      attachMiddleware(server.middlewares, deps, SCRATCH, () => pool.status())
+      attachMiddleware(
+        server.middlewares,
+        deps,
+        SCRATCH,
+        () => pool.status(),
+        mind.ready && reflectMind.ready,
+      )
       server.httpServer?.on('close', () => pool.dispose())
     },
     configurePreviewServer(server) {
-      attachMiddleware(server.middlewares, deps, SCRATCH, () => pool.status())
+      attachMiddleware(
+        server.middlewares,
+        deps,
+        SCRATCH,
+        () => pool.status(),
+        mind.ready && reflectMind.ready,
+      )
       server.httpServer?.on('close', () => pool.dispose())
     },
   }

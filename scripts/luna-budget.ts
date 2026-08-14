@@ -11,9 +11,12 @@ export type WorkerKind = 'mcp' | 'exec' | 'grok'
 export type WorkerHealth = 'up' | 'restarting' | 'fallback'
 export type MindEngine = 'codex' | 'grok'
 
+export type MindCallMeta = { kind?: string }
+
 export type CodexRunner = (
   system: string,
   user: string,
+  meta?: MindCallMeta,
 ) => Promise<{ text: string; latencyMs: number; worker?: WorkerKind }>
 
 export interface BudgetLimits {
@@ -242,7 +245,7 @@ export function resolveRequestEngine(
  */
 export async function handleDecide(
   deps: SidecarDeps,
-  body: { system?: string; user?: string; engine?: string },
+  body: { system?: string; user?: string; engine?: string; kind?: string },
 ): Promise<{
   status: number
   json: Record<string, unknown>
@@ -284,7 +287,9 @@ export async function handleDecide(
   const lane = deps.busy.count
   const maxLanes = deps.busy.max
   try {
-    const { text, latencyMs, worker } = await runner(system, user)
+    const { text, latencyMs, worker } = await runner(system, user, {
+      kind: body.kind,
+    })
     const snap = deps.budget.recordSuccess()
     const kind = worker ?? 'exec'
     // eslint-disable-next-line no-console
@@ -316,12 +321,14 @@ export function healthPayload(
   budget: BudgetTracker,
   scratch?: string,
   worker?: WorkerHealth,
+  mindHome?: boolean,
 ): Record<string, unknown> {
   const snap = budget.snapshot()
   return {
     ok: true,
     ...(scratch != null ? { scratch } : {}),
     ...(worker != null ? { worker } : {}),
+    ...(mindHome != null ? { mindHome } : {}),
     budget: {
       usedHour: snap.usedHour,
       maxHour: snap.maxHour,

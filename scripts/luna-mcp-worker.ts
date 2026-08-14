@@ -5,6 +5,7 @@
  * Never call "codex-reply" / continue / threadId.
  */
 import type { CodexRunner, WorkerHealth, WorkerKind } from './luna-budget'
+import { isUnauthorizedError, mcpCallConfig } from './luna-mind-home'
 
 export const MCP_FRESH_TOOL = 'codex'
 
@@ -26,10 +27,11 @@ export interface CodexRunnerResult {
 export type FallbackRunner = (
   system: string,
   user: string,
+  effort?: string,
 ) => Promise<{ text: string; latencyMs: number }>
 
 export interface MindWorkerPool {
-  decide(system: string, user: string): Promise<CodexRunnerResult>
+  decide(system: string, user: string, effort?: string): Promise<CodexRunnerResult>
   status(): WorkerHealth
   dispose(): void
 }
@@ -46,6 +48,7 @@ export interface MindWorkerPoolOpts {
   maxRestarts?: number
   restartWindowMs?: number
   backoffMs?: (attemptInWindow: number) => number
+  onUnauthorized?: () => void
 }
 
 const DEFAULT_KILL_MS = 60_000
@@ -265,7 +268,13 @@ class McpSession {
     this.transport.kill(signal)
   }
 
-  async callFresh(prompt: string, cwd: string, timeoutMs: number, cancelGraceMs: number): Promise<string> {
+  async callFresh(
+    prompt: string,
+    cwd: string,
+    timeoutMs: number,
+    cancelGraceMs: number,
+    effort?: string,
+  ): Promise<string> {
     await this.ready
     const params = {
       name: MCP_FRESH_TOOL,
@@ -274,7 +283,7 @@ class McpSession {
         sandbox: 'read-only',
         cwd,
         'approval-policy': 'never',
-        config: { skip_git_repo_check: true },
+        config: mcpCallConfig(effort),
       },
     }
     try {
@@ -464,10 +473,14 @@ export function createMindWorkerPool(opts: MindWorkerPoolOpts): MindWorkerPool {
     notifyWaiters()
   }
 
-  async function decide(system: string, user: string): Promise<CodexRunnerResult> {
+  async function decide(
+    system: string,
+    user: string,
+    effort?: string,
+  ): Promise<CodexRunnerResult> {
     const t0 = Date.now()
     if (disposed || mode === 'fallback') {
-      const r = await opts.fallback(system, user)
+      const r = await opts.fallback(system, user, effort)
       return { text: stripFences(r.text), latencyMs: r.latencyMs, worker: 'exec' }
     }
 
@@ -475,19 +488,30 @@ export function createMindWorkerPool(opts: MindWorkerPoolOpts): MindWorkerPool {
     try {
       slot = await acquire()
     } catch {
-      const r = await opts.fallback(system, user)
+      const r = await opts.fallback(system, user, effort)
       return { text: stripFences(r.text), latencyMs: r.latencyMs, worker: 'exec' }
     }
 
+    const prompt = combinePrompt(system, user)
     try {
       const session = slot.session
       if (!session?.alive) throw new Error('mcp worker unavailable')
-      const raw = await session.callFresh(
-        combinePrompt(system, user),
-        opts.scratchDir,
-        killMs,
-        cancelGraceMs,
-      )
+      let raw: string
+      try {
+        raw = await session.callFresh(prompt, opts.scratchDir, killMs, cancelGraceMs, effort)
+      } catch (err) {
+        if (!isUnauthorizedError(err)) throw err
+        opts.onUnauthorized?.()
+        const retrySession = slot.session
+        if (!retrySession?.alive) throw err
+        raw = await retrySession.callFresh(
+          prompt,
+          opts.scratchDir,
+          killMs,
+          cancelGraceMs,
+          effort,
+        )
+      }
       return {
         text: stripFences(raw),
         latencyMs: Date.now() - t0,
@@ -500,7 +524,7 @@ export function createMindWorkerPool(opts: MindWorkerPoolOpts): MindWorkerPool {
         throw err
       }
       void recover(slot)
-      const r = await opts.fallback(system, user)
+      const r = await opts.fallback(system, user, effort)
       return { text: stripFences(r.text), latencyMs: r.latencyMs, worker: 'exec' }
     } finally {
       if (slot) release(slot)
