@@ -7,10 +7,13 @@ export const DEFAULT_MAX_PER_HOUR = 60
 export const DEFAULT_MAX_PER_DAY = 300
 const HOUR_MS = 60 * 60 * 1000
 
+export type WorkerKind = 'mcp' | 'exec'
+export type WorkerHealth = 'up' | 'restarting' | 'fallback'
+
 export type CodexRunner = (
   system: string,
   user: string,
-) => Promise<{ text: string; latencyMs: number }>
+) => Promise<{ text: string; latencyMs: number; worker?: WorkerKind }>
 
 export interface BudgetLimits {
   maxPerHour: number
@@ -256,11 +259,12 @@ export async function handleDecide(
   const lane = deps.busy.count
   const maxLanes = deps.busy.max
   try {
-    const { text, latencyMs } = await deps.runner(system, user)
+    const { text, latencyMs, worker } = await deps.runner(system, user)
     const snap = deps.budget.recordSuccess()
+    const kind = worker ?? 'exec'
     // eslint-disable-next-line no-console
     console.log(
-      `[luna-sidecar] decide ${latencyMs}ms chars=${text.length} budget=${snap.usedHour}/${snap.maxHour}h ${snap.usedDay}/${snap.maxDay}d lane=${lane}/${maxLanes}`,
+      `[luna-sidecar] decide ${latencyMs}ms worker=${kind} lane=${lane}/${maxLanes} budget=${snap.usedHour}/${snap.maxHour}h ${snap.usedDay}/${snap.maxDay}d`,
     )
     return {
       status: 200,
@@ -286,11 +290,13 @@ export async function handleDecide(
 export function healthPayload(
   budget: BudgetTracker,
   scratch?: string,
+  worker?: WorkerHealth,
 ): Record<string, unknown> {
   const snap = budget.snapshot()
   return {
     ok: true,
     ...(scratch != null ? { scratch } : {}),
+    ...(worker != null ? { worker } : {}),
     budget: {
       usedHour: snap.usedHour,
       maxHour: snap.maxHour,

@@ -3,9 +3,11 @@
  * GET  /api/luna/health
  * POST /api/luna/decide  { system, user } → { text }
  *
- * Spawns `codex exec -s read-only -` with cwd = empty scratch dir.
+ * Primary path: one persistent `codex mcp-server` (stdio JSON-RPC; concurrent
+ * tools/call measured), each decide a fresh `codex` tool call. Cold `codex exec`
+ * is the fallback.
  * Up to K concurrent in-flight requests (LUNA_CONCURRENCY, default 3, clamp 1–4);
- * extras get 429. Hard budget gates (hour + day) → 402 before any codex spawn.
+ * extras get 429. Hard budget gates (hour + day) → 402 before any worker call.
  */
 import type { Plugin, Connect } from 'vite'
 import { spawn } from 'node:child_process'
@@ -19,9 +21,15 @@ import {
   handleDecide,
   healthPayload,
   type BudgetSnapshot,
-  type CodexRunner,
   type SidecarDeps,
+  type WorkerHealth,
 } from './luna-budget'
+import {
+  createMindWorkerPool,
+  stripFences,
+  type McpTransport,
+  type MindWorkerPool,
+} from './luna-mcp-worker'
 
 export {
   BudgetTracker,
@@ -30,7 +38,7 @@ export {
   handleDecide,
   healthPayload,
 }
-export type { BudgetSnapshot, CodexRunner, SidecarDeps }
+export type { BudgetSnapshot, SidecarDeps, WorkerHealth }
 
 const SCRATCH = path.join(os.tmpdir(), 'luna-mind')
 // Measured: a cold `codex exec` round-trip takes ~30s on this machine — the
@@ -72,29 +80,6 @@ function filePersist(scratchDir: string) {
   }
 }
 
-function extractJsonObject(text: string): string | null {
-  let s = text.trim()
-  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fence?.[1]) s = fence[1].trim()
-  const start = s.indexOf('{')
-  if (start < 0) return null
-  let depth = 0
-  for (let i = start; i < s.length; i++) {
-    const c = s[i]
-    if (c === '{') depth++
-    else if (c === '}') {
-      depth--
-      if (depth === 0) return s.slice(start, i + 1)
-    }
-  }
-  return null
-}
-
-function stripFences(text: string): string {
-  const extracted = extractJsonObject(text)
-  return extracted ?? text.trim()
-}
-
 function readBody(req: Connect.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
@@ -102,6 +87,57 @@ function readBody(req: Connect.IncomingMessage): Promise<string> {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
     req.on('error', reject)
   })
+}
+
+/**
+ * Spawn `codex mcp-server` matching today's exec guarantees.
+ * mcp-server has no `--skip-git-repo-check` flag; `-c skip_git_repo_check=true`
+ * plus per-request `config` is the equivalent. Sandbox via `-c` and per-request.
+ */
+export function spawnCodexMcpTransport(scratchDir: string): McpTransport {
+  const child = spawn(
+    'codex',
+    [
+      'mcp-server',
+      '-c',
+      'sandbox_mode="read-only"',
+      '-c',
+      'approval_policy="never"',
+      '-c',
+      'skip_git_repo_check=true',
+    ],
+    {
+      cwd: scratchDir,
+      env: { ...process.env },
+      shell: process.platform === 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    },
+  )
+  child.stderr?.on('data', (d: Buffer) => {
+    const msg = d.toString('utf8').trim()
+    if (!msg) return
+    // eslint-disable-next-line no-console
+    console.error(`[luna-sidecar] mcp-server: ${msg.slice(0, 400)}`)
+  })
+  return {
+    write(line: string): void {
+      child.stdin?.write(line.endsWith('\n') ? line : `${line}\n`)
+    },
+    onChunk(cb: (chunk: string) => void): void {
+      child.stdout?.on('data', (d: Buffer) => {
+        cb(d.toString('utf8'))
+      })
+    },
+    onExit(cb: (code: number | null, signal: string | null) => void): void {
+      child.on('close', (code, signal) => {
+        cb(code, signal)
+      })
+    },
+    kill(signal?: string): void {
+      child.kill((signal as NodeJS.Signals | undefined) ?? 'SIGTERM')
+      setTimeout(() => child.kill('SIGKILL'), 500)
+    },
+  }
 }
 
 export function runCodex(system: string, user: string): Promise<{ text: string; latencyMs: number }> {
@@ -166,13 +202,14 @@ function attachMiddleware(
   middlewares: Connect.Server,
   deps: SidecarDeps,
   scratchDir: string,
+  getWorker: () => WorkerHealth,
 ): void {
   middlewares.use(async (req, res, next) => {
     const url = req.url?.split('?')[0] ?? ''
     if (url === '/api/luna/health' && req.method === 'GET') {
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
-      res.end(JSON.stringify(healthPayload(deps.budget, scratchDir)))
+      res.end(JSON.stringify(healthPayload(deps.budget, scratchDir, getWorker())))
       return
     }
     if (url === '/api/luna/decide' && req.method === 'POST') {
@@ -220,20 +257,31 @@ export function lunaSidecarPlugin(): Plugin {
   })
   const concurrency = resolveSidecarConcurrency()
   const busy = { count: 0, max: concurrency }
+  // One mcp-server multiplexes overlapping `codex` tool calls (measured:
+  // two in-flight calls finished in ~max, not ~sum). HTTP still caps at K.
+  const pool: MindWorkerPool = createMindWorkerPool({
+    createTransport: () => spawnCodexMcpTransport(SCRATCH),
+    fallback: runCodex,
+    maxWorkers: 1,
+    scratchDir: SCRATCH,
+    killMs: KILL_MS,
+  })
   // eslint-disable-next-line no-console
-  console.log(`[luna-sidecar] concurrency=${concurrency}`)
+  console.log(`[luna-sidecar] concurrency=${concurrency} worker=mcp`)
   const deps: SidecarDeps = {
     busy,
     budget,
-    runner: runCodex,
+    runner: (system, user) => pool.decide(system, user),
   }
   return {
     name: 'luna-sidecar',
     configureServer(server) {
-      attachMiddleware(server.middlewares, deps, SCRATCH)
+      attachMiddleware(server.middlewares, deps, SCRATCH, () => pool.status())
+      server.httpServer?.on('close', () => pool.dispose())
     },
     configurePreviewServer(server) {
-      attachMiddleware(server.middlewares, deps, SCRATCH)
+      attachMiddleware(server.middlewares, deps, SCRATCH, () => pool.status())
+      server.httpServer?.on('close', () => pool.dispose())
     },
   }
 }
