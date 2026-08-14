@@ -1162,4 +1162,76 @@ test.describe.serial('lunabrain harness', () => {
     expect(final.fallbackEvents).toBe(0)
     expect(final.says).toBeGreaterThanOrEqual(2)
   })
+
+  test('?brain=grok boots; provider is grok; mocked sidecar decide flows', async ({
+    page,
+  }) => {
+    const engines: string[] = []
+    await page.route('**/api/luna/decide', async (route) => {
+      let engine = ''
+      try {
+        const posted = route.request().postDataJSON() as { engine?: string }
+        engine = posted.engine ?? ''
+      } catch {
+        engine = ''
+      }
+      engines.push(engine)
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          text: '{"action":"wander","reasoning":"I will walk the plaza and see who is about."}',
+          latencyMs: 1,
+          budget: { usedHour: 1, maxHour: 60, usedDay: 1, maxDay: 300 },
+        }),
+      })
+    })
+
+    const url = '/?brain=grok&noNewConversations=1&mindWallFloorMs=0'
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await page.evaluate(async () => {
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.deleteDatabase('luna-island')
+        req.onsuccess = () => resolve()
+        req.onerror = () => reject(req.error)
+        req.onblocked = () => resolve()
+      })
+    })
+    await page.goto(url)
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
+      .toBe(true)
+
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.enabled === true),
+      )
+      .toBe(true)
+    const provider = await page.evaluate(
+      () => (window as any).__simState?.mind?.provider as string,
+    )
+    expect(provider).toBe('grok')
+
+    await page.evaluate(() => (window as any).__simControl.ffwd(120))
+    await expect
+      .poll(async () =>
+        page.evaluate(() => (window as any).__simState?.mind?.decisions as number),
+      )
+      .toBeGreaterThanOrEqual(1)
+
+    // Provider label is hidden while the chip shows "thinking…"
+    await expect
+      .poll(async () =>
+        page.evaluate(() => ((window as any).__simState?.mind?.thinking as number) ?? 0),
+      )
+      .toBe(0)
+    await expect(page.getByTestId('mind-chip-provider')).toHaveText('grok')
+
+    expect(engines.length).toBeGreaterThanOrEqual(1)
+    expect(engines.every((e) => e === 'grok')).toBe(true)
+  })
 })

@@ -276,7 +276,7 @@ export function App() {
       const loop = createLoop(live, scene)
       loopRef.current = loop
 
-      // LunaBrain: ?brain=mock|codex|off|auto
+      // LunaBrain: ?brain=mock|codex|grok|off|auto
       const attachMind = (m: LunaBrainService) => {
         if (!m.isEnabled()) {
           loop.setMindHook(null)

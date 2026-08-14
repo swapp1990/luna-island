@@ -20,6 +20,7 @@ import {
   CodexProvider,
   DEFAULT_BUDGET_MAX_DAY,
   DEFAULT_BUDGET_MAX_HOUR,
+  GrokProvider,
   MockProvider,
   probeSidecarHealth,
   type MindBudgetInfo,
@@ -71,7 +72,7 @@ const LUNA_BUSY_RETRY_MS = 250
  */
 export const MIND_WALL_FLOOR_MS = 15_000
 
-export type BrainMode = 'codex' | 'mock' | 'off'
+export type BrainMode = 'codex' | 'grok' | 'mock' | 'off'
 
 export interface MindExchange {
   agentId: string
@@ -227,6 +228,7 @@ export function parseBrainQuery(search: string): BrainMode {
   if (v === 'off') return 'off'
   if (v === 'mock') return 'mock'
   if (v === 'codex') return 'codex'
+  if (v === 'grok') return 'grok'
   return 'auto' as BrainMode // resolved async
 }
 
@@ -329,6 +331,8 @@ export class LunaBrainService {
       })
     } else if (mode === 'codex') {
       this.provider = new CodexProvider()
+    } else if (mode === 'grok') {
+      this.provider = new GrokProvider()
     } else if (mode === 'off') {
       this.provider = null
     }
@@ -348,6 +352,12 @@ export class LunaBrainService {
     if (this.mode === 'codex') {
       this.provider = this.provider ?? new CodexProvider()
       // Best-effort budget from health
+      const health = await probeSidecarHealth()
+      if (health.budget) this.applyBudgetSnapshot(health.budget)
+      return
+    }
+    if (this.mode === 'grok') {
+      this.provider = this.provider ?? new GrokProvider()
       const health = await probeSidecarHealth()
       if (health.budget) this.applyBudgetSnapshot(health.budget)
       return
@@ -1930,6 +1940,7 @@ export function brainModeFromLocation(): BrainModeOrAuto {
   if (v === 'off') return 'off'
   if (v === 'mock') return 'mock'
   if (v === 'codex') return 'codex'
+  if (v === 'grok') return 'grok'
   return 'auto'
 }
 

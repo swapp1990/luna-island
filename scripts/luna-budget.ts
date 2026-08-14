@@ -7,8 +7,9 @@ export const DEFAULT_MAX_PER_HOUR = 60
 export const DEFAULT_MAX_PER_DAY = 300
 const HOUR_MS = 60 * 60 * 1000
 
-export type WorkerKind = 'mcp' | 'exec'
+export type WorkerKind = 'mcp' | 'exec' | 'grok'
 export type WorkerHealth = 'up' | 'restarting' | 'fallback'
+export type MindEngine = 'codex' | 'grok'
 
 export type CodexRunner = (
   system: string,
@@ -217,7 +218,22 @@ export interface SidecarBusy {
 export interface SidecarDeps {
   busy: SidecarBusy
   budget: BudgetTracker
+  /** Codex path (mcp worker or cold exec fallback). */
   runner: CodexRunner
+  /** Grok one-shot path. Required when a request resolves to engine=grok. */
+  grokRunner?: CodexRunner
+  /** Used when the request body omits `engine`. Default stays `codex`. */
+  defaultEngine?: MindEngine
+}
+
+/** Body `engine` wins; unknown/omitted → defaultEngine (codex unless sidecar env says grok). */
+export function resolveRequestEngine(
+  body: { engine?: string },
+  defaultEngine: MindEngine = 'codex',
+): MindEngine {
+  if (body.engine === 'grok') return 'grok'
+  if (body.engine === 'codex') return 'codex'
+  return defaultEngine
 }
 
 /**
@@ -226,7 +242,7 @@ export interface SidecarDeps {
  */
 export async function handleDecide(
   deps: SidecarDeps,
-  body: { system?: string; user?: string },
+  body: { system?: string; user?: string; engine?: string },
 ): Promise<{
   status: number
   json: Record<string, unknown>
@@ -253,13 +269,22 @@ export async function handleDecide(
     }
   }
 
+  const engine = resolveRequestEngine(body, deps.defaultEngine ?? 'codex')
+  const runner = engine === 'grok' ? deps.grokRunner : deps.runner
+  if (!runner) {
+    return {
+      status: 502,
+      json: { error: `${engine} engine not configured` },
+    }
+  }
+
   const system = body.system ?? ''
   const user = body.user ?? ''
   deps.busy.count += 1
   const lane = deps.busy.count
   const maxLanes = deps.busy.max
   try {
-    const { text, latencyMs, worker } = await deps.runner(system, user)
+    const { text, latencyMs, worker } = await runner(system, user)
     const snap = deps.budget.recordSuccess()
     const kind = worker ?? 'exec'
     // eslint-disable-next-line no-console

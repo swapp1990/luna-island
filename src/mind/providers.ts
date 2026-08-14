@@ -251,18 +251,23 @@ export class BudgetExhaustedProvider implements MindProvider {
   }
 }
 
+export type SidecarEngine = 'codex' | 'grok'
+
 /**
- * Real mind via Vite sidecar → local codex CLI.
- * Browser: POST /api/luna/decide { system, user } → { text }.
+ * Real mind via Vite sidecar → local CLI (codex or grok).
+ * Browser: POST /api/luna/decide { system, user, engine } → { text }.
  */
 export class CodexProvider implements MindProvider {
-  readonly name = 'codex'
+  readonly name: string
   private readonly timeoutMs: number
+  private readonly engine: SidecarEngine
 
-  // Must exceed the sidecar's 60s kill-timeout so the server's verdict
+  // Must exceed the sidecar's kill-timeout so the server's verdict
   // (result or 502) always beats the client abort.
-  constructor(timeoutMs = 75_000) {
+  constructor(timeoutMs = 75_000, engine: SidecarEngine = 'codex') {
     this.timeoutMs = timeoutMs
+    this.engine = engine
+    this.name = engine
   }
 
   async decide(prompt: MindPrompt): Promise<MindDecisionResult> {
@@ -276,7 +281,11 @@ export class CodexProvider implements MindProvider {
       const res = await fetch('/api/luna/decide', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ system: prompt.system, user: prompt.user }),
+        body: JSON.stringify({
+          system: prompt.system,
+          user: prompt.user,
+          engine: this.engine,
+        }),
         signal: controller.signal,
       })
       if (res.status === 429) {
@@ -340,6 +349,16 @@ export class CodexProvider implements MindProvider {
     } finally {
       clearTimeout(timer)
     }
+  }
+}
+
+/**
+ * Same sidecar HTTP path as CodexProvider; body.engine = 'grok'.
+ * Client timeout sits above the sidecar's 30s grok kill-timeout.
+ */
+export class GrokProvider extends CodexProvider {
+  constructor(timeoutMs = 45_000) {
+    super(timeoutMs, 'grok')
   }
 }
 

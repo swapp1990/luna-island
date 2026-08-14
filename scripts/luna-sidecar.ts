@@ -21,6 +21,7 @@ import {
   handleDecide,
   healthPayload,
   type BudgetSnapshot,
+  type MindEngine,
   type SidecarDeps,
   type WorkerHealth,
 } from './luna-budget'
@@ -30,6 +31,13 @@ import {
   type McpTransport,
   type MindWorkerPool,
 } from './luna-mcp-worker'
+import {
+  DEFAULT_GROK_MODEL,
+  GROK_KILL_MS,
+  runGrokWithDeps,
+} from './luna-grok'
+
+export { DEFAULT_GROK_MODEL, GROK_KILL_MS, runGrokWithDeps } from './luna-grok'
 
 export {
   BudgetTracker,
@@ -57,6 +65,18 @@ function parseEnvInt(name: string, fallback: number): number {
 function resolveSidecarConcurrency(): number {
   const n = parseEnvInt('LUNA_CONCURRENCY', 3)
   return Math.max(1, Math.min(4, n))
+}
+
+/** Default engine when the request omits `engine`. LUNA_ENGINE, default `codex`. */
+export function resolveDefaultEngine(): MindEngine {
+  return process.env.LUNA_ENGINE === 'grok' ? 'grok' : 'codex'
+}
+
+/** Grok CLI model id. LUNA_GROK_MODEL, default `grok-4.6`. */
+export function resolveGrokModel(): string {
+  const raw = process.env.LUNA_GROK_MODEL
+  if (raw == null || raw.trim() === '') return DEFAULT_GROK_MODEL
+  return raw.trim()
 }
 
 function ensureScratch(): void {
@@ -198,6 +218,31 @@ export function runCodex(system: string, user: string): Promise<{ text: string; 
   })
 }
 
+/**
+ * One-shot `grok --prompt-file` per decide. Prompt file is unique per request
+ * and always unlinked (success, nonzero exit, spawn error, kill-timeout).
+ */
+export function runGrok(
+  system: string,
+  user: string,
+): Promise<{ text: string; latencyMs: number; worker: 'grok' }> {
+  return runGrokWithDeps(system, user, {
+    scratchDir: SCRATCH,
+    model: resolveGrokModel(),
+    killMs: GROK_KILL_MS,
+    now: () => Date.now(),
+    pid: process.pid,
+    win32: process.platform === 'win32',
+    env: { ...process.env },
+    spawnImpl: (command, args, options) => spawn(command, args, options),
+    writeFile: (p, data) => fs.writeFileSync(p, data, 'utf8'),
+    unlink: (p) => fs.unlinkSync(p),
+    mkdir: (p) => {
+      fs.mkdirSync(p, { recursive: true })
+    },
+  })
+}
+
 function attachMiddleware(
   middlewares: Connect.Server,
   deps: SidecarDeps,
@@ -216,9 +261,13 @@ function attachMiddleware(
       try {
         // Budget is the first gate inside handleDecide — before busy / runner.
         const raw = await readBody(req)
-        let body: { system?: string; user?: string }
+        let body: { system?: string; user?: string; engine?: string }
         try {
-          body = JSON.parse(raw) as { system?: string; user?: string }
+          body = JSON.parse(raw) as {
+            system?: string
+            user?: string
+            engine?: string
+          }
         } catch {
           res.statusCode = 400
           res.setHeader('Content-Type', 'application/json')
@@ -266,12 +315,16 @@ export function lunaSidecarPlugin(): Plugin {
     scratchDir: SCRATCH,
     killMs: KILL_MS,
   })
+  const defaultEngine = resolveDefaultEngine()
+  const workerLabel = defaultEngine === 'grok' ? 'grok' : 'mcp'
   // eslint-disable-next-line no-console
-  console.log(`[luna-sidecar] concurrency=${concurrency} worker=mcp`)
+  console.log(`[luna-sidecar] concurrency=${concurrency} worker=${workerLabel}`)
   const deps: SidecarDeps = {
     busy,
     budget,
     runner: (system, user) => pool.decide(system, user),
+    grokRunner: (system, user) => runGrok(system, user),
+    defaultEngine,
   }
   return {
     name: 'luna-sidecar',
