@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { nearestAgentWithin } from '../sim/spots'
 import { openJobSlots, workersOfPlace } from '../sim/selectors'
-import type { AgentState, Place, SimTime } from '../sim/types'
+import type { AgentState, Place, SimEvent, SimTime } from '../sim/types'
+import { describeAgent, GLYPH_EMOJI, type GlyphKind } from './actionLanguage'
 
 const HEAD_Y = 0.22 + 0.55 + 0.16 * 0.85 // matches agents.ts head top-ish
 const BUBBLE_LIFT = 0.9
@@ -390,6 +391,12 @@ interface SpeechSlot {
   active: boolean
 }
 
+interface GlyphSlot {
+  el: HTMLElement
+  agentId: string | null
+  kind: GlyphKind | null
+}
+
 export interface OverlaysHandle {
   /** Every frame: project bubbles to screen. */
   updateFrame: (args: {
@@ -403,6 +410,8 @@ export interface OverlaysHandle {
     alpha: number
     now: number
     time?: SimTime | null
+    tick?: number
+    events?: readonly SimEvent[]
   }) => void
   /** Spawn / recycle a critical-need ambient bubble. */
   pushCritical: (agentId: string, need: string, now: number) => void
@@ -485,6 +494,28 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     el.style.display = 'none'
     root.appendChild(el)
     speechPool.push({ el, textEl, agentId: null, born: 0, active: false })
+  }
+
+  // Action-language glyphs (one per agent; update on kind change only)
+  const glyphPool: GlyphSlot[] = []
+  for (let i = 0; i < 24; i++) {
+    const el = document.createElement('div')
+    el.dataset.actionGlyph = String(i)
+    if (i === 0) el.dataset.testid = 'action-glyph'
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      transform: 'translate(-50%, -100%)',
+      fontSize: '16px',
+      lineHeight: '1',
+      pointerEvents: 'none',
+      zIndex: '9',
+      display: 'none',
+      filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.65))',
+    } as CSSStyleDeclaration)
+    root.appendChild(el)
+    glyphPool.push({ el, agentId: null, kind: null })
   }
 
   // Pooled critical bubbles
@@ -867,10 +898,14 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     alpha: number
     now: number
     time?: SimTime | null
+    tick?: number
+    events?: readonly SimEvent[]
   }) => {
     const { camera, width, height, selectedId, agents, places, prev, alpha, now } =
       args
     const time = args.time ?? null
+    const tick = args.tick ?? time?.tick ?? 0
+    const events = args.events ?? []
     const photoOn = photoSubjectId !== null
 
     // Speech bubbles (before status — may hide status for speaker)
@@ -916,6 +951,64 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       const opacity = age > fadeStart ? 1 - (age - fadeStart) / 500 : 1
       slot.el.style.display = 'block'
       slot.el.style.opacity = String(Math.max(0, opacity))
+      slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
+    }
+
+    // Action-language glyphs — one per agent, speech suppresses, photo keeps subject
+    for (let i = 0; i < glyphPool.length; i++) {
+      const slot = glyphPool[i]!
+      const agent = agents[i]
+      if (!agent) {
+        if (slot.kind !== null || slot.agentId !== null) {
+          slot.kind = null
+          slot.agentId = null
+          slot.el.style.display = 'none'
+          slot.el.textContent = ''
+        }
+        continue
+      }
+      if (photoOn && agent.id !== photoSubjectId) {
+        if (slot.el.style.display !== 'none') slot.el.style.display = 'none'
+        continue
+      }
+      const visual = describeAgent(agent, tick, {
+        events,
+        speechActive: speechActiveIds.has(agent.id),
+      })
+      const kind = visual.glyph
+      if (!kind) {
+        if (slot.kind !== null) {
+          slot.kind = null
+          slot.agentId = null
+          slot.el.style.display = 'none'
+          slot.el.textContent = ''
+        }
+        continue
+      }
+      if (slot.kind !== kind || slot.agentId !== agent.id) {
+        slot.kind = kind
+        slot.agentId = agent.id
+        slot.el.textContent = GLYPH_EMOJI[kind]
+        slot.el.dataset.glyph = kind
+        slot.el.dataset.agentId = agent.id
+        slot.el.style.color = kind === 'collapsed' ? '#ff4d4d' : '#f2f4f8'
+      }
+      const pos = interpPos(agent, prev, alpha)
+      const screen = project(
+        pos.x,
+        HEAD_Y + BUBBLE_LIFT * 0.85,
+        pos.z,
+        camera,
+        width,
+        height,
+        proj,
+      )
+      if (screen.behind) {
+        slot.el.style.display = 'none'
+        continue
+      }
+      slot.el.style.display = 'block'
+      slot.el.style.opacity = '1'
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
     }
 

@@ -1,4 +1,5 @@
 import type { SceneHandle } from './render/scene'
+import { describeDestination } from './render/actionLanguage'
 import { Simulation } from './sim/sim'
 import { dayEndTick, dayStartTick, toSimTime } from './sim/time'
 import type { MindBridgeState, SimMode, SimStateBridge } from './bridge'
@@ -231,6 +232,21 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             minGapTicks: 30,
           },
       photoMode,
+      actionLanguage: {
+        destMarkerAgentId:
+          selectedAgentId &&
+          (() => {
+            const ag = sim.state.agents.find((a) => a.id === selectedAgentId)
+            return ag && describeDestination(ag) ? selectedAgentId : null
+          })(),
+        destMarkerCount:
+          selectedAgentId &&
+          sim.state.agents.some(
+            (a) => a.id === selectedAgentId && describeDestination(a),
+          )
+            ? 1
+            : 0,
+      },
     }
   }
 
@@ -370,6 +386,10 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     const sim = viewSim()
     const alpha = speed > 0 ? Math.min(1, accumulator) : 1
     const t = toSimTime(sim.state.tick)
+    // Authority trace windowed to the viewed tick — fork logs on archived
+    // days can omit the moment the highlight was scored from.
+    const events = live.getEvents().filter((e) => e.tick <= sim.state.tick)
+    const settle = speed === 0
     scene.setTime(t)
     scene.updateAgents(
       sim.state.agents,
@@ -379,6 +399,10 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       selectedPlaceId,
       sim.state.places,
       now,
+      sim.state.tick,
+      events,
+      settle,
+      photoMode ? selectedAgentId : null,
     )
     if (follow && selectedAgentId) {
       scene.followAgent(sim.state.agents, prevPositions, alpha, selectedAgentId, 0.08)
@@ -391,6 +415,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       sim.state.places,
       now,
       t,
+      sim.state.tick,
+      events,
     )
     scene.updateEconomyVisuals(sim.state.places, now)
   }

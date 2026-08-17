@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { AgentState, WorldState } from '../sim/types'
+import type { AgentState, SimEvent, WorldState } from '../sim/types'
+import { describeBursts } from './actionLanguage'
 import { buildTerrain, type TerrainHandle } from './terrain'
 import { createDayNight, type DayNightHandle } from './daynight'
 import { createAgents, type AgentsHandle } from './agents'
@@ -53,6 +54,10 @@ export interface SceneHandle {
     selectedPlaceId?: string | null,
     places?: WorldState['places'],
     now?: number,
+    tick?: number,
+    events?: readonly SimEvent[],
+    settle?: boolean,
+    photoSubjectId?: string | null,
   ) => void
   /** Wire click-to-select; returns cleanup. */
   bindSelection: (cb: SelectionCallbacks) => () => void
@@ -73,6 +78,8 @@ export interface SceneHandle {
     places: WorldState['places'],
     now: number,
     time?: SimTime | null,
+    tick?: number,
+    events?: readonly SimEvent[],
   ) => void
   /** Sync bush berry-dot visibility to place inventory stock. */
   updateBushStock: (places: WorldState['places']) => void
@@ -109,7 +116,12 @@ export interface SceneHandle {
 declare global {
   interface Window {
     __cameraTarget?: { x: number; y: number; z: number }
-    __renderProbe?: { hats: number; tools: number; particles: number }
+    __renderProbe?: {
+      hats: number
+      tools: number
+      particles: number
+      destMarkers: number
+    }
     /** DEV/e2e: aim orbit camera at world xz. */
     __renderLookAt?: (x: number, z: number, dist?: number) => void
     /** DEV/e2e: world pos of a place mesh. */
@@ -203,10 +215,15 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     selectedId: string | null,
     selectedPlaceId: string | null = null,
     places: WorldState['places'] = [],
-    now = performance.now(),
+    now = 0,
+    tick = 0,
+    events: readonly SimEvent[] = [],
+    settle = false,
+    photoSubjectId: string | null = null,
   ) => {
     hoverAgents = list
     hoverPlaces = places
+    const simNow = (tick + Math.max(0, Math.min(1, alpha))) * 1000
     agents.update(
       list,
       prev,
@@ -214,12 +231,54 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
       selectedId,
       selectedPlaceId,
       places,
-      now,
+      simNow,
       fx,
       treePositions,
       (tx, tz, tNow) => terrain.shakeTreeAt(tx, tz, tNow),
+      tick,
+      events,
+      settle,
+      photoSubjectId,
     )
-    fx.update(now)
+    fx.update(simNow)
+
+    const bursts = describeBursts(events, tick)
+    const sites = new Map<
+      string,
+      { x: number; y: number; z: number; other?: { x: number; y: number; z: number }; place?: { x: number; y: number; z: number } }
+    >()
+    const interp = (ag: AgentState) => {
+      const a = Math.max(0, Math.min(1, alpha))
+      const px = prev.get(ag.id)?.x ?? ag.x
+      const py = prev.get(ag.id)?.y ?? ag.y
+      return { x: px + (ag.x - px) * a, z: py + (ag.y - py) * a }
+    }
+    for (const b of bursts) {
+      const ag = list.find((x) => x.id === b.agentId)
+      if (!ag) continue
+      const p = interp(ag)
+      const site: {
+        x: number
+        y: number
+        z: number
+        other?: { x: number; y: number; z: number }
+        place?: { x: number; y: number; z: number }
+      } = { x: p.x, y: 0.22, z: p.z }
+      if (b.otherId) {
+        const other = list.find((x) => x.id === b.otherId)
+        if (other) {
+          const op = interp(other)
+          site.other = { x: op.x, y: 0.22, z: op.z }
+        }
+      }
+      if (b.placeId) {
+        const pos = terrain.getPlaceWorldPos(b.placeId)
+        if (pos) site.place = { x: pos.x, y: pos.y, z: pos.z }
+      }
+      sites.set(b.agentId, site)
+    }
+    fx.syncBursts(bursts, sites, tick, alpha)
+
     // DEV-gated render probe for e2e (vite dev / e2e webServer)
     if (import.meta.env.DEV) {
       const juice = agents.getJuiceCounts()
@@ -227,8 +286,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
         hats: juice.hats,
         tools: juice.tools,
         particles: fx.activeCount(),
+        destMarkers: juice.destMarkers,
       }
     }
+    void now
   }
 
   const followAgent = (
@@ -266,6 +327,8 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     places: WorldState['places'],
     now: number,
     time: SimTime | null = null,
+    tick = 0,
+    events: readonly SimEvent[] = [],
   ) => {
     hoverAgents = list
     hoverPlaces = places
@@ -281,6 +344,8 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
       alpha,
       now,
       time,
+      tick,
+      events,
     })
 
     // Throttled hover tooltip (~10 Hz)

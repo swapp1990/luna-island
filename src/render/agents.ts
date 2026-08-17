@@ -1,6 +1,14 @@
 import * as THREE from 'three'
-import type { AgentState, Good, Place } from '../sim/types'
+import type { AgentState, Good, Place, SimEvent } from '../sim/types'
 import type { FxHandle } from './fx'
+import {
+  describeAgent,
+  describeDestination,
+  GLYPH_EMOJI,
+  type GlyphKind,
+  type PostureKind,
+  type PropKind,
+} from './actionLanguage'
 
 const BODY_H = 0.55
 const HEAD_R = 0.16
@@ -28,7 +36,7 @@ const HAT_COLORS = {
 } as const
 
 type HatKind = keyof typeof HAT_COLORS
-type ToolKind = 'hoe' | 'axe' | 'pick' | 'hammer'
+type ToolKind = 'hoe' | 'axe' | 'pick' | 'hammer' | 'berry' | 'mug'
 
 export interface AgentsHandle {
   root: THREE.Group
@@ -44,13 +52,17 @@ export interface AgentsHandle {
     fx?: FxHandle | null,
     treePositions?: Array<{ x: number; z: number }>,
     onTreeHit?: (x: number, z: number, now: number) => void,
+    tick?: number,
+    events?: readonly SimEvent[],
+    settle?: boolean,
+    photoSubjectId?: string | null,
   ) => void
   /** Mesh list for raycasting (pickables). */
   getPickables: () => THREE.Object3D[]
   /** Resolve a intersected object to agent id. */
   agentIdFromObject: (obj: THREE.Object3D) => string | null
   /** Visible hat / tool counts for DEV probe. */
-  getJuiceCounts: () => { hats: number; tools: number }
+  getJuiceCounts: () => { hats: number; tools: number; destMarkers: number }
   dispose: () => void
 }
 
@@ -70,16 +82,46 @@ function hashId(id: string): number {
   return Math.abs(h)
 }
 
+function makeGlyphTexture(kind: GlyphKind): THREE.CanvasTexture {
+  const c = document.createElement('canvas')
+  c.width = 96
+  c.height = 96
+  const ctx = c.getContext('2d')!
+  ctx.clearRect(0, 0, 96, 96)
+  if (kind === 'collapsed') {
+    ctx.beginPath()
+    ctx.arc(48, 48, 40, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(160, 20, 20, 0.72)'
+    ctx.fill()
+  }
+  ctx.font = '64px system-ui, Segoe UI Emoji, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillStyle = kind === 'collapsed' ? '#ffe0e0' : '#f4f6fa'
+  ctx.strokeStyle = 'rgba(0,0,0,0.55)'
+  ctx.lineWidth = 4
+  const emoji = GLYPH_EMOJI[kind]
+  ctx.strokeText(emoji, 48, 52)
+  ctx.fillText(emoji, 48, 52)
+  const tex = new THREE.CanvasTexture(c)
+  tex.needsUpdate = true
+  return tex
+}
+
 interface ToolMeshes {
   hoe: THREE.Group
   axe: THREE.Group
   pick: THREE.Group
   hammer: THREE.Group
+  berry: THREE.Group
+  mug: THREE.Group
 }
 
 interface AgentMesh {
   id: string
   group: THREE.Group
+  body: THREE.Mesh
+  head: THREE.Mesh
   bodyMat: THREE.MeshStandardMaterial
   headMat: THREE.MeshStandardMaterial
   baseBody: THREE.Color
@@ -102,6 +144,16 @@ interface AgentMesh {
   toolRoot: THREE.Group
   /** Last work-swing apex phase bin (0/1) for one-shot particle triggers. */
   lastApexBin: number
+  poseInited: boolean
+  poseY: number
+  poseRx: number
+  poseRy: number
+  poseRz: number
+  poseSy: number
+  poseHeadY: number
+  lastPosture: PostureKind
+  glyphSprite: THREE.Sprite
+  glyphKind: GlyphKind | null
 }
 
 function primaryCarryGood(agent: AgentState): Good | null {
@@ -117,14 +169,6 @@ function primaryCarryGood(agent: AgentState): Good | null {
 function isOnPath(agent: AgentState): boolean {
   const path = agent.action.path
   return !!(path && path.length > 0 && agent.pathIndex < path.length)
-}
-
-function isPerformingSleep(agent: AgentState): boolean {
-  return (
-    agent.action.kind === 'sleep' &&
-    (agent.action.path === undefined ||
-      agent.pathIndex >= (agent.action.path?.length ?? 0))
-  )
 }
 
 function isPerformingSocial(agent: AgentState): boolean {
@@ -215,6 +259,39 @@ function buildHammer(track: <T extends { dispose: () => void }>(o: T) => T): THR
   return g
 }
 
+function buildBerry(track: <T extends { dispose: () => void }>(o: T) => T): THREE.Group {
+  const g = new THREE.Group()
+  const berryMat = track(new THREE.MeshStandardMaterial({ color: 0xc43b4e, roughness: 0.55 }))
+  const leafMat = track(new THREE.MeshStandardMaterial({ color: 0x3d8a4a, roughness: 0.8 }))
+  const berry = new THREE.Mesh(track(new THREE.SphereGeometry(0.055, 8, 6)), berryMat)
+  berry.position.y = 0.06
+  g.add(berry)
+  const leaf = new THREE.Mesh(track(new THREE.BoxGeometry(0.05, 0.015, 0.03)), leafMat)
+  leaf.position.set(0.02, 0.11, 0)
+  g.add(leaf)
+  return g
+}
+
+function buildMug(track: <T extends { dispose: () => void }>(o: T) => T): THREE.Group {
+  const g = new THREE.Group()
+  const mugMat = track(new THREE.MeshStandardMaterial({ color: 0xcfc6b4, roughness: 0.7 }))
+  const cup = new THREE.Mesh(track(new THREE.CylinderGeometry(0.045, 0.04, 0.08, 8)), mugMat)
+  cup.position.y = 0.05
+  g.add(cup)
+  const handle = new THREE.Mesh(track(new THREE.TorusGeometry(0.028, 0.008, 6, 10, Math.PI)), mugMat)
+  handle.rotation.y = Math.PI / 2
+  handle.position.set(0.05, 0.05, 0)
+  g.add(handle)
+  return g
+}
+
+function shortestAngle(from: number, to: number): number {
+  let d = to - from
+  while (d > Math.PI) d -= Math.PI * 2
+  while (d < -Math.PI) d += Math.PI * 2
+  return d
+}
+
 export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHandle {
   const root = new THREE.Group()
   root.name = 'agents'
@@ -245,6 +322,30 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
   const helmetMat = track(
     new THREE.MeshStandardMaterial({ color: HAT_COLORS.quarry, roughness: 0.55, metalness: 0.25 }),
   )
+
+  const glyphTex: Record<GlyphKind, THREE.CanvasTexture> = {
+    collapsed: track(makeGlyphTexture('collapsed')),
+    hunger: track(makeGlyphTexture('hunger')),
+    energy: track(makeGlyphTexture('energy')),
+    social: track(makeGlyphTexture('social')),
+    examine: track(makeGlyphTexture('examine')),
+    sleep: track(makeGlyphTexture('sleep')),
+  }
+  const glyphMats: Record<GlyphKind, THREE.SpriteMaterial> = {
+    collapsed: track(
+      new THREE.SpriteMaterial({
+        map: glyphTex.collapsed,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      }),
+    ),
+    hunger: track(new THREE.SpriteMaterial({ map: glyphTex.hunger, transparent: true, depthTest: false, depthWrite: false })),
+    energy: track(new THREE.SpriteMaterial({ map: glyphTex.energy, transparent: true, depthTest: false, depthWrite: false })),
+    social: track(new THREE.SpriteMaterial({ map: glyphTex.social, transparent: true, depthTest: false, depthWrite: false })),
+    examine: track(new THREE.SpriteMaterial({ map: glyphTex.examine, transparent: true, depthTest: false, depthWrite: false })),
+    sleep: track(new THREE.SpriteMaterial({ map: glyphTex.sleep, transparent: true, depthTest: false, depthWrite: false })),
+  }
 
   for (const agent of agents) {
     const group = new THREE.Group()
@@ -324,11 +425,21 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     const axe = buildAxe(track)
     const pick = buildPick(track)
     const hammer = buildHammer(track)
-    for (const t of [hoe, axe, pick, hammer]) {
+    const berry = buildBerry(track)
+    const mug = buildMug(track)
+    for (const t of [hoe, axe, pick, hammer, berry, mug]) {
       t.visible = false
       toolRoot.add(t)
     }
     group.add(toolRoot)
+
+    const glyphSprite = new THREE.Sprite(glyphMats.examine)
+    glyphSprite.position.set(agent.x, HEAD_Y + 0.52, agent.y)
+    glyphSprite.scale.set(0.45, 0.45, 1)
+    glyphSprite.visible = false
+    glyphSprite.renderOrder = 80
+    glyphSprite.userData.agentId = agent.id
+    root.add(glyphSprite)
 
     group.position.set(agent.x, 0, agent.y)
     root.add(group)
@@ -341,6 +452,8 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     meshes.set(agent.id, {
       id: agent.id,
       group,
+      body,
+      head,
       bodyMat,
       headMat,
       baseBody,
@@ -356,9 +469,19 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       hatStall,
       hatCap,
       hatHelmet,
-      tools: { hoe, axe, pick, hammer },
+      tools: { hoe, axe, pick, hammer, berry, mug },
       toolRoot,
       lastApexBin: -1,
+      poseInited: false,
+      poseY: 0,
+      poseRx: 0,
+      poseRy: 0,
+      poseRz: 0,
+      poseSy: 1,
+      poseHeadY: HEAD_Y,
+      lastPosture: 'standing',
+      glyphSprite,
+      glyphKind: null,
     })
   }
 
@@ -399,9 +522,27 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
   placeRing.visible = false
   root.add(placeRing)
 
-  let pulseT = 0
+  const destGeo = track(new THREE.CircleGeometry(0.2, 20))
+  const destMat = track(
+    new THREE.MeshBasicMaterial({
+      color: 0xffe7a0,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  )
+  const destDisc = new THREE.Mesh(destGeo, destMat)
+  destDisc.name = 'dest-marker'
+  destDisc.renderOrder = 998
+  destDisc.rotation.x = -Math.PI / 2
+  destDisc.position.y = GROUND_Y + 0.03
+  destDisc.visible = false
+  root.add(destDisc)
+
   let hatCount = 0
   let toolCount = 0
+  let destMarkerCount = 0
 
   const setHat = (m: AgentMesh, job: HatKind | null) => {
     m.hatFarm.visible = job === 'farm'
@@ -415,7 +556,69 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     m.tools.axe.visible = tool === 'axe'
     m.tools.pick.visible = tool === 'pick'
     m.tools.hammer.visible = tool === 'hammer'
+    m.tools.berry.visible = tool === 'berry'
+    m.tools.mug.visible = tool === 'mug'
     m.toolRoot.visible = tool !== null
+  }
+
+  const applyPose = (
+    m: AgentMesh,
+    x: number,
+    z: number,
+    targetY: number,
+    targetRx: number,
+    targetRy: number,
+    targetRz: number,
+    targetSy: number,
+    targetHeadY: number,
+    settle: boolean,
+  ) => {
+    if (!m.poseInited || settle) {
+      m.poseY = targetY
+      m.poseRx = targetRx
+      m.poseRy = targetRy
+      m.poseRz = targetRz
+      m.poseSy = targetSy
+      m.poseHeadY = targetHeadY
+      m.poseInited = true
+    } else {
+      const k = 0.42
+      m.poseY += (targetY - m.poseY) * k
+      m.poseRx += (targetRx - m.poseRx) * k
+      m.poseRy += shortestAngle(m.poseRy, targetRy) * k
+      m.poseRz += (targetRz - m.poseRz) * k
+      m.poseSy += (targetSy - m.poseSy) * k
+      m.poseHeadY += (targetHeadY - m.poseHeadY) * k
+    }
+    m.group.position.set(x, m.poseY, z)
+    m.group.rotation.set(m.poseRx, m.poseRy, m.poseRz)
+    m.group.scale.set(1, m.poseSy, 1)
+    m.head.position.y = m.poseHeadY
+  }
+
+  const applyGlyph = (
+    m: AgentMesh,
+    agentId: string,
+    kind: GlyphKind | null,
+    x: number,
+    z: number,
+    posture: PostureKind,
+    subjectId: string | null,
+  ) => {
+    // 3D sprites are the photo-safe channel; live HUD uses HTML overlays.
+    const show = !!kind && subjectId !== null && subjectId === agentId
+    if (!show || !kind) {
+      m.glyphSprite.visible = false
+      m.glyphKind = null
+      return
+    }
+    if (m.glyphKind !== kind) {
+      m.glyphKind = kind
+      m.glyphSprite.material = glyphMats[kind]
+    }
+    const gy = posture === 'fallen' || posture === 'lying' ? 0.5 : HEAD_Y + 0.55
+    m.glyphSprite.position.set(x, gy, z)
+    m.glyphSprite.visible = true
   }
 
   const nearestTree = (
@@ -446,15 +649,21 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     selectedId: string | null,
     selectedPlaceId: string | null = null,
     places: Place[] = [],
-    now = performance.now(),
+    now = 0,
     fx: FxHandle | null = null,
     treePositions?: Array<{ x: number; z: number }>,
     onTreeHit?: (x: number, z: number, now: number) => void,
+    tick = 0,
+    events: readonly SimEvent[] = [],
+    settle = false,
+    photoSubjectId: string | null = null,
   ) => {
-    pulseT += 0.05
     const a = Math.max(0, Math.min(1, alpha))
+    const simTime = tick + a
+    const simNow = simTime * 1000
     hatCount = 0
     toolCount = 0
+    destMarkerCount = 0
 
     const placeById = new Map(places.map((p) => [p.id, p]))
 
@@ -472,9 +681,6 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       if (isPerformingSocial(p.agent)) socialStanding.push({ id, x: p.x, z: p.z })
     }
 
-    // ~1 Hz swing in radians of phase; wall-time based for smooth juice
-    const tSec = now / 1000
-
     for (const agent of agentsIn) {
       const m = meshes.get(agent.id)
       if (!m) continue
@@ -488,149 +694,189 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       m.lastX = x
       m.lastZ = z
 
-      const sleeping = isPerformingSleep(agent)
-      const socializing = isPerformingSocial(agent)
+      const visual = describeAgent(agent, tick, { events })
+      const posture = visual.posture
+      applyGlyph(m, agent.id, visual.glyph, x, z, posture, photoSubjectId)
+      const hauling = isHauling(agent)
       const walking = isOnPath(agent) && moved > 1e-5
       const working = isPerformingWork(agent)
-      const hauling = isHauling(agent)
 
       const jobPlace = agent.employedAt ? placeById.get(agent.employedAt) : undefined
       const job = jobKindFromPlace(jobPlace)
-      setHat(m, job)
-      if (job) hatCount++
+      const hideHat = posture === 'fallen'
+      setHat(m, hideHat ? null : job)
+      if (job && !hideHat) hatCount++
 
-      // Carry sack
+      m.hatRoot.scale.set(1, 1, 1)
+      m.hatRoot.position.y = HAT_Y
+
       const carry = primaryCarryGood(agent)
-      if (carry) {
+      if (carry && posture !== 'fallen' && posture !== 'lying' && posture !== 'sitting') {
         m.carryMesh.visible = true
         m.carryMat.color.setHex(CARRY_TINT[carry])
       } else {
         m.carryMesh.visible = false
       }
 
-      // Collapse: red pulse until recovery
+      // Tick-phased collapse tint (reads at night)
       if (agent.collapsed) {
-        const pulse = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(tSec * 4 + m.phase * Math.PI * 2))
-        m.bodyMat.color.copy(m.baseBody).lerp(new THREE.Color(0xc03030), pulse * 0.65)
-        m.headMat.color.copy(m.baseHead).lerp(new THREE.Color(0xc03030), pulse * 0.45)
-      } else if (!sleeping) {
+        const pulse =
+          0.55 + 0.45 * (0.5 + 0.5 * Math.sin(simTime * 4 + m.phase * Math.PI * 2))
+        m.bodyMat.color.copy(m.baseBody).lerp(new THREE.Color(0xc03030), pulse * 0.7)
+        m.headMat.color.copy(m.baseHead).lerp(new THREE.Color(0xc03030), pulse * 0.5)
+      } else if (posture === 'lying') {
+        m.bodyMat.color.copy(m.baseBody).multiplyScalar(0.6)
+        m.headMat.color.copy(m.baseHead).multiplyScalar(0.6)
+      } else {
         m.bodyMat.color.copy(m.baseBody)
         m.headMat.color.copy(m.baseHead)
       }
 
-      if (sleeping) {
-        m.group.position.set(x, 0, z)
-        m.group.scale.set(1, 0.5, 1)
-        m.group.rotation.set(0, m.group.rotation.y, 0)
-        if (!agent.collapsed) {
-          m.bodyMat.color.copy(m.baseBody).multiplyScalar(0.6)
-          m.headMat.color.copy(m.baseHead).multiplyScalar(0.6)
-        }
-        m.carryMesh.visible = false
+      let yaw = m.poseInited ? m.poseRy : m.group.rotation.y
+      const facePlace = (place: Place | undefined) => {
+        if (!place) return
+        const fdx = place.x - x
+        const fdz = place.y - z
+        if (fdx * fdx + fdz * fdz > 1e-4) yaw = Math.atan2(fdx, fdz)
+      }
+
+      let ty = 0
+      let rx = 0
+      let rz = 0
+      let headY = HEAD_Y
+      let held: ToolKind | null = null
+
+      if (posture === 'fallen') {
         setTool(m, null)
-        // Hat stays on while sleeping (charm)
-        m.hatRoot.scale.set(1, 2, 1) // counter body squash so hat still reads
-        m.hatRoot.position.y = HAT_Y
+        ty = GROUND_Y + 0.04
+        rx = Math.PI / 2 - 0.2
+        rz = 0.16
+        applyPose(m, x, z, ty, rx, yaw, rz, 1, HEAD_Y, settle)
+        m.lastPosture = posture
         continue
       }
 
-      m.hatRoot.scale.set(1, 1, 1)
-      m.hatRoot.position.y = HAT_Y
+      if (posture === 'lying') {
+        setTool(m, null)
+        ty = GROUND_Y + 0.03
+        rx = Math.PI / 2
+        rz = 0.04
+        applyPose(m, x, z, ty, rx, yaw, rz, 1, HEAD_Y, settle)
+        m.lastPosture = posture
+        continue
+      }
 
-      // Work tool theater
-      const showTool =
-        working && !hauling ? toolForJob(job, false) : null
-      setTool(m, showTool)
-      if (showTool) toolCount++
-
-      if (working && showTool) {
-        // Face work target
-        if (job === 'forestry') {
-          const tree = nearestTree(x, z, treePositions, 2)
-          if (tree) {
-            m.group.rotation.y = Math.atan2(tree.x - x, tree.z - z)
-          }
-        } else if (jobPlace) {
-          // Face workplace center slightly
-          const fdx = jobPlace.x - x
-          const fdz = jobPlace.y - z
-          if (fdx * fdx + fdz * fdz > 1e-4) {
-            m.group.rotation.y = Math.atan2(fdx, fdz)
-          }
+      if (posture === 'lean-in') {
+        setTool(m, null)
+        const target = agent.action.targetPlaceId
+          ? placeById.get(agent.action.targetPlaceId)
+          : undefined
+        facePlace(target)
+        if (moved > 1e-5) {
+          m.walkDist += moved
+          ty = Math.sin(m.walkDist * BOB_FREQ) * BOB_AMP * 0.5
         }
+        rx = 0.38
+        headY = HEAD_Y - 0.08
+        applyPose(m, x, z, ty, rx, yaw, 0, 1, headY, settle)
+        m.lastPosture = posture
+        continue
+      }
 
-        // ~1 Hz arc; phase-offset per agent
-        const phase = tSec * Math.PI * 2 * 1.0 + m.phase * Math.PI * 2
-        const swing = Math.sin(phase)
-        // Apex when sin ≈ 1
-        const apexBin = Math.floor((phase + Math.PI / 2) / Math.PI)
-        const atApex = swing > 0.92 && apexBin !== m.lastApexBin
-        if (atApex) m.lastApexBin = apexBin
-
-        if (showTool === 'hoe' || showTool === 'axe' || showTool === 'pick') {
-          m.toolRoot.rotation.x = -0.4 + swing * 0.85
-          m.toolRoot.rotation.z = 0.15
-        } else if (showTool === 'hammer') {
-          // Bob up/down
-          m.toolRoot.rotation.x = -0.2 + Math.abs(swing) * 0.7
-          m.toolRoot.rotation.z = 0.1
+      if (posture === 'sitting') {
+        const prop: PropKind | null = visual.prop
+        held = prop === 'berry' ? 'berry' : prop === 'mug' ? 'mug' : null
+        setTool(m, held)
+        if (held) {
+          toolCount++
+          m.toolRoot.rotation.x = -0.95
+          m.toolRoot.rotation.z = 0.45
         }
+        const sitPlace = agent.action.targetPlaceId
+          ? placeById.get(agent.action.targetPlaceId)
+          : undefined
+        facePlace(sitPlace)
+        applyPose(m, x, z, 0, 0.08, yaw, 0, 0.62, HEAD_Y, settle)
+        m.lastPosture = posture
+        continue
+      }
 
-        m.group.position.set(x, 0, z)
-        m.group.rotation.x = WORK_LEAN * (0.4 + 0.6 * Math.max(0, swing))
-        m.group.rotation.z = 0
-        m.group.scale.set(1, 1, 1)
+      if (posture === 'working') {
+        const showTool = working && !hauling ? toolForJob(job, false) : null
+        setTool(m, showTool)
+        if (showTool) toolCount++
 
-        // Particles at apex
-        if (atApex && fx) {
-          const tipX = x + Math.sin(m.group.rotation.y) * 0.35
-          const tipZ = z + Math.cos(m.group.rotation.y) * 0.35
-          const tipY = GROUND_Y + 0.35
-          if (showTool === 'axe') {
-            fx.puffWoodChips(tipX, tipY, tipZ, 3 + Math.floor(Math.random() * 2))
+        if (working && showTool) {
+          if (job === 'forestry') {
             const tree = nearestTree(x, z, treePositions, 2)
-            if (tree && onTreeHit) onTreeHit(tree.x, tree.z, now)
-          } else if (showTool === 'pick') {
-            fx.puffStoneChips(tipX, tipY, tipZ, 3)
-            fx.spark(tipX, tipY + 0.05, tipZ)
-          } else if (showTool === 'hammer') {
-            fx.knockDust(tipX, GROUND_Y + 0.15, tipZ)
+            if (tree) yaw = Math.atan2(tree.x - x, tree.z - z)
+          } else {
+            facePlace(jobPlace)
           }
-        }
-        continue
-      }
 
-      // Haul leg: no tool; sack + forward lean sells it
-      if (working && hauling) {
+          const phase = simTime * Math.PI * 2 + m.phase * Math.PI * 2
+          const swing = Math.sin(phase)
+          const apexBin = Math.floor((phase + Math.PI / 2) / Math.PI)
+          const atApex = swing > 0.92 && apexBin !== m.lastApexBin
+          if (atApex) m.lastApexBin = apexBin
+
+          if (showTool === 'hoe' || showTool === 'axe' || showTool === 'pick') {
+            m.toolRoot.rotation.x = -0.4 + swing * 0.85
+            m.toolRoot.rotation.z = 0.15
+          } else if (showTool === 'hammer') {
+            m.toolRoot.rotation.x = -0.2 + Math.abs(swing) * 0.7
+            m.toolRoot.rotation.z = 0.1
+          }
+
+          rx = WORK_LEAN * (0.4 + 0.6 * Math.max(0, swing))
+          applyPose(m, x, z, 0, rx, yaw, 0, 1, HEAD_Y, settle)
+
+          if (atApex && fx) {
+            const tipX = x + Math.sin(yaw) * 0.35
+            const tipZ = z + Math.cos(yaw) * 0.35
+            const tipY = GROUND_Y + 0.35
+            const seed = hashId(agent.id) + tick * 17
+            const opts = { now: simNow, seed }
+            if (showTool === 'axe') {
+              fx.puffWoodChips(tipX, tipY, tipZ, 4, opts)
+              const tree = nearestTree(x, z, treePositions, 2)
+              if (tree && onTreeHit) onTreeHit(tree.x, tree.z, simNow)
+            } else if (showTool === 'pick') {
+              fx.puffStoneChips(tipX, tipY, tipZ, 3, opts)
+              fx.spark(tipX, tipY + 0.05, tipZ, opts)
+            } else if (showTool === 'hammer') {
+              fx.knockDust(tipX, GROUND_Y + 0.15, tipZ, opts)
+            }
+          }
+          m.lastPosture = posture
+          continue
+        }
+
+        // Haul: sack + forward lean (no tool)
         setTool(m, null)
-        m.group.position.set(x, 0, z)
-        m.group.rotation.x = LEAN * 0.7
-        m.group.rotation.z = 0
-        m.group.scale.set(1, 1, 1)
         if (walking || moved > 1e-5) {
           m.walkDist += moved
-          const bob = Math.sin(m.walkDist * BOB_FREQ) * BOB_AMP * 0.6
-          m.group.position.y = bob
-          if (moved > 1e-5) m.group.rotation.y = Math.atan2(dx, dz)
+          ty = Math.sin(m.walkDist * BOB_FREQ) * BOB_AMP * 0.6
+          if (moved > 1e-5) yaw = Math.atan2(dx, dz)
         }
+        applyPose(m, x, z, ty, LEAN * 0.7, yaw, 0, 1, HEAD_Y, settle)
+        m.lastPosture = posture
         continue
       }
 
-      if (walking) {
+      if (posture === 'walking') {
         setTool(m, null)
         m.walkDist += moved
         const bob = Math.sin(m.walkDist * BOB_FREQ) * BOB_AMP
-        m.group.position.set(x, bob, z)
-        const yaw = Math.atan2(dx, dz)
-        m.group.rotation.y = yaw
-        m.group.rotation.x = LEAN * Math.min(1, moved * 8)
-        m.group.rotation.z = 0
-        m.group.scale.set(1, 1, 1)
-      } else if (socializing) {
+        if (moved > 1e-5) yaw = Math.atan2(dx, dz)
+        rx = LEAN * Math.min(1, moved * 8)
+        applyPose(m, x, z, bob, rx, yaw, 0, 1, HEAD_Y, settle)
+        m.lastPosture = posture
+        continue
+      }
+
+      if (posture === 'socializing') {
         setTool(m, null)
-        m.group.position.set(x, 0, z)
-        m.group.rotation.x = 0
-        m.group.rotation.z = 0
         let bestD = Infinity
         let faceX = 0
         let faceZ = 1
@@ -645,22 +891,22 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
             faceZ = ddz
           }
         }
-        if (bestD < Infinity) {
-          m.group.rotation.y = Math.atan2(faceX, faceZ)
-        }
-        const offset = m.phase
-        const t = pulseT * 0.35 + offset * Math.PI * 2
+        if (bestD < Infinity) yaw = Math.atan2(faceX, faceZ)
+        const t = simTime * 2.2 + m.phase * Math.PI * 2
         const pulse = Math.pow(Math.max(0, Math.sin(t)), 10)
         const s = 1 + pulse * 0.03
-        m.group.scale.set(s, s, s)
-      } else {
-        setTool(m, null)
-        m.group.position.set(x, 0, z)
-        m.group.rotation.x = 0
-        m.group.rotation.z = 0
-        m.group.scale.set(1, 1, 1)
+        applyPose(m, x, z, 0, 0, yaw, 0, s, HEAD_Y, settle)
+        m.lastPosture = posture
+        continue
       }
+
+      setTool(m, null)
+      applyPose(m, x, z, 0, 0, yaw, 0, 1, HEAD_Y, settle)
+      m.lastPosture = posture
     }
+
+    const ringPulse = 0.75 + Math.sin(simTime * 3) * 0.15
+    const ringScale = 1 + Math.sin(simTime * 3.9) * 0.08
 
     if (selectedId && meshes.has(selectedId)) {
       const m = meshes.get(selectedId)!
@@ -668,10 +914,8 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       placeRing.visible = false
       ring.position.x = m.group.position.x
       ring.position.z = m.group.position.z
-      const pulse = 0.75 + Math.sin(pulseT) * 0.15
-      ringMat.opacity = pulse
-      const s = 1 + Math.sin(pulseT * 1.3) * 0.08
-      ring.scale.set(s, s, s)
+      ringMat.opacity = ringPulse
+      ring.scale.set(ringScale, ringScale, ringScale)
     } else if (selectedPlaceId) {
       ring.visible = false
       const place = places.find((p) => p.id === selectedPlaceId)
@@ -679,10 +923,8 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         placeRing.visible = true
         placeRing.position.x = place.x
         placeRing.position.z = place.y
-        const pulse = 0.75 + Math.sin(pulseT) * 0.15
-        placeRingMat.opacity = pulse
-        const s = 1 + Math.sin(pulseT * 1.3) * 0.08
-        placeRing.scale.set(s, s, s)
+        placeRingMat.opacity = ringPulse
+        placeRing.scale.set(ringScale, ringScale, ringScale)
       } else {
         placeRing.visible = false
       }
@@ -690,6 +932,24 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       ring.visible = false
       placeRing.visible = false
     }
+
+    destDisc.visible = false
+    if (selectedId) {
+      const sel = agentsIn.find((ag) => ag.id === selectedId)
+      const dest = sel ? describeDestination(sel) : null
+      if (dest) {
+        destDisc.visible = true
+        destDisc.position.x = dest.x
+        destDisc.position.z = dest.y
+        const pulse = 0.4 + 0.35 * (0.5 + 0.5 * Math.sin(simTime * 4))
+        destMat.opacity = pulse
+        const ds = 0.85 + 0.2 * (0.5 + 0.5 * Math.sin(simTime * 4 + 0.7))
+        destDisc.scale.set(ds, ds, ds)
+        destMarkerCount = 1
+      }
+    }
+
+    void now
   }
 
   const getPickables = (): THREE.Object3D[] => {
@@ -710,7 +970,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     return null
   }
 
-  const getJuiceCounts = () => ({ hats: hatCount, tools: toolCount })
+  const getJuiceCounts = () => ({ hats: hatCount, tools: toolCount, destMarkers: destMarkerCount })
 
   const dispose = () => {
     scene.remove(root)

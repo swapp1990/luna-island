@@ -17,6 +17,7 @@ import { createScene, type FrameSubjectOpts, type SceneHandle } from './render/s
 import { createLoop, type LoopController } from './loop'
 import { initBridge, type PhotoModeOpts, type SimStateBridge } from './bridge'
 import { pickHighlights } from './replay/highlights'
+import { describeAgent, describeDestination } from './render/actionLanguage'
 import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
 import { Inspector } from './ui/Inspector'
@@ -730,6 +731,20 @@ export function App() {
               `e2e top-up ${need} coins`,
               { kind: 'e2e-topup' },
             )
+          },
+          describeAgentVisual: (agentId: string) => {
+            const loop = loopRef.current
+            if (!loop) return null
+            const sim = loop.getViewSim()
+            const live = liveRef.current
+            const agent = sim.state.agents.find((a) => a.id === agentId)
+            if (!agent) return null
+            const events = (live ?? sim)
+              .getEvents()
+              .filter((e) => e.tick <= sim.state.tick)
+            const visual = describeAgent(agent, sim.state.tick, { events })
+            const dest = describeDestination(agent)
+            return { ...visual, traveling: dest !== null }
           },
           setSympathy: (agentId: string, otherId: string, value: number) => {
             const live = liveRef.current

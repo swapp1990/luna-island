@@ -72,6 +72,11 @@ export interface SimStateBridge {
   mind?: MindBridgeState | null
   /** Additive: cinematic photo mode active (HUD hidden, caption card on). */
   photoMode?: boolean
+  /** Additive: action-language probe (posture/glyph/prop are on describeAgentVisual). */
+  actionLanguage?: {
+    destMarkerAgentId: string | null
+    destMarkerCount: number
+  }
 }
 
 /** Photo-mode caption card + cinematic framing (render/UI only). */
@@ -181,6 +186,16 @@ export interface SimControlBridge {
   ensureWallet?: (agentId: string, minCoins: number) => boolean
   /** Additive (e2e): set one sympathy edge (electorate seeding). */
   setSympathy?: (agentId: string, otherId: string, value: number) => void
+  /**
+   * Additive (e2e): registry descriptor for an agent's current visual
+   * (posture / glyph / prop) — no pixel-reading.
+   */
+  describeAgentVisual?: (agentId: string) => {
+    posture: string
+    glyph: string | null
+    prop: string | null
+    traveling?: boolean
+  } | null
 }
 
 declare global {
