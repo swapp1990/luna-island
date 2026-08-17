@@ -13,9 +13,10 @@ import {
   clearAutosave,
   scheduleIdle,
 } from './persistStore'
-import { createScene, type SceneHandle } from './render/scene'
+import { createScene, type FrameSubjectOpts, type SceneHandle } from './render/scene'
 import { createLoop, type LoopController } from './loop'
-import { initBridge, type SimStateBridge } from './bridge'
+import { initBridge, type PhotoModeOpts, type SimStateBridge } from './bridge'
+import { pickHighlights } from './replay/highlights'
 import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
 import { Inspector } from './ui/Inspector'
@@ -53,6 +54,67 @@ function pad2(n: number): string {
   return n.toString().padStart(2, '0')
 }
 
+/** Visual height of a place hero, in world units (house roof, bush cluster, …). */
+function placeHeroHeight(kind: string | undefined): number {
+  switch (kind) {
+    case 'home':
+      return 1.28
+    case 'construction-site':
+      return 1.08
+    case 'berry-bush':
+      return 0.78
+    case 'farm':
+      return 0.9
+    case 'well':
+      return 1.05
+    case 'notice-board':
+      return 1.18
+    case 'stall':
+      return 1.12
+    case 'storehouse':
+      return 1.38
+    case 'plaza':
+      return 0.55
+    default:
+      return 1.12
+  }
+}
+
+function placeHeroSpan(kind: string | undefined): number {
+  if (kind === 'farm') return 2.6
+  if (kind === 'plaza') return 3.0
+  if (kind === 'berry-bush') return 0.85
+  return 0
+}
+
+const PHOTO_HEAD_Y = 0.91
+
+function placeHeroProbes(
+  x: number,
+  z: number,
+  height: number,
+  kind: string | undefined,
+): Array<{ x: number; y: number; z: number }> {
+  if (kind === 'construction-site') {
+    return [
+      { x, y: 0.52, z },
+      { x: x + 0.35, y: 0.48, z: z + 0.35 },
+      { x: x - 0.35, y: 0.48, z: z - 0.35 },
+    ]
+  }
+  if (kind === 'berry-bush') {
+    return [
+      { x, y: 0.38, z },
+      { x, y: 0.62, z },
+    ]
+  }
+  return [
+    { x, y: height * 0.4, z },
+    { x, y: height * 0.72, z },
+    { x, y: Math.max(0.75, height * 0.9), z },
+  ]
+}
+
 function emptyHud(): SimStateBridge {
   return {
     ready: false,
@@ -75,6 +137,7 @@ function emptyHud(): SimStateBridge {
     seed: DEFAULT_SEED,
     agent0: null,
     mind: null,
+    photoMode: false,
   }
 }
 
@@ -148,6 +211,11 @@ export function App() {
   })
   const [dockOpen, setDockOpen] = useState(true)
   const [lastSavedClock, setLastSavedClock] = useState<string | null>(null)
+  const [photoCard, setPhotoCard] = useState<{
+    caption: string
+    subtitle?: string
+    kicker: string
+  } | null>(null)
 
   const viewDayStart = useMemo(() => dayStartTick(hud.viewDay), [hud.viewDay])
 
@@ -384,6 +452,22 @@ export function App() {
             if (!live) return ''
             return JSON.stringify(serializeSave(live))
           },
+          importWorldJson: async (json: string) => {
+            const raw = JSON.parse(json) as unknown
+            const live = restoreSave(raw)
+            // Persist so a refresh keeps the imported timeline (same path as file import).
+            try {
+              await putAutosave(serializeSave(live))
+            } catch {
+              // non-fatal — mount regardless
+            }
+            apiRef.current?.mountWorld(live, { markSaved: true })
+            // Exit any leftover photo chrome
+            setPhotoCard(null)
+            document.getElementById('app-root')?.classList.remove('photo-mode')
+            loopRef.current?.setPhotoMode(false)
+            sceneRef.current?.overlays.setPhotoSubject(null)
+          },
           exportStoryJson: () => {
             const live = liveRef.current
             if (!live) return JSON.stringify({
@@ -395,6 +479,192 @@ export function App() {
               discoveries: [],
             })
             return JSON.stringify(serializeStory(live))
+          },
+          photo: {
+            enter: (opts: PhotoModeOpts) => {
+              const loop = loopRef.current
+              const scene = sceneRef.current
+              if (!loop || !scene) return
+              loop.pause()
+              const sim = loop.getViewSim()
+              const t = toSimTime(sim.state.tick)
+              const kicker = `LUNA ISLAND — DAY ${t.day}, ${pad2(t.hour)}:${pad2(t.minute)}`
+              setPhotoCard({
+                caption: opts.caption ?? '',
+                subtitle: opts.subtitle,
+                kicker,
+              })
+              document.getElementById('app-root')?.classList.add('photo-mode')
+              loop.setPhotoMode(true)
+
+              const agentIds =
+                opts.agentIds && opts.agentIds.length > 0
+                  ? opts.agentIds
+                  : opts.agentId
+                    ? [opts.agentId]
+                    : []
+              const agentId = agentIds[0]
+              const placeId = opts.placeId
+              const frameOnly =
+                opts.frameOnly ??
+                (placeId ? 'place' : agentIds.length >= 2 ? 'pair' : 'agent')
+              scene.overlays.setPhotoSubject(agentId ?? null)
+              scene.overlays.clearEphemeral()
+
+              let fx: number | null = null
+              let fz: number | null = null
+              let height = 1.05
+              let span = 0
+
+              const placePos = (id: string) => {
+                const pos = scene.getPlaceWorldPos(id)
+                if (pos) return { x: pos.x, z: pos.z }
+                const place = sim.state.places.find((p) => p.id === id)
+                return place ? { x: place.x, z: place.y } : null
+              }
+
+              if (frameOnly === 'pair' && agentIds.length >= 2) {
+                const a = sim.state.agents.find((ag) => ag.id === agentIds[0])
+                const b = sim.state.agents.find((ag) => ag.id === agentIds[1])
+                if (a && b) {
+                  fx = (a.x + b.x) / 2
+                  fz = (a.y + b.y) / 2
+                  span = Math.hypot(a.x - b.x, a.y - b.y)
+                  height = 1.05
+                }
+              }
+
+              if ((fx == null || fz == null) && frameOnly === 'place' && placeId) {
+                const pos = placePos(placeId)
+                if (pos) {
+                  fx = pos.x
+                  fz = pos.z
+                  const kind = sim.state.places.find((p) => p.id === placeId)?.kind
+                  height = placeHeroHeight(kind)
+                  span = placeHeroSpan(kind)
+                }
+              }
+
+              if (fx == null || fz == null) {
+                const agent = agentId
+                  ? sim.state.agents.find((a) => a.id === agentId)
+                  : undefined
+                if (agent) {
+                  fx = agent.x
+                  fz = agent.y
+                  height = 1.05
+                }
+              }
+
+              if (fx != null && fz != null) {
+                const frameOpts: FrameSubjectOpts = {
+                  height,
+                  span,
+                }
+                if (frameOnly === 'pair' && agentIds.length >= 2) {
+                  const a = sim.state.agents.find((ag) => ag.id === agentIds[0])
+                  const b = sim.state.agents.find((ag) => ag.id === agentIds[1])
+                  if (a && b) {
+                    frameOpts.probes = [
+                      { x: a.x, y: PHOTO_HEAD_Y, z: a.y },
+                      { x: b.x, y: PHOTO_HEAD_Y, z: b.y },
+                      { x: a.x, y: 0.48, z: a.y },
+                      { x: b.x, y: 0.48, z: b.y },
+                    ]
+                    frameOpts.subjectAgentIds = [a.id, b.id]
+                  }
+                } else if (frameOnly === 'place' && placeId) {
+                  const kind = sim.state.places.find((p) => p.id === placeId)?.kind
+                  frameOpts.placeId = placeId
+                  frameOpts.probes = placeHeroProbes(fx, fz, height, kind)
+                  frameOpts.occluderAgents = sim.state.agents.map((ag) => ({
+                    id: ag.id,
+                    x: ag.x,
+                    z: ag.y,
+                  }))
+                  frameOpts.rivalPlaces = sim.state.places
+                    .filter((p) => p.kind === kind && p.id !== placeId)
+                    .map((p) => {
+                      const pos = placePos(p.id)
+                      return pos ? { x: pos.x, z: pos.z } : { x: p.x, z: p.y }
+                    })
+                }
+                scene.frameSubject(fx, fz, opts.zoom ?? 1, frameOpts)
+              }
+
+              // Talking subject: show speech bubble from mind:say at this tick
+              if (agentId) {
+                let said = false
+                const events = sim.getEvents()
+                for (let i = events.length - 1; i >= 0; i--) {
+                  const ev = events[i]!
+                  if (ev.tick < sim.state.tick - 2) break
+                  if (
+                    ev.type === 'mind:say' &&
+                    ev.agentId === agentId &&
+                    ev.tick <= sim.state.tick
+                  ) {
+                    const text = String(ev.data?.text ?? '')
+                    if (text) {
+                      scene.overlays.pushSpeech(agentId, text, performance.now())
+                      said = true
+                    }
+                    break
+                  }
+                }
+                // Subtitle quote fallback when no nearby mind:say
+                if (!said && opts.subtitle && opts.subtitle.startsWith('"')) {
+                  const q = opts.subtitle.replace(/^"|"$/g, '')
+                  if (q) scene.overlays.pushSpeech(agentId, q, performance.now())
+                }
+              }
+
+              if (agentId) {
+                loop.selectAgent(agentId)
+              } else if (placeId) {
+                loop.selectPlace(placeId)
+              }
+              loop.forceRender()
+              setHud(loop.getState())
+            },
+            exit: () => {
+              const loop = loopRef.current
+              const scene = sceneRef.current
+              setPhotoCard(null)
+              document.getElementById('app-root')?.classList.remove('photo-mode')
+              loop?.setPhotoMode(false)
+              scene?.overlays.setPhotoSubject(null)
+              scene?.overlays.clearEphemeral()
+              if (loop) {
+                // Clear speech bubbles by resetting subject + force render
+                loop.forceRender()
+                setHud(loop.getState())
+              }
+            },
+          },
+          listHighlightMoments: (max = 12) => {
+            const live = liveRef.current
+            if (!live) return []
+            const atTick = new Map<number, Pick<typeof live.state, 'agents' | 'places'>>()
+            return pickHighlights(live.getEvents(), live.state, max, {
+              worldAtTick: (tick) => {
+                const t = Math.max(0, Math.min(Math.floor(tick), live.state.tick))
+                const hit = atTick.get(t)
+                if (hit) return hit
+                const snap =
+                  t >= live.state.tick ? live.state : live.stateAt(t).state
+                atTick.set(t, snap)
+                return snap
+              },
+            })
+          },
+          hashAtTick: (tick: number) => {
+            const live = liveRef.current
+            if (!live) return ''
+            const head = live.state.tick
+            const t = Math.max(0, Math.min(Math.floor(tick), head))
+            if (t >= head) return live.hash()
+            return live.stateAt(t).hash()
           },
           forceMindBudgetCooldown: (resetsInSec = 3600) => {
             const m = mindRef.current
@@ -750,12 +1020,17 @@ export function App() {
   }
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div
+      id="app-root"
+      className={photoCard ? 'photo-mode' : undefined}
+      style={{ position: 'relative', width: '100%', height: '100%' }}
+    >
       <div
         id="scene"
         ref={containerRef}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       />
+      <div data-photo-hide="true">
       <ResourceBar resources={resources} mind={hud.mind ?? null} />
       <Hud
         state={hud}
@@ -903,6 +1178,91 @@ export function App() {
             if (loopRef.current) setHud(loopRef.current.getState())
           }}
         />
+      )}
+      </div>
+
+      {photoCard && (
+        <>
+          <div
+            id="photo-vignette"
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              zIndex: 40,
+              background:
+                'radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.28) 100%)',
+            }}
+          />
+          <div
+            id="photo-caption"
+            data-testid="photo-caption"
+            style={{
+              position: 'absolute',
+              left: 0,
+              bottom: 0,
+              zIndex: 50,
+              pointerEvents: 'none',
+              width: '40%',
+              maxHeight: '30%',
+              overflow: 'hidden',
+              boxSizing: 'border-box',
+              padding: '40px 36px 32px 40px',
+              background:
+                'linear-gradient(to top, rgba(8,10,18,0.88) 0%, rgba(8,10,18,0.55) 62%, transparent 100%)',
+              fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif',
+              color: '#f2f4f8',
+            }}
+          >
+            <div
+              data-testid="photo-kicker"
+              style={{
+                fontSize: 30,
+                fontWeight: 600,
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: 'rgba(220,228,240,0.78)',
+                marginBottom: 10,
+                textShadow: '0 1px 6px rgba(0,0,0,0.55)',
+              }}
+            >
+              {photoCard.kicker}
+            </div>
+            <div
+              data-testid="photo-headline"
+              style={{
+                fontSize: 64,
+                fontWeight: 700,
+                letterSpacing: '-0.015em',
+                lineHeight: 1.12,
+                textShadow: '0 2px 14px rgba(0,0,0,0.55)',
+              }}
+            >
+              {photoCard.caption}
+            </div>
+            {photoCard.subtitle ? (
+              <div
+                data-testid="photo-subtitle"
+                style={{
+                  marginTop: 10,
+                  fontSize: 34,
+                  fontStyle: 'italic',
+                  fontWeight: 400,
+                  color: 'rgba(210,218,230,0.84)',
+                  lineHeight: 1.28,
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  textShadow: '0 1px 8px rgba(0,0,0,0.5)',
+                }}
+              >
+                {photoCard.subtitle}
+              </div>
+            ) : null}
+          </div>
+        </>
       )}
     </div>
   )

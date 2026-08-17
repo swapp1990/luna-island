@@ -18,6 +18,22 @@ export interface SelectionCallbacks {
   onSelectPlace: (id: string | null) => void
 }
 
+/** Extra probes / occluders for photo-mode azimuth rescue. */
+export interface FrameSubjectOpts {
+  height?: number
+  span?: number
+  /** World-space visibility probes (pair heads, place center + roof). */
+  probes?: Array<{ x: number; y: number; z: number }>
+  /** Hero place id — hits on this mesh count as reaching the subject. */
+  placeId?: string
+  /** Pair / named agents that are not occluders. */
+  subjectAgentIds?: string[]
+  /** Non-subject agents; those near the camera ray can occlude pair/place shots. */
+  occluderAgents?: Array<{ id: string; x: number; z: number }>
+  /** Same-kind places; a closer rival on this azimuth counts as occlusion. */
+  rivalPlaces?: Array<{ x: number; z: number }>
+}
+
 export interface SceneHandle {
   renderer: THREE.WebGLRenderer
   scene: THREE.Scene
@@ -68,11 +84,26 @@ export interface SceneHandle {
   celebrateClose: (agentIdA: string, agentIdB: string, now: number) => void
   /** Aim orbit camera at a world point (e2e / screenshots). */
   lookAt: (x: number, z: number, dist?: number) => void
+  /**
+   * Photo-mode hero framing. Subject fills ~1/6–1/4 of frame height,
+   * camera at ~26° elevation (auto-raises if terrain occludes).
+   * `zoom` multiplies closeness. `opts.height` / `opts.span` size the shot.
+   * Occluded subjects fall back to a fixed azimuth list; SE is kept unless
+   * a candidate has a strictly higher subject-probe score.
+   */
+  frameSubject: (
+    x: number,
+    z: number,
+    zoom?: number,
+    opts?: FrameSubjectOpts,
+  ) => void
   resize: (w: number, h: number) => void
   dispose: () => void
   render: () => void
   /** Publish camera target for e2e / debug. */
   publishCameraTarget: () => void
+  /** World xz of a place mesh, if known. */
+  getPlaceWorldPos: (placeId: string) => { x: number; y: number; z: number } | null
 }
 
 declare global {
@@ -83,6 +114,18 @@ declare global {
     __renderLookAt?: (x: number, z: number, dist?: number) => void
     /** DEV/e2e: world pos of a place mesh. */
     __placePos?: (placeId: string) => { x: number; y: number; z: number } | null
+    /** DEV/e2e: last photo frame azimuth (default vs rescued). */
+    __photoFrame?: {
+      azimuth: string
+      rescued: boolean
+      elevDeg: number
+      hits: number
+      total: number
+      probeHits?: number
+      probeTotal?: number
+      why?: string[]
+      seWhy?: string[]
+    }
   }
 }
 
@@ -121,7 +164,8 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   controls.target.set(targetX, 0.2, targetZ)
   controls.enableDamping = true
   controls.dampingFactor = 0.08
-  controls.minDistance = 8
+  // Photo hero shots sit at ~3–6 units; 8 was clamping every still to postcard.
+  controls.minDistance = 2
   controls.maxDistance = 90
   controls.maxPolarAngle = (80 * Math.PI) / 180
   controls.update()
@@ -348,6 +392,375 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     controls.update()
   }
 
+  const photoRay = new THREE.Raycaster()
+  const photoFrom = new THREE.Vector3()
+  const photoTo = new THREE.Vector3()
+  const photoDir = new THREE.Vector3()
+
+  const subjectOccluded = (sx: number, sy: number, sz: number, slack: number) => {
+    photoFrom.copy(camera.position)
+    photoTo.set(sx, sy, sz)
+    photoDir.subVectors(photoTo, photoFrom)
+    const len = photoDir.length()
+    if (len < 0.6) return false
+    photoDir.multiplyScalar(1 / len)
+    photoRay.set(photoFrom, photoDir)
+    photoRay.near = 0.25
+    photoRay.far = Math.max(0.35, len - slack)
+    const hits = photoRay.intersectObject(terrain.root, true)
+    // Grass tiles sit at y≈0.2 — ignore them; only raise for trees/rock/buildings.
+    return hits.some((h) => h.point.y > 0.45)
+  }
+
+  /**
+   * Hero framing: subject ~1/5 of frame height, 26° elevation, right/upper
+   * third. Raises elevation (26→38) if terrain occludes — deterministic.
+   * If the subject is still occluded, try a fixed SE-offset azimuth list.
+   */
+  const frameSubject = (
+    x: number,
+    z: number,
+    zoom = 1,
+    opts?: FrameSubjectOpts,
+  ) => {
+    const zMul = Math.max(0.35, Math.min(2.5, zoom || 1))
+    const height = Math.max(0.45, opts?.height ?? 1.05)
+    // Pair span is capped so two agents on opposite plaza edges cannot
+    // pull the camera back to a postcard.
+    const span = Math.min(2.2, Math.max(0, opts?.span ?? 0))
+
+    // Perspective + off-center look-at shrinks apparent size; 0.34 lands
+    // near 1/5–1/4 of frame after that loss.
+    const vFov = (camera.fov * Math.PI) / 180
+    const halfTan = Math.tan(vFov / 2)
+    let dist = height / (2 * 0.34 * halfTan)
+    if (span > 0.5) {
+      const aspect = Math.max(1.2, camera.aspect || 16 / 9)
+      const hFov = 2 * Math.atan(halfTan * aspect)
+      const spanDist = (span + 0.55) / (2 * 0.58 * Math.tan(hFov / 2))
+      if (spanDist > dist) dist = spanDist
+    }
+    dist = Math.max(2.4, Math.min(9.5, dist / zMul))
+
+    // SE azimuth (village-facing). Camera-right = up × view.
+    const DEFAULT_AZIM = Math.atan2(0.7, 0.62)
+    const lookY = Math.min(0.42, height * 0.28)
+
+    const prevDamp = controls.enableDamping
+    controls.enableDamping = false
+    controls.minDistance = 2
+
+    const BASE_ELEV = 24
+    const MAX_ELEV = 36
+    const slack = Math.max(0.55, height * 0.5)
+    const aimY = Math.max(0.4, height * 0.55)
+    const REACH_EPS = 0.22
+    const GRASS_Y = 0.45
+
+    const poseAt = (azim: number, deg: number) => {
+      const rightX = Math.sin(azim)
+      const rightZ = -Math.cos(azim)
+      const lookX = x - rightX * dist * 0.24
+      const lookZ = z - rightZ * dist * 0.24
+      const elev = (deg * Math.PI) / 180
+      const horiz = dist * Math.cos(elev)
+      controls.target.set(lookX, lookY, lookZ)
+      camera.position.set(
+        lookX + horiz * Math.cos(azim),
+        lookY + dist * Math.sin(elev),
+        lookZ + horiz * Math.sin(azim),
+      )
+      camera.updateMatrixWorld()
+    }
+
+    const subjectPlaceId = opts?.placeId ?? null
+    const subjectAgentSet = new Set(opts?.subjectAgentIds ?? [])
+    const probes =
+      opts?.probes && opts.probes.length > 0
+        ? opts.probes
+        : [{ x, y: aimY, z }]
+    const occluders = opts?.occluderAgents
+    const rivals = opts?.rivalPlaces
+    const placeHero = !!subjectPlaceId
+
+    const isPickGhost = (obj: THREE.Object3D): boolean => {
+      const mesh = obj as THREE.Mesh
+      const mat = mesh.material
+      if (!mat || Array.isArray(mat)) return false
+      const m = mat as THREE.MeshBasicMaterial
+      return m.colorWrite === false || (m.transparent === true && m.opacity === 0)
+    }
+
+    const nearSubject = (hx: number, hz: number): boolean => {
+      const dx = hx - x
+      const dz = hz - z
+      return dx * dx + dz * dz < 0.78 * 0.78
+    }
+
+    const hitIsBuilding = (h: THREE.Intersection): boolean => {
+      if (terrain.placeIdFromObject(h.object)) return true
+      for (const p of hoverPlaces) {
+        const dx = h.point.x - p.x
+        const dz = h.point.z - p.y
+        if (dx * dx + dz * dz < 0.82 * 0.82) return true
+      }
+      return false
+    }
+
+    const probeClear = (px: number, py: number, pz: number): boolean => {
+      photoFrom.copy(camera.position)
+      photoTo.set(px, py, pz)
+      photoDir.subVectors(photoTo, photoFrom)
+      const len = photoDir.length()
+      if (len < 0.6) return true
+      photoDir.multiplyScalar(1 / len)
+      photoRay.set(photoFrom, photoDir)
+      photoRay.near = 0.25
+      photoRay.far = len
+      const hits = photoRay.intersectObject(terrain.root, true)
+      for (const h of hits) {
+        if (isPickGhost(h.object)) continue
+        if (h.point.y <= GRASS_Y) continue
+        const pid = terrain.placeIdFromObject(h.object)
+        if (subjectPlaceId && pid === subjectPlaceId) return true
+        if (placeHero && nearSubject(h.point.x, h.point.z)) return true
+        if (len - h.distance <= REACH_EPS) return true
+        // Buildings only — quarry cliffs / grass / low rock are not occluders.
+        if (hitIsBuilding(h)) return false
+      }
+      return true
+    }
+
+    const rivalBlocks = (): boolean => {
+      if (!rivals || rivals.length === 0) return false
+      const cam = camera.position
+      const subjDist = Math.hypot(cam.x - x, cam.z - z)
+      const fx = x - cam.x
+      const fz = z - cam.z
+      const fLen = Math.hypot(fx, fz)
+      if (fLen < 0.01) return false
+      const inv = 1 / fLen
+      const nx = fx * inv
+      const nz = fz * inv
+      for (const r of rivals) {
+        const dx = r.x - cam.x
+        const dz = r.z - cam.z
+        const distR = Math.hypot(dx, dz)
+        if (distR >= subjDist - 0.45) continue
+        const along = dx * nx + dz * nz
+        if (along < 0.6) continue
+        const perp = Math.abs(dx * nz - dz * nx)
+        if (perp < 1.85) return true
+      }
+      return false
+    }
+
+    const nearRayBlocks = (
+      items: Array<{ x: number; z: number }>,
+      perpMax: number,
+    ): boolean => {
+      const cam = camera.position
+      const vx = x - cam.x
+      const vz = z - cam.z
+      const vlen = Math.hypot(vx, vz)
+      if (vlen < 0.5) return false
+      const inv2 = 1 / (vlen * vlen)
+      for (const it of items) {
+        const dx = it.x - cam.x
+        const dz = it.z - cam.z
+        const t = (dx * vx + dz * vz) * inv2
+        if (t < 0.06 || t > 0.48) continue
+        const px = cam.x + vx * t
+        const pz = cam.z + vz * t
+        const perp = Math.hypot(it.x - px, it.z - pz)
+        if (perp < perpMax && t * vlen < vlen * 0.55) return true
+      }
+      return false
+    }
+
+    const agentsBlock = (): boolean => {
+      if (!occluders || occluders.length === 0) return false
+      const cam = camera.position
+      const subjDist = Math.hypot(cam.x - x, cam.z - z)
+      const near = occluders.filter((a) => {
+        if (subjectAgentSet.has(a.id)) return false
+        const d = Math.hypot(a.x - cam.x, a.z - cam.z)
+        // Small subjects (sites) tolerate a longer giant cutoff; houses don't.
+        const cap = height < 1.15 ? 3.15 : 2.05
+        return d < cap && d < subjDist * 0.5
+      })
+      return nearRayBlocks(near, 1.0)
+    }
+
+    const treesBlock = (): boolean => {
+      if (!placeHero) return false
+      const cam = camera.position
+      const vx = x - cam.x
+      const vz = z - cam.z
+      const vlen = Math.hypot(vx, vz)
+      if (vlen < 0.5) return false
+      const inv2 = 1 / (vlen * vlen)
+      for (const t of terrain.getTreePositions()) {
+        const dx = t.x - cam.x
+        const dz = t.z - cam.z
+        const tp = (dx * vx + dz * vz) * inv2
+        if (tp < 0.06 || tp > 0.34) continue
+        const px = cam.x + vx * tp
+        const pz = cam.z + vz * tp
+        if (Math.hypot(t.x - px, t.z - pz) < 0.85) return true
+      }
+      return false
+    }
+
+    const heroNdcs = [new THREE.Vector2(0.08, 0.04), new THREE.Vector2(0.22, 0.0)]
+    const heroRayClear = (): boolean => {
+      if (!placeHero) return true
+      const subjDist = Math.hypot(camera.position.x - x, camera.position.z - z)
+      for (const ndc of heroNdcs) {
+        photoRay.setFromCamera(ndc, camera)
+        photoRay.near = 0.3
+        photoRay.far = Math.max(0.8, subjDist - 0.45)
+        const hits = photoRay.intersectObject(terrain.root, true)
+        for (const h of hits) {
+          if (isPickGhost(h.object)) continue
+          if (h.point.y <= 0.55) continue
+          if (nearSubject(h.point.x, h.point.z)) break
+          if (hitIsBuilding(h) && h.distance < subjDist - 0.75) return false
+        }
+      }
+      return true
+    }
+
+    const evaluatePose = () => {
+      let hits = 0
+      let probeHits = 0
+      const why: string[] = []
+      probes.forEach((p, i) => {
+        if (probeClear(p.x, p.y, p.z)) {
+          hits += 1
+          probeHits += 1
+        } else why.push(`probe${i}`)
+      })
+      const rivalOk = !rivalBlocks()
+      const agentOk = !agentsBlock()
+      const treeOk = !treesBlock()
+      const heroOk = heroRayClear()
+      const extra =
+        (rivals && rivals.length > 0 ? 1 : 0) +
+        (occluders ? 1 : 0) +
+        (placeHero ? 2 : 0)
+      const total = probes.length + extra
+      if (rivalOk && rivals && rivals.length > 0) hits += 1
+      else if (rivals && rivals.length > 0) why.push('rival')
+      if (agentOk && occluders) hits += 1
+      else if (occluders) why.push('agent')
+      if (treeOk && placeHero) hits += 1
+      else if (placeHero) why.push('tree')
+      if (heroOk && placeHero) hits += 1
+      else if (placeHero) why.push('heroRay')
+      return {
+        hits,
+        total,
+        clear: hits === total,
+        why,
+        probeHits,
+        probeTotal: probes.length,
+      }
+    }
+
+    type PoseScore = ReturnType<typeof evaluatePose>
+
+    const publishFrame = (
+      azimuth: string,
+      rescued: boolean,
+      elev: number,
+      scored: PoseScore,
+    ) => {
+      if (!import.meta.env.DEV) return
+      window.__photoFrame = {
+        azimuth,
+        rescued,
+        elevDeg: elev,
+        hits: scored.hits,
+        total: scored.total,
+        probeHits: scored.probeHits,
+        probeTotal: scored.probeTotal,
+        why: scored.why ?? [],
+        seWhy: seScore.why ?? [],
+      }
+    }
+
+    // Default SE + existing elevation raise (unchanged pose if then clear).
+    let elevDeg = BASE_ELEV
+    poseAt(DEFAULT_AZIM, elevDeg)
+    while (elevDeg < MAX_ELEV && subjectOccluded(x, aimY, z, slack)) {
+      elevDeg += 2
+      poseAt(DEFAULT_AZIM, elevDeg)
+    }
+
+    const seScore = evaluatePose()
+    const canRescue =
+      (opts?.probes && opts.probes.length > 0) ||
+      (opts?.occluderAgents && opts.occluderAgents.length > 0) ||
+      (opts?.rivalPlaces && opts.rivalPlaces.length > 0)
+    // Subject already on camera (all probes) — extra checks cannot evict SE.
+    const seHasSubject = seScore.probeHits === seScore.probeTotal
+    if (!canRescue || seScore.clear || seHasSubject) {
+      publishFrame('default', false, elevDeg, seScore)
+      controls.update()
+      controls.enableDamping = prevDamp
+      return
+    }
+
+    // Fixed candidate list. Rescue only if subject-probe score is STRICTLY
+    // greater than SE; equal or lower keeps the default pose.
+    const RESCUE: Array<{ label: string; offsetDeg: number }> = [
+      { label: 'SE+30', offsetDeg: 30 },
+      { label: 'SE-30', offsetDeg: -30 },
+      { label: 'SE+60', offsetDeg: 60 },
+      { label: 'SE-60', offsetDeg: -60 },
+      { label: 'SW', offsetDeg: 90 },
+      { label: 'NE', offsetDeg: -90 },
+      { label: 'NW', offsetDeg: 180 },
+      { label: 'SE+120', offsetDeg: 120 },
+      { label: 'SE-120', offsetDeg: -120 },
+      { label: 'SE+150', offsetDeg: 150 },
+      { label: 'SE-150', offsetDeg: -150 },
+    ]
+
+    let bestLabel = 'default'
+    let bestAzim = DEFAULT_AZIM
+    let bestScore = seScore
+    let bestElev = elevDeg
+
+    for (const cand of RESCUE) {
+      const azim = DEFAULT_AZIM + (cand.offsetDeg * Math.PI) / 180
+      poseAt(azim, BASE_ELEV)
+      const scored = evaluatePose()
+      if (scored.probeHits > bestScore.probeHits) {
+        bestLabel = cand.label
+        bestAzim = azim
+        bestScore = scored
+        bestElev = BASE_ELEV
+        if (scored.clear) break
+      }
+    }
+
+    if (bestLabel === 'default' || bestScore.probeHits <= seScore.probeHits) {
+      poseAt(DEFAULT_AZIM, elevDeg)
+      publishFrame('default', false, elevDeg, seScore)
+    } else {
+      if (bestScore.hits < bestScore.total) {
+        bestElev = Math.min(MAX_ELEV, BASE_ELEV + 8)
+      }
+      poseAt(bestAzim, bestElev)
+      publishFrame(bestLabel, true, bestElev, bestScore)
+    }
+
+    controls.update()
+    controls.enableDamping = prevDamp
+  }
+
   const publishCameraTarget = () => {
     window.__cameraTarget = {
       x: controls.target.x,
@@ -495,9 +908,11 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     celebrateHarvest,
     celebrateClose,
     lookAt,
+    frameSubject,
     resize,
     dispose,
     render,
     publishCameraTarget,
+    getPlaceWorldPos: (placeId: string) => terrain.getPlaceWorldPos(placeId),
   }
 }

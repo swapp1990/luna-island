@@ -70,6 +70,41 @@ export interface SimStateBridge {
   agent0?: { id: string; x: number; y: number; wallet: number } | null
   /** Additive: LunaBrain meter (null when never initialized). */
   mind?: MindBridgeState | null
+  /** Additive: cinematic photo mode active (HUD hidden, caption card on). */
+  photoMode?: boolean
+}
+
+/** Photo-mode caption card + cinematic framing (render/UI only). */
+export interface PhotoModeOpts {
+  caption: string
+  subtitle?: string
+  agentId?: string
+  /** Both agents for pair shots (`relationship:close`, `mind:say`). */
+  agentIds?: string[]
+  placeId?: string
+  /** Distance multiplier; higher = closer (default 1). */
+  zoom?: number
+  /**
+   * Who is the hero: place (house/bush/site), single agent, or pair midpoint.
+   * Place-first for construction / discovery / ownership.
+   */
+  frameOnly?: 'place' | 'agent' | 'pair'
+}
+
+export interface PhotoModeBridge {
+  enter: (opts: PhotoModeOpts) => void
+  exit: () => void
+}
+
+/** One selected highlight moment for the photographer reel. */
+export interface HighlightMomentBridge {
+  tick: number
+  type: string
+  priority: number
+  agentIds: string[]
+  placeId?: string
+  caption: string
+  subtitle?: string
 }
 
 export interface SimControlBridge {
@@ -91,10 +126,25 @@ export interface SimControlBridge {
   /** Exact v5 save-format payload as a JSON string (no download dialog). */
   exportWorldJson: () => string
   /**
+   * Additive inverse of exportWorldJson: restore full timeline so scrubTo works.
+   * Uses the persistence layer deserializer (not a second parser).
+   */
+  importWorldJson: (json: string) => Promise<void>
+  /**
    * Qualitative extract `{ decisions, reflections, says, sanctions, proposals }`
    * with full texts/reasonings from the event trace.
    */
   exportStoryJson: () => string
+  /** Additive: cinematic photo mode (HUD off, caption card, framed subject). */
+  photo: PhotoModeBridge
+  /**
+   * Additive: scored highlight moments from the live event trace (pure selection).
+   */
+  listHighlightMoments?: (max?: number) => HighlightMomentBridge[]
+  /**
+   * Additive (e2e): state hash at a past tick via stateAt (determinism probes).
+   */
+  hashAtTick?: (tick: number) => string
   /**
    * Additive (e2e/dev): force mind budget cooldown + one mind:budget event.
    * Does not hit the sidecar.

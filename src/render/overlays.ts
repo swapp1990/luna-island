@@ -420,6 +420,13 @@ export interface OverlaysHandle {
   pushSpeech: (agentId: string, text: string, now: number) => void
   /** Hover tooltip (HTML, near cursor). */
   setTooltip: (text: string | null, clientX: number, clientY: number) => void
+  /**
+   * Photo mode: when non-null, hide all world-space indicators except speech
+   * belonging to the subject agent. null = normal HUD overlays.
+   */
+  setPhotoSubject: (agentId: string | null) => void
+  /** Clear transient bubbles (toasts/criticals/hearts/zzz) for a clean still. */
+  clearEphemeral: () => void
   dispose: () => void
 }
 
@@ -442,6 +449,9 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     zIndex: '8',
   } as CSSStyleDeclaration)
   container.appendChild(root)
+
+  /** Photo-mode subject; non-null suppresses non-subject chrome. */
+  let photoSubjectId: string | null = null
 
   // Selected-agent status bubble
   const statusEl = document.createElement('div')
@@ -798,6 +808,54 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     </svg>`
   }
 
+  const clearEphemeral = () => {
+    for (const slot of pool) {
+      slot.active = false
+      slot.agentId = null
+      slot.el.style.display = 'none'
+    }
+    for (const slot of toastPool) {
+      slot.active = false
+      slot.agentId = null
+      slot.el.style.display = 'none'
+    }
+    for (const slot of zzzPool) {
+      slot.active = false
+      slot.agentId = null
+      slot.el.style.display = 'none'
+    }
+    for (const slot of heartPool) {
+      slot.active = false
+      slot.agentIdA = null
+      slot.agentIdB = null
+      slot.el.style.display = 'none'
+    }
+    for (const slot of indicators) {
+      slot.active = false
+      slot.placeId = null
+      slot.el.style.display = 'none'
+      slot.el.innerHTML = ''
+    }
+    statusEl.style.display = 'none'
+    statusEl.style.opacity = '0'
+    setTooltip(null, 0, 0)
+  }
+
+  const setPhotoSubject = (agentId: string | null) => {
+    photoSubjectId = agentId
+    if (agentId) {
+      // Drop chrome that is not the subject's speech
+      clearEphemeral()
+      for (const s of speechPool) {
+        if (s.active && s.agentId && s.agentId !== agentId) {
+          s.active = false
+          s.agentId = null
+          s.el.style.display = 'none'
+        }
+      }
+    }
+  }
+
   const updateFrame = (args: {
     camera: THREE.Camera
     width: number
@@ -813,12 +871,18 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     const { camera, width, height, selectedId, agents, places, prev, alpha, now } =
       args
     const time = args.time ?? null
+    const photoOn = photoSubjectId !== null
 
     // Speech bubbles (before status — may hide status for speaker)
     const byId = new Map(agents.map((a) => [a.id, a]))
     const speechActiveIds = new Set<string>()
     for (const slot of speechPool) {
       if (!slot.active || !slot.agentId) continue
+      // Photo mode: only the subject's bubble
+      if (photoOn && slot.agentId !== photoSubjectId) {
+        slot.el.style.display = 'none'
+        continue
+      }
       const age = now - slot.born
       if (age >= SPEECH_TTL_MS) {
         slot.active = false
@@ -855,11 +919,11 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
     }
 
-    // Status bubble (hidden while this agent has a speech bubble)
+    // Status bubble (hidden in photo mode; hidden while speaker has speech)
     const selected = selectedId
       ? agents.find((a) => a.id === selectedId)
       : undefined
-    if (!selected || (selectedId && speechActiveIds.has(selectedId))) {
+    if (photoOn || !selected || (selectedId && speechActiveIds.has(selectedId))) {
       statusEl.style.opacity = '0'
       statusEl.style.display = 'none'
     } else {
@@ -888,8 +952,12 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       }
     }
 
-    // Critical bubbles
+    // Critical bubbles (suppressed in photo mode)
     for (const slot of pool) {
+      if (photoOn) {
+        slot.el.style.display = 'none'
+        continue
+      }
       if (!slot.active || !slot.agentId) continue
       const age = now - slot.born
       if (age >= CRITICAL_TTL_MS) {
@@ -926,8 +994,12 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y}px)`
     }
 
-    // Toasts float upward
+    // Toasts float upward (suppressed in photo mode)
     for (const slot of toastPool) {
+      if (photoOn) {
+        slot.el.style.display = 'none'
+        continue
+      }
       if (!slot.active || !slot.agentId) continue
       const age = now - slot.born
       if (age >= TOAST_TTL_MS) {
@@ -964,7 +1036,8 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - lift}px)`
     }
 
-    // Sleeping Zzz — emit every ~2s while sleeping
+    // Sleeping Zzz — emit every ~2s while sleeping (suppressed in photo mode)
+    if (!photoOn) {
     for (const agent of agents) {
       if (!isPerformingSleep(agent)) {
         lastZzzByAgent.delete(agent.id)
@@ -976,7 +1049,16 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
         spawnZzz(agent.id, now)
       }
     }
+    } else {
+      for (const slot of zzzPool) {
+        slot.el.style.display = 'none'
+      }
+    }
     for (const slot of zzzPool) {
+      if (photoOn) {
+        slot.el.style.display = 'none'
+        continue
+      }
       if (!slot.active || !slot.agentId) continue
       const age = now - slot.born
       if (age >= ZZZ_TTL_MS) {
@@ -1016,8 +1098,12 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x + drift}px, ${screen.y - lift}px)`
     }
 
-    // Twin hearts float over midpoint of pair
+    // Twin hearts float over midpoint of pair (suppressed in photo mode)
     for (const slot of heartPool) {
+      if (photoOn) {
+        slot.el.style.display = 'none'
+        continue
+      }
       if (!slot.active || !slot.agentIdA || !slot.agentIdB) continue
       const age = now - slot.born
       if (age >= HEART_TTL_MS) {
@@ -1050,11 +1136,16 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
       slot.el.style.transform = `translate(-50%, -100%) translate(${screen.x}px, ${screen.y - lift}px)`
     }
 
-    // Reset indicators then rebuild
+    // Reset indicators then rebuild (skip place chrome in photo mode)
     for (const ind of indicators) {
       ind.active = false
       ind.placeId = null
       ind.el.style.display = 'none'
+    }
+
+    if (photoOn) {
+      setTooltip(null, 0, 0)
+      return
     }
 
     const hour = time?.hour ?? 12
@@ -1167,6 +1258,8 @@ export function createOverlays(container: HTMLElement): OverlaysHandle {
     pushHearts,
     pushSpeech,
     setTooltip,
+    setPhotoSubject,
+    clearEphemeral,
     dispose,
   }
 }

@@ -25,6 +25,7 @@ const BUDGET_HOUR = Number(arg('budget-hour', '900'))
 const BUDGET_DAY = Number(arg('budget-day', '3000'))
 const CONCURRENCY = Number(arg('concurrency', '3'))
 const BRAIN = String(arg('brain', 'codex'))
+const NO_HIGHLIGHTS = process.argv.includes('--no-highlights')
 const JOURNAL = path.resolve('artifacts', `soak-political-${Date.now()}.jsonl`)
 fs.mkdirSync('artifacts', { recursive: true })
 
@@ -316,6 +317,51 @@ try {
   }
   log(`FINAL ${JSON.stringify(finale)}`)
   log(`journal: ${JOURNAL}`)
+
+  // Photographer reel (fail-soft — never affects soak exit code or artifacts)
+  if (!NO_HIGHLIGHTS) {
+    try {
+      log(`highlights: invoking photographer on ${worldPath}`)
+      await new Promise((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [
+            path.resolve('scripts', 'soak-highlights.mjs'),
+            worldPath,
+            '--out',
+            path.resolve('artifacts', 'highlights', path.basename(worldPath, '.json')),
+          ],
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env },
+            shell: false,
+          },
+        )
+        child.stdout.on('data', (d) => {
+          const lines = String(d).trim().split('\n')
+          for (const line of lines) {
+            if (line) log(`highlights| ${line.slice(0, 200)}`)
+          }
+        })
+        child.stderr.on('data', (d) => {
+          log(`highlights-err: ${String(d).trim().slice(0, 200)}`)
+        })
+        child.on('close', (code) => {
+          log(`highlights: child exited ${code} (fail-soft)`)
+          resolve()
+        })
+        child.on('error', (err) => {
+          log(`highlights: spawn failed (fail-soft): ${String(err).slice(0, 200)}`)
+          resolve()
+        })
+      })
+    } catch (err) {
+      log(`highlights: unexpected (fail-soft): ${String(err).slice(0, 200)}`)
+    }
+  } else {
+    log('highlights: skipped (--no-highlights)')
+  }
+
   await shutdown(0)
 } catch (e) {
   log(`FATAL: ${String(e).slice(0, 300)}`)

@@ -76,4 +76,25 @@ describe('persistence serialize/restore', () => {
     fresh.advanceTicks(500)
     expect(mid.hash()).toBe(fresh.hash())
   })
+
+  it('export → restore (importWorldJson path) stateAt hash matches at 3 probe ticks', () => {
+    const original = new Simulation(42)
+    original.advanceTicks(2500)
+    const probes = [100, 900, 1800] as const
+    const expected = probes.map((t) => original.stateAt(t).hash())
+
+    const json = JSON.stringify(serializeSave(original))
+    const restored = restoreSave(JSON.parse(json))
+    expect(restored.state.tick).toBe(original.state.tick)
+    expect(restored.hash()).toBe(original.hash())
+
+    for (let i = 0; i < probes.length; i++) {
+      const t = probes[i]!
+      expect(restored.stateAt(t).hash()).toBe(expected[i])
+      // Also match a fresh advance (determinism gate style)
+      const fresh = new Simulation(42)
+      fresh.advanceTicks(t)
+      expect(restored.stateAt(t).hash()).toBe(fresh.hash())
+    }
+  })
 })

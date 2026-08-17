@@ -3409,7 +3409,13 @@ export class Simulation {
       this.events.append({
         tick: this.state.tick,
         type: 'ownership:transfer',
-        data: { placeId: site.id, from: prev, to: commissioner },
+        data: {
+          placeId: site.id,
+          from: prev,
+          to: commissioner,
+          // Additive: marks the first private-property deed for highlight reels
+          firstPrivate: true,
+        },
         reason: 'built and paid for it',
       })
     }

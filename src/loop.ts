@@ -46,6 +46,12 @@ export interface LoopController {
    * Safe to call with no frames (hidden tab / apply-on-resolve).
    */
   notifyMindSettled: () => void
+  /**
+   * Force one scene apply + render (photo mode settle after scrub/frame).
+   */
+  forceRender: () => void
+  /** Publish photo-mode flag on `__simState` (UI-only). */
+  setPhotoMode: (on: boolean) => void
 }
 
 const SPEEDS = new Set([0, 1, 8, 64])
@@ -82,6 +88,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let mindHook: MindTickHook | null = null
   let prevPositions = capturePositions(live)
   let visibilityUnbind: (() => void) | null = null
+  /** UI-only: cinematic photo mode (bridge flag; does not touch sim). */
+  let photoMode = false
 
   /**
    * Whole mind line: queue + in-flight + rate-floor wait (meter.thinking).
@@ -222,6 +230,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             budgetCooldown: false,
             minGapTicks: 30,
           },
+      photoMode,
     }
   }
 
@@ -409,6 +418,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastCelebrateEventCount = live.getEventCount()
     applyBreathe()
     applyScene(performance.now())
+    refreshBridge(getState())
   }
 
   const enterReplayAt = (target: number) => {
@@ -430,22 +440,26 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     lastToastEventCount = fork.getEventCount()
     lastCelebrateEventCount = fork.getEventCount()
     applyScene(performance.now())
+    refreshBridge(getState())
   }
 
+  /**
+   * Seek any tick in [0, head]. Resolves the calendar day from the target so
+   * scrub works across the full recorded timeline (import + photographer).
+   * Timeline UI still passes day-scoped ticks; absolute seeks jump view day.
+   */
   const scrubTo = (tick: number) => {
-    const day = resolvedViewDay()
-    const { startTick, endTick } = dayBounds(day)
     const head = live.state.tick
-    // Clamp to the viewed day's scrubber range
-    let target = Math.max(startTick, Math.min(Math.floor(tick), endTick, head))
-    viewDayOverride = day
-
-    if (target >= head && day === liveDay()) {
+    const target = Math.max(0, Math.min(Math.floor(tick), head))
+    if (target >= head) {
       goLive()
       return
     }
+    const day = toSimTime(target).day
+    viewDayOverride = day
     enterReplayAt(target)
     viewDayOverride = day
+    refreshBridge(getState())
   }
 
   const loadDay = (day: number) => {
@@ -654,5 +668,14 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     getDayBounds,
     getUserSpeed: () => userSpeed,
     notifyMindSettled,
+    forceRender: () => {
+      applyScene(performance.now())
+      scene.render()
+      refreshBridge(getState())
+    },
+    setPhotoMode: (on: boolean) => {
+      photoMode = !!on
+      refreshBridge(getState())
+    },
   }
 }
