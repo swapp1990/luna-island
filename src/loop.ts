@@ -220,6 +220,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             budgetUsedDay: 0,
             budgetMaxDay: 300,
             budgetCooldown: false,
+            minGapTicks: 30,
           },
     }
   }

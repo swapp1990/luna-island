@@ -29,6 +29,8 @@ export interface MindBridgeState {
   budgetMaxDay?: number
   /** Client cooldown after HTTP 402 — no further mind dispatches. */
   budgetCooldown?: boolean
+  /** Additive: resolved soft-path cadence gap in sim ticks. */
+  minGapTicks?: number
 }
 
 export interface SimStateBridge {

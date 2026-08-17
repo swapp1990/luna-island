@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Simulation } from '../src/sim/sim'
 import {
   serializeSave,
@@ -15,6 +15,9 @@ import {
   MIND_STALE_TICKS,
   MIND_WALL_FLOOR_MS,
   MIND_WALL_TIMEOUT_MS,
+  clampMinGapTicks,
+  mindMinGapTicksFromLocation,
+  resolveMinGapTicks,
 } from '../src/mind/lunaBrain'
 import {
   MockProvider,
@@ -1330,5 +1333,133 @@ describe('frameless apply-on-resolve (P3-2d)', () => {
     expect(mind.getSafetySweepHits()).toBe(0)
 
     mind.dispose()
+  })
+})
+
+describe('mind minGapTicks knob (P3-9)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const stubSearch = (search: string) => {
+    vi.stubGlobal('window', { location: { search } })
+  }
+
+  const forceIdle = (sim: Simulation, agentId: string) => {
+    const a = sim.state.agents.find((x) => x.id === agentId)
+    if (!a) return
+    a.action = { kind: 'idle', reason: 'test cadence' }
+    a.actionTicks = 0
+  }
+
+  const decisionsFor = (sim: Simulation, agentId: string) =>
+    sim.getEvents().filter((e) => e.type === 'mind:decision' && e.agentId === agentId)
+
+  it('parses ?mindMinGapTicks= and clamps 5–120; garbage → default', () => {
+    expect(MIND_MIN_GAP_TICKS).toBe(30)
+    expect(clampMinGapTicks(15)).toBe(15)
+    expect(clampMinGapTicks(5)).toBe(5)
+    expect(clampMinGapTicks(120)).toBe(120)
+    expect(clampMinGapTicks(4)).toBe(5)
+    expect(clampMinGapTicks(200)).toBe(120)
+    expect(clampMinGapTicks(15.9)).toBe(15)
+
+    expect(mindMinGapTicksFromLocation()).toBeNull()
+    expect(resolveMinGapTicks()).toBe(30)
+
+    stubSearch('?mindMinGapTicks=15')
+    expect(mindMinGapTicksFromLocation()).toBe(15)
+    expect(resolveMinGapTicks()).toBe(15)
+
+    stubSearch('?mindMinGapTicks=3')
+    expect(mindMinGapTicksFromLocation()).toBe(5)
+
+    stubSearch('?mindMinGapTicks=999')
+    expect(mindMinGapTicksFromLocation()).toBe(120)
+
+    stubSearch('?mindMinGapTicks=abc')
+    expect(mindMinGapTicksFromLocation()).toBeNull()
+    expect(resolveMinGapTicks()).toBe(30)
+
+    stubSearch('?mindMinGapTicks=')
+    expect(mindMinGapTicksFromLocation()).toBeNull()
+
+    stubSearch('?other=1')
+    expect(mindMinGapTicksFromLocation()).toBeNull()
+    expect(resolveMinGapTicks()).toBe(30)
+  })
+
+  it('options win over location, location wins over constant; default stays 30', () => {
+    const def = new LunaBrainService('mock')
+    expect(def.getMeter().minGapTicks).toBe(30)
+    def.dispose()
+
+    stubSearch('?mindMinGapTicks=15')
+    expect(resolveMinGapTicks()).toBe(15)
+    expect(resolveMinGapTicks(20)).toBe(20)
+
+    const fromLoc = new LunaBrainService('mock', { safetySweep: false })
+    expect(fromLoc.getMeter().minGapTicks).toBe(15)
+    fromLoc.dispose()
+
+    const fromOpt = new LunaBrainService('mock', {
+      minGapTicks: 20,
+      safetySweep: false,
+    })
+    expect(fromOpt.getMeter().minGapTicks).toBe(20)
+    fromOpt.dispose()
+
+    const clampedOpt = new LunaBrainService('mock', {
+      minGapTicks: 2,
+      safetySweep: false,
+    })
+    expect(clampedOpt.getMeter().minGapTicks).toBe(5)
+    clampedOpt.dispose()
+  })
+
+  it('soft-path cadence: since=20 is eligible at gap 15 and skipped at gap 30', () => {
+    const run = (gap: number) => {
+      const sim = new Simulation(42)
+      const mind = new LunaBrainService('mock', {
+        minGapTicks: gap,
+        suppressNewConversations: true,
+        wallFloorMs: 0,
+        safetySweep: false,
+      })
+      void mind.init()
+      mind.onAfterTick(sim)
+      for (let i = 0; i < 8; i++) {
+        sim.advanceTicks(1)
+        mind.onAfterTick(sim)
+      }
+      const first = decisionsFor(sim, 'agent-0')
+      expect(first.length).toBeGreaterThanOrEqual(1)
+      const firstTick = first[0]!.tick
+      for (let i = 0; i < 25; i++) {
+        sim.advanceTicks(1)
+        forceIdle(sim, 'agent-0')
+        mind.onAfterTick(sim)
+      }
+      const since = sim.state.tick - firstTick
+      expect(since).toBeGreaterThanOrEqual(20)
+      expect(since).toBeLessThan(30)
+      const n = decisionsFor(sim, 'agent-0').length
+      mind.dispose()
+      return n
+    }
+    expect(run(15)).toBeGreaterThanOrEqual(2)
+    expect(run(30)).toBe(1)
+  })
+
+  it('minGapTicks is present on the bridge snapshot (getMeter)', () => {
+    const mind = new LunaBrainService('mock', { minGapTicks: 15 })
+    const meter = mind.getMeter()
+    expect(meter).toHaveProperty('minGapTicks')
+    expect(meter.minGapTicks).toBe(15)
+    mind.dispose()
+
+    const def = new LunaBrainService('mock')
+    expect(def.getMeter().minGapTicks).toBe(MIND_MIN_GAP_TICKS)
+    def.dispose()
   })
 })

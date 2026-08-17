@@ -111,6 +111,8 @@ export interface MindMeter {
   budgetMaxDay: number
   /** True while client-side cooldown after 402 (no further dispatches). */
   budgetCooldown: boolean
+  /** Resolved soft-path cadence gap (options > location > MIND_MIN_GAP_TICKS). */
+  minGapTicks: number
 }
 
 export interface LunaBrainOptions {
@@ -148,6 +150,11 @@ export interface LunaBrainOptions {
    * production headroom.
    */
   suppressNewConversations?: boolean
+  /**
+   * Soft-path cadence gap in sim ticks (default MIND_MIN_GAP_TICKS).
+   * Wins over `?mindMinGapTicks=`; clamped 5–120.
+   */
+  minGapTicks?: number
 }
 
 interface PendingHold {
@@ -302,6 +309,8 @@ export class LunaBrainService {
   private safetySweepHits = 0
   /** Test/e2e: block new conversation starts (not in-progress turns). */
   private readonly suppressNewConversations: boolean
+  /** Soft-path cadence gap (options > location > MIND_MIN_GAP_TICKS). */
+  private readonly minGapTicks: number
 
   constructor(mode: BrainModeOrAuto = 'auto', opts?: LunaBrainOptions) {
     this.mode = mode
@@ -315,6 +324,7 @@ export class LunaBrainService {
         : floorFromLoc != null
           ? floorFromLoc
           : MIND_WALL_FLOOR_MS
+    this.minGapTicks = resolveMinGapTicks(opts?.minGapTicks)
     this.nowFn = opts?.now ?? (() => Date.now())
     this.onPipelineChange = opts?.onPipelineChange ?? null
     const sweepDefault = typeof window !== 'undefined'
@@ -518,6 +528,7 @@ export class LunaBrainService {
       budgetUsedDay: this.budgetUsedDay,
       budgetMaxDay: this.budgetMaxDay,
       budgetCooldown: this.isBudgetCooldown(),
+      minGapTicks: this.minGapTicks,
     }
   }
 
@@ -839,7 +850,7 @@ export class LunaBrainService {
         agent.action.kind === 'idle' ||
         (agent.action.kind !== 'sleep' && agent.actionTicks === 0 && !agent.action.path?.length)
       const urgent = anyNeedCritical(agent)
-      const softOk = since >= MIND_MIN_GAP_TICKS && (finished || urgent)
+      const softOk = since >= this.minGapTicks && (finished || urgent)
       const hardOk = since >= MIND_HARD_GAP_TICKS
       const bumpId = this.unusedProposalBump(sim, agentId)
       if (!softOk && !hardOk && !bumpId) continue
@@ -1986,4 +1997,36 @@ export function mindWallFloorMsFromLocation(): number | null {
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0) return null
   return Math.min(60_000, Math.floor(n))
+}
+
+const MIN_GAP_TICKS_CLAMP_MIN = 5
+const MIN_GAP_TICKS_CLAMP_MAX = 120
+
+/** Clamp a soft-path cadence gap to the legal 5–120 range. */
+export function clampMinGapTicks(n: number): number {
+  return Math.max(MIN_GAP_TICKS_CLAMP_MIN, Math.min(MIN_GAP_TICKS_CLAMP_MAX, Math.floor(n)))
+}
+
+/**
+ * Optional soft-cadence override from `?mindMinGapTicks=` (clamped 5–120).
+ * Unset / garbage → null (caller falls back to MIND_MIN_GAP_TICKS).
+ */
+export function mindMinGapTicksFromLocation(): number | null {
+  if (typeof window === 'undefined') return null
+  const q = new URLSearchParams(window.location.search)
+  const raw = q.get('mindMinGapTicks')
+  if (raw == null || raw === '') return null
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  return clampMinGapTicks(n)
+}
+
+/**
+ * Resolve soft-path cadence: explicit option > `?mindMinGapTicks=` > constant 30.
+ */
+export function resolveMinGapTicks(explicit?: number): number {
+  if (explicit != null && Number.isFinite(explicit)) return clampMinGapTicks(explicit)
+  const fromLoc = mindMinGapTicksFromLocation()
+  if (fromLoc != null) return fromLoc
+  return MIND_MIN_GAP_TICKS
 }
