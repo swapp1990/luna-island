@@ -27,7 +27,6 @@ const PLACE_SLOT_KINDS = new Set([
   'forage',
   'work',
   'buy',
-  'examine',
 ])
 
 const NEIGHBOR8: Array<[number, number]> = [

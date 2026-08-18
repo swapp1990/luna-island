@@ -229,11 +229,27 @@ function urgentNeedy(agent: AgentState): boolean {
   )
 }
 
+/** Civic / discovery verbs — Luna minds only; UtilityBrain never suggests these for minded agents. */
+export const STRATEGIC_ACTION_KINDS: ReadonlySet<ActionKind> = new Set([
+  'commission',
+  'propose',
+  'vote',
+  'sanction',
+  'claim',
+  'examine',
+])
+
 /**
  * Utility-based brain: scores sleep / eat / forage / buy / drink / socialize /
  * work / wander. Place-full → next-nearest of same kind, else wander.
  */
 export class UtilityBrain implements Brain {
+  /**
+   * @param maintenanceOnlyIds Luna-minded agent ids. Utility may only suggest
+   *   maintenance verbs for them; sheep (everyone else) keep the full set.
+   */
+  constructor(private readonly maintenanceOnlyIds?: ReadonlySet<string>) {}
+
   decide(obs: Observation, rng: Rng): Intent {
     const { self, time, world } = obs
     const hour = time.hour
@@ -421,9 +437,13 @@ export class UtilityBrain implements Brain {
       intent: makeWanderIntent(world, self, rng),
     })
 
-    let best = candidates[0]!
-    for (let i = 1; i < candidates.length; i++) {
-      const c = candidates[i]!
+    const pool = this.maintenanceOnlyIds?.has(self.id)
+      ? candidates.filter((c) => !STRATEGIC_ACTION_KINDS.has(c.intent.kind))
+      : candidates
+
+    let best = pool[0]!
+    for (let i = 1; i < pool.length; i++) {
+      const c = pool[i]!
       if (c.score > best.score) best = c
     }
     return best.intent

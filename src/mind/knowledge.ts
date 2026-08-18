@@ -263,3 +263,40 @@ export function formatNearbyPlaceLine(row: NearbyPlaceLine): string {
   const label = placeKindLabel(row.place.kind)
   return row.unfamiliar ? `${label} (unfamiliar)` : label
 }
+
+/** 8-way compass from agent to a point. Tile y increases south. */
+export function compass8(dx: number, dy: number): string {
+  if (Math.abs(dx) < 1e-9 && Math.abs(dy) < 1e-9) return 'here'
+  const angle = Math.atan2(-dy, dx)
+  const deg = ((angle * 180) / Math.PI + 360) % 360
+  const idx = Math.round(deg / 45) % 8
+  return ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE'][idx]!
+}
+
+/**
+ * Plain distance+direction fact for an unexamined place. No editorial nudge.
+ * Adds "on the plaza" when the place sits on/next to the plaza.
+ */
+export function formatUnfamiliarPlaceFact(
+  agent: AgentState,
+  place: Place,
+  world: WorldState,
+): string {
+  const dx = place.x - agent.x
+  const dy = place.y - agent.y
+  const dist = Math.round(Math.hypot(dx, dy))
+  const dir = compass8(dx, dy)
+  const plaza = world.places.find((p) => p.kind === 'plaza')
+  const onPlaza =
+    !!plaza &&
+    Math.max(Math.abs(place.x - plaza.x), Math.abs(place.y - plaza.y)) <= 2
+  const where =
+    dir === 'here'
+      ? onPlaza
+        ? 'here, on the plaza'
+        : 'here'
+      : onPlaza
+        ? `${dist} tiles ${dir}, on the plaza`
+        : `${dist} tiles ${dir}`
+  return `${place.kind} (${where})`
+}

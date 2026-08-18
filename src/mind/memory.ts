@@ -277,12 +277,52 @@ export function standingFacts(agent: AgentState, world: WorldState): string[] {
         ? `Home: shared ${home.kind} (${home.id})`
         : `Home: ${home.kind} (${home.id})`,
     )
+    if (shared) {
+      let mates = 0
+      for (const a of world.agents) {
+        if (a.id === agent.id) continue
+        if (a.homeId === home.id) mates++
+      }
+      if (mates >= 2) {
+        lines.push(`Home is crowded (${mates} others sleep here)`)
+      }
+    }
   } else {
     lines.push('Home: none')
   }
 
   lines.push(`Wallet: ${agent.wallet} coins`)
   return lines
+}
+
+/** Notes that read as intentions (reflection already asks for tomorrow's). */
+const INTENTION_RE =
+  /\b(tomorrow|tonight|i will|i'll|i should|i want|going to|intend|plan to|aim to|hope to)\b/i
+
+/**
+ * Standing goals from the most recent night's reflection notes that read as
+ * intentions. Replaced nightly (only the latest batch). Newest-night, up to 3.
+ */
+export function standingGoals(
+  agentId: string,
+  mindNoteLog: readonly MindNoteRecord[],
+): string[] {
+  let latest: MindNoteRecord | null = null
+  for (let i = mindNoteLog.length - 1; i >= 0; i--) {
+    const rec = mindNoteLog[i]!
+    if (rec.agentId !== agentId) continue
+    latest = rec
+    break
+  }
+  if (!latest) return []
+  const out: string[] = []
+  for (const note of latest.notes) {
+    const text = note.trim()
+    if (!text || !INTENTION_RE.test(text)) continue
+    out.push(text)
+    if (out.length >= 3) break
+  }
+  return out
 }
 
 /**

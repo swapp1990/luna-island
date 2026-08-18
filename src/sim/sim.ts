@@ -82,6 +82,11 @@ const HAUL_SIZE = 5
 const BUY_MAX_UNITS = 2
 /** Commission cost (agent → treasury) for a private home. */
 const COMMISSION_COST = 30
+/** Failed commission → next attempt accepted after this many ticks (~1 sim-day). */
+export const COMMISSION_COOLDOWN_TICKS = 1440
+/** Examine succeeds from this euclidean distance — observation, not use. */
+const EXAMINE_RANGE = 1.5
+const EXAMINE_RANGE_SQ = EXAMINE_RANGE * EXAMINE_RANGE
 /** Civic fees (agent → treasury). */
 export const PROPOSE_COST = 2
 export const SANCTION_COST = 1
@@ -361,6 +366,7 @@ function deepCloneWorld(state: WorldState): WorldState {
     mindStats: cloneMindStats(state.mindStats),
     proposals: cloneProposals(state.proposals),
     rules: cloneRules(state.rules),
+    commissionCooldownUntil: { ...(state.commissionCooldownUntil ?? {}) },
   }
 }
 
@@ -373,6 +379,7 @@ export function ensureMindFields(state: WorldState): void {
   if (!state.proposals) state.proposals = []
   if (!state.rules) state.rules = []
   if (!state.preset) state.preset = 'default'
+  if (!state.commissionCooldownUntil) state.commissionCooldownUntil = {}
 }
 
 /** Ordered pair key for sympathy streak / met maps. */
@@ -406,6 +413,46 @@ function dist2(ax: number, ay: number, bx: number, by: number): number {
   const dx = ax - bx
   const dy = ay - by
   return dx * dx + dy * dy
+}
+
+function isWithinExamineRange(
+  ax: number,
+  ay: number,
+  place: Place,
+): boolean {
+  return dist2(ax, ay, place.x, place.y) <= EXAMINE_RANGE_SQ
+}
+
+/** Nearest walkable tile within examine range of the place (stay put if already there). */
+function pickExamineStand(
+  world: WorldState,
+  agent: AgentState,
+  place: Place,
+): { x: number; y: number } {
+  if (isWithinExamineRange(agent.x, agent.y, place)) {
+    return { x: Math.round(agent.x), y: Math.round(agent.y) }
+  }
+  const r = 2
+  let best: { x: number; y: number; d: number } | null = null
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const x = place.x + dx
+      const y = place.y + dy
+      if (!isWalkable(world, x, y)) continue
+      if (dist2(x, y, place.x, place.y) > EXAMINE_RANGE_SQ) continue
+      const d = dist2(agent.x, agent.y, x, y)
+      if (
+        !best ||
+        d < best.d - 1e-12 ||
+        (Math.abs(d - best.d) <= 1e-12 &&
+          (x < best.x || (x === best.x && y < best.y)))
+      ) {
+        best = { x, y, d }
+      }
+    }
+  }
+  if (best) return { x: best.x, y: best.y }
+  return { x: place.x, y: place.y }
 }
 
 function atTarget(agent: AgentState, tx: number, ty: number): boolean {
@@ -502,7 +549,7 @@ export class Simulation {
   private events: EventTrace
   private snapshots: SnapshotStore
   private dayArchives: DayArchiveMeta[] = []
-  private brain = new UtilityBrain()
+  private brain = new UtilityBrain(LUNA_MIND_IDS)
   /**
    * Live inbox: intents posted mid-tick, applied at the start of the next step
    * (sorted by agentId then queue order).
@@ -615,6 +662,7 @@ export class Simulation {
       // Agent rng starts fresh from seed (worldgen uses its own internal rng from seed)
       this.rng = createRng(seed)
       spawnAgents(this.state, this.rng)
+      ensureMindFields(this.state)
       if (!opts?.skipInitEvents) {
         this.events.append({
           tick: 0,
@@ -1807,7 +1855,7 @@ export class Simulation {
     }
 
     if (kind === 'examine') {
-      if (place && isStanding(agent) && isSlotTile(this.state, place, agent.x, agent.y)) {
+      if (place && isStanding(agent) && isWithinExamineRange(agent.x, agent.y, place)) {
         this.completeExamine(agent, place)
       } else if (!place || agent.actionTicks >= 3) {
         this.endAction(agent, 'nothing to examine here')
@@ -2640,6 +2688,16 @@ export class Simulation {
 
     // Instant commission: world rule, then idle
     if (kind === 'commission') {
+      if (this.isCommissionCooling(agent.id)) {
+        agent.action = {
+          kind: 'idle',
+          reason: 'Could not commission a house',
+        }
+        agent.actionTicks = 0
+        agent.pathIndex = 0
+        agent.actionStartNeeds = cloneNeeds(agent.needs)
+        return
+      }
       const ok = this.commission(agent.id, 'home')
       this.events.append({
         tick: this.state.tick,
@@ -2718,6 +2776,10 @@ export class Simulation {
       const bed = bedSlotForAgent(this.state, agent, place)
       tx = bed.x
       ty = bed.y
+    } else if (kind === 'examine' && place) {
+      const stand = pickExamineStand(this.state, agent, place)
+      tx = stand.x
+      ty = stand.y
     } else if (place && kind !== 'wander') {
       // Slot reservation: free tile within footprint only (no ring-widening)
       const preferred =
@@ -3233,21 +3295,37 @@ export class Simulation {
     }
   }
 
+  private isCommissionCooling(agentId: string): boolean {
+    const until = this.state.commissionCooldownUntil?.[agentId] ?? 0
+    return this.state.tick < until
+  }
+
+  private armCommissionCooldown(agentId: string): void {
+    if (!this.state.commissionCooldownUntil) this.state.commissionCooldownUntil = {}
+    this.state.commissionCooldownUntil[agentId] =
+      this.state.tick + COMMISSION_COOLDOWN_TICKS
+  }
+
   /**
    * Commission a private home: free village-ring plot + wallet ≥ cost →
    * 30 coins agent→treasury, create construction-site owned by commissioner.
    */
   commission(agentId: string, kind: 'home'): boolean {
     if (kind !== 'home') return false
+    if (this.isCommissionCooling(agentId)) return false
     const agent = this.state.agents.find((a) => a.id === agentId)
     if (!agent) return false
-    if (agent.wallet < COMMISSION_COST) return false
+    const fail = (): false => {
+      this.armCommissionCooldown(agentId)
+      return false
+    }
+    if (agent.wallet < COMMISSION_COST) return fail()
     // One commission per agent (already owns a private place)
-    if (this.agentOwnsAnyPlace(agentId)) return false
+    if (this.agentOwnsAnyPlace(agentId)) return fail()
     // One active site island-wide — materials + labor can't feed a build spree
-    if (this.state.places.some((p) => p.kind === 'construction-site')) return false
+    if (this.state.places.some((p) => p.kind === 'construction-site')) return fail()
     const plot = this.findFreeHomePlot()
-    if (!plot) return false
+    if (!plot) return fail()
 
     const paid = this.transferCoins(
       agentId,
@@ -3256,7 +3334,7 @@ export class Simulation {
       `${agent.name} paid ${COMMISSION_COST} coins to commission a house`,
       { kind: 'commission', good: 'home' },
     )
-    if (!paid) return false
+    if (!paid) return fail()
 
     const siteId = `site-${agentId}-${this.state.tick}`
     const site: Place = {

@@ -322,6 +322,11 @@ export interface WorldState {
    * by action mechanics.
    */
   rules: Rule[]
+  /**
+   * Per-agent tick until the next commission attempt is accepted (v5 additive).
+   * Missing on older saves → treat as none.
+   */
+  commissionCooldownUntil?: Record<string, number>
 }
 
 export interface SimEvent {

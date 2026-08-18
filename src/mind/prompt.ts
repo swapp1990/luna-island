@@ -5,10 +5,12 @@ import { personaFor } from './personas'
 import {
   memoryLinesForPrompt,
   standingFacts,
+  standingGoals,
 } from './memory'
 import {
   feltConsequenceLines,
   formatNearbyPlaceLine,
+  formatUnfamiliarPlaceFact,
   knowledgeLinesForPrompt,
   nearbyPlacesForObservation,
 } from './knowledge'
@@ -47,15 +49,30 @@ const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
 target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, or a villager name.
 propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target.
-If unsure, prefer a safe need-serving action (eat/forage/sleep/work).`
+When nothing is urgent, act on who you are.`
 
 export function buildSystemPrompt(agentId: string): string {
   const persona = personaFor(agentId) ?? 'You are a villager on Luna Island.'
   return `${persona}\n\n${GROUNDING}\n\n${WORLD_RULES}\n\n${RESPONSE_CONTRACT}`
 }
 
+/** Need below this is a warning — slack framing only when all needs are ≥ this. */
+export const NEED_WARNING_THRESHOLD = 0.25
+
 function pct(n: number): number {
   return Math.round(Math.max(0, Math.min(1, n)) * 100)
+}
+
+export function needsAreComfortable(needs: {
+  hunger: number
+  energy: number
+  social: number
+}): boolean {
+  return (
+    needs.hunger >= NEED_WARNING_THRESHOLD &&
+    needs.energy >= NEED_WARNING_THRESHOLD &&
+    needs.social >= NEED_WARNING_THRESHOLD
+  )
 }
 
 function nearbyAgents(
@@ -167,9 +184,13 @@ export function buildUserPrompt(
   const felt = feltConsequenceLines(agent.id, recentEvents, world.tick, 5)
   const nearbyPlaces = nearbyPlacesForObservation(agent, world, recentEvents)
   const civic = civicObservationLines(agent, world, recentEvents)
+  const unfamiliar = nearbyPlaces.filter((p) => p.unfamiliar)
+  const goals = standingGoals(agent.id, noteLog)
+  const slack = needsAreComfortable(agent.needs)
 
   const lines = [
     `Time: Day ${t.day} ${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')} (tick ${world.tick})`,
+    ...(slack ? ['Your needs are comfortable; nothing is urgent.'] : []),
     `Needs: hunger ${pct(agent.needs.hunger)}% energy ${pct(agent.needs.energy)}% social ${pct(agent.needs.social)}%${agent.collapsed ? ' COLLAPSED' : ''}`,
     `Wallet: ${agent.wallet} coins | Inventory: food ${inv.food} wood ${inv.wood} stone ${inv.stone}`,
     `Job: ${job ? `${placeKindLabel(job)} (${job.wage ?? 0}/day)` : 'unemployed'}`,
@@ -181,8 +202,16 @@ export function buildUserPrompt(
         ? nearbyPlaces.map(formatNearbyPlaceLine).join('; ')
         : 'none'
     }`,
+    ...(unfamiliar.length
+      ? [
+          `Never examined: ${unfamiliar
+            .map((r) => formatUnfamiliarPlaceFact(agent, r.place, world))
+            .join(', ')}`,
+        ]
+      : []),
     `Standing facts:`,
     ...standing.map((s) => `- ${s}`),
+    ...(goals.length ? ['Goals:', ...goals.map((g) => `- ${g}`)] : []),
     ...civic,
     `Recently felt:`,
     ...(felt.length ? felt.map((f) => `- ${f}`) : ['- (nothing yet)']),

@@ -1,0 +1,481 @@
+/**
+ * Narrow mind-agency probe — real model, no browser.
+ *
+ * Usage: node scripts/mind-probe.mjs [--port 5188] [--n 10] [--concurrency 3]
+ *
+ * Boots vite (sidecar only), builds prompts with the real
+ * buildSystemPrompt / buildUserPrompt over synthetic fixtures, POSTs to
+ * /api/luna/decide, parses with the real parse.ts, writes histograms to
+ * stdout and artifacts/mind-probe-<ts>.json.
+ *
+ * Not wired into npm test / e2e (nondeterministic).
+ */
+import { createServer } from 'vite'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const arg = (name, dflt) => {
+  const i = process.argv.indexOf(`--${name}`)
+  return i >= 0 ? process.argv[i + 1] : dflt
+}
+
+const PORT = Number(arg('port', '5188'))
+const N = Number(arg('n', '10'))
+const CONCURRENCY = Number(arg('concurrency', '3'))
+const ONLY = String(arg('only', ''))
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const LEGACY_SAFE_DEFAULT =
+  'If unsure, prefer a safe need-serving action (eat/forage/sleep/work).'
+
+const NEED_SERVING = new Set(['eat', 'sleep', 'forage', 'work'])
+const SURVIVAL = new Set(['eat', 'forage', 'buy'])
+
+const log = (msg) => console.log(`[mind-probe] ${msg}`)
+
+function emptyInv() {
+  return { food: 0, wood: 0, stone: 0 }
+}
+
+function emptyNeeds(n = 0.8) {
+  return { hunger: n, energy: n, social: n }
+}
+
+function baseAgent(id, name, x, y, extra = {}) {
+  const needs = extra.needs ?? emptyNeeds(0.8)
+  return {
+    id,
+    name,
+    color: '#e07a5f',
+    x,
+    y,
+    homeId: extra.homeId ?? 'home-0',
+    needs,
+    action: extra.action ?? { kind: 'idle', reason: 'Just standing here' },
+    needJitter: { hunger: 1, energy: 1, social: 1 },
+    actionTicks: 0,
+    lastDecideTick: 0,
+    pathIndex: 0,
+    criticalFired: { hunger: false, energy: false, social: false },
+    actionStartNeeds: { ...needs },
+    inventory: extra.inventory ?? emptyInv(),
+    wallet: extra.wallet ?? 20,
+    collapsed: false,
+    employedAt: extra.employedAt ?? null,
+    workedTicks: 0,
+    daysIdleOnJob: 0,
+    workPhase: null,
+    haulAmount: 0,
+    haulGood: null,
+    haulSourceId: null,
+    haulDropoffId: null,
+    sympathy: extra.sympathy ?? {},
+  }
+}
+
+function baseWorld(places, agents, extra = {}) {
+  return {
+    seed: 1,
+    tick: extra.tick ?? 240,
+    width: 32,
+    height: 32,
+    tiles: [],
+    places,
+    agents,
+    preset: 'default',
+    treasury: 200,
+    owners: extra.owners ?? { 'home-0': 'commons', 'plaza-0': 'commons' },
+    stats: [],
+    sympathyStreak: {},
+    sympathyMet: {},
+    externalIntentLog: [],
+    mindNoteLog: extra.mindNoteLog ?? [],
+    sayLog: [],
+    mindStats: {},
+    proposals: extra.proposals ?? [],
+    rules: extra.rules ?? [],
+    commissionCooldownUntil: {},
+  }
+}
+
+function usedPlaceEvent(agentId, placeId, tick = 10) {
+  return {
+    seq: tick,
+    tick,
+    type: 'action:start',
+    agentId,
+    data: { kind: 'socialize', target: placeId, placeId },
+    reason: 'been here before',
+  }
+}
+
+function slackDiscoveryFixture() {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-0',
+    kind: 'notice-board',
+    x: 13,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const agent = baseAgent('agent-0', 'Mira', 10, 10, {
+    wallet: 20,
+    employedAt: null,
+    needs: emptyNeeds(0.8),
+  })
+  return {
+    agent,
+    world: baseWorld([plaza, board], [agent]),
+    events: [usedPlaceEvent('agent-0', 'plaza-0')],
+  }
+}
+
+function affordableHouseFixture() {
+  const home = {
+    id: 'home-0',
+    kind: 'home',
+    x: 8,
+    y: 10,
+    slots: 4,
+    inventory: emptyInv(),
+  }
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const mates = [
+    baseAgent('agent-0', 'Mira', 10, 10, { wallet: 45, homeId: 'home-0' }),
+    baseAgent('agent-3', 'Ren', 8, 10, { wallet: 12, homeId: 'home-0' }),
+    baseAgent('agent-5', 'Pia', 8, 11, { wallet: 12, homeId: 'home-0' }),
+    baseAgent('agent-6', 'Bram', 9, 10, { wallet: 12, homeId: 'home-0' }),
+  ]
+  return {
+    agent: mates[0],
+    world: baseWorld([home, plaza], mates, {
+      owners: { 'home-0': 'commons', 'plaza-0': 'commons' },
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'home-0', 8),
+      usedPlaceEvent('agent-0', 'plaza-0', 12),
+    ],
+  }
+}
+
+function survivalFixture() {
+  const bush = {
+    id: 'berry-bush-0',
+    kind: 'berry-bush',
+    x: 11,
+    y: 10,
+    slots: 2,
+    inventory: { food: 4, wood: 0, stone: 0 },
+  }
+  const stall = {
+    id: 'stall-0',
+    kind: 'stall',
+    x: 12,
+    y: 11,
+    slots: 2,
+    inventory: { food: 6, wood: 0, stone: 0 },
+    price: { food: 4 },
+  }
+  const agent = baseAgent('agent-0', 'Mira', 10, 10, {
+    wallet: 20,
+    inventory: emptyInv(),
+    needs: { hunger: 0.08, energy: 0.8, social: 0.8 },
+  })
+  return {
+    agent,
+    world: baseWorld([bush, stall], [agent]),
+    events: [
+      {
+        seq: 8,
+        tick: 8,
+        type: 'action:start',
+        agentId: 'agent-0',
+        data: { kind: 'forage', target: 'berry-bush-0', placeId: 'berry-bush-0' },
+        reason: 'picked berries here yesterday',
+      },
+      {
+        seq: 12,
+        tick: 12,
+        type: 'action:start',
+        agentId: 'agent-0',
+        data: { kind: 'buy', target: 'stall-0', placeId: 'stall-0' },
+        reason: 'bought food here before',
+      },
+    ],
+  }
+}
+
+async function poolMap(items, limit, fn) {
+  const out = new Array(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i], i)
+    }
+  }
+  const n = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: n }, () => worker()))
+  return out
+}
+
+function histogram(actions) {
+  const h = {}
+  for (const a of actions) h[a] = (h[a] ?? 0) + 1
+  return Object.fromEntries(Object.entries(h).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])))
+}
+
+function houseSaving(reasoning) {
+  return /\b(house|home|commission|save|saving|coins? for a (house|home))\b/i.test(
+    reasoning,
+  )
+}
+
+async function decideOnce(port, system, user, parseMindJson) {
+  const res = await fetch(`http://127.0.0.1:${port}/api/luna/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ system, user }),
+  })
+  const json = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    return {
+      ok: false,
+      action: 'parse-fail',
+      reasoning: '',
+      raw: JSON.stringify(json).slice(0, 400),
+      status: res.status,
+    }
+  }
+  const text = String(json.text ?? '')
+  const parsed = parseMindJson(text)
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      action: 'parse-fail',
+      reasoning: '',
+      raw: text.slice(0, 400),
+      error: parsed.error,
+    }
+  }
+  return {
+    ok: true,
+    action: parsed.intent.kind,
+    reasoning: parsed.intent.reason,
+    raw: text.slice(0, 400),
+  }
+}
+
+function printScenario(name, result) {
+  log(`--- ${name} ${result.verdict} ---`)
+  log(`histogram: ${JSON.stringify(result.histogram)}`)
+  log(`expectation: ${result.expectation}`)
+  for (const [i, s] of result.samples.entries()) {
+    log(`  sample ${i + 1}: ${s.action} — ${s.reasoning}`)
+  }
+}
+
+async function main() {
+  log(`booting vite :${PORT} (n=${N}, concurrency=${CONCURRENCY})`)
+  const server = await createServer({
+    root: ROOT,
+    configFile: path.join(ROOT, 'vite.config.ts'),
+    server: { host: '127.0.0.1', port: PORT, strictPort: true },
+  })
+  await server.listen()
+
+  const shutdown = async () => {
+    try {
+      await server.close()
+    } catch {
+      /* already closed */
+    }
+  }
+  process.on('SIGINT', () => {
+    shutdown().finally(() => process.exit(1))
+  })
+
+  try {
+    let healthy = false
+    for (let i = 0; i < 60; i++) {
+      try {
+        const r = await fetch(`http://127.0.0.1:${PORT}/api/luna/health`)
+        if (r.ok) {
+          healthy = true
+          break
+        }
+      } catch {
+        /* retry */
+      }
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    if (!healthy) throw new Error('sidecar /api/luna/health never became ok')
+
+    const promptMod = await server.ssrLoadModule('/src/mind/prompt.ts')
+    const parseMod = await server.ssrLoadModule('/src/mind/parse.ts')
+    const { buildSystemPrompt, buildUserPrompt, approxTokens } = promptMod
+    const { parseMindJson } = parseMod
+
+    const s1fix = slackDiscoveryFixture()
+    const s2fix = affordableHouseFixture()
+    const s3fix = survivalFixture()
+
+    const sysNew = buildSystemPrompt('agent-0')
+    const sysLegacy = `${sysNew}\n${LEGACY_SAFE_DEFAULT}`
+    const userS1 = buildUserPrompt(s1fix.agent, s1fix.world, s1fix.events)
+    const userS2 = buildUserPrompt(s2fix.agent, s2fix.world, s2fix.events)
+    const userS3 = buildUserPrompt(s3fix.agent, s3fix.world, s3fix.events)
+
+    const fatTokens = {
+      s1: approxTokens(sysNew, userS1),
+      s2: approxTokens(sysNew, userS2),
+      s3: approxTokens(sysNew, userS3),
+    }
+    log(`approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3}`)
+    if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
+      throw new Error('legacy safe-default sentence still in production prompt')
+    }
+
+    const allScenarios = [
+      { id: 'S1', label: 'slack-discovery', system: sysNew, user: userS1 },
+      { id: 'S1L', label: 'legacy-contrast', system: sysLegacy, user: userS1 },
+      { id: 'S2', label: 'affordable-house', system: sysNew, user: userS2 },
+      { id: 'S3', label: 'survival-regression', system: sysNew, user: userS3 },
+    ]
+    const scenarios =
+      ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
+    if (scenarios.length === 0) throw new Error(`--only matched nothing: ${ONLY.join(',')}`)
+
+    const report = {
+      ts: Date.now(),
+      n: N,
+      concurrency: CONCURRENCY,
+      approxTokens: fatTokens,
+      scenarios: {},
+    }
+
+    for (const sc of scenarios) {
+      log(`running ${sc.id} ${sc.label} (n=${N})`)
+      const idxs = Array.from({ length: N }, (_, i) => i)
+      const rows = await poolMap(idxs, CONCURRENCY, () =>
+        decideOnce(PORT, sc.system, sc.user, parseMindJson),
+      )
+      const actions = rows.map((r) => r.action)
+      const hist = histogram(actions)
+      const samples = rows
+        .filter((r) => r.ok)
+        .slice(0, 3)
+        .map((r) => ({ action: r.action, reasoning: r.reasoning }))
+      if (samples.length < 3) {
+        for (const r of rows) {
+          if (samples.length >= 3) break
+          if (!samples.some((s) => s.reasoning === r.reasoning && s.action === r.action)) {
+            samples.push({
+              action: r.action,
+              reasoning: r.reasoning || r.raw || r.error || '',
+            })
+          }
+        }
+      }
+
+      let expectation = ''
+      let pass = true
+      if (sc.id === 'S1' || sc.id === 'S1L') {
+        const needN = actions.filter((a) => NEED_SERVING.has(a)).length
+        const examN = actions.filter((a) => a === 'examine').length
+        const needPct = (needN / N) * 100
+        if (sc.id === 'S1') {
+          const okNeed = needN / N <= 0.7
+          const okExam = examN >= 1
+          pass = okNeed && okExam
+          expectation = `eat/sleep/forage/work ${needN}/${N} (${needPct.toFixed(0)}% ≤70%); examine ${examN}/${N} (≥1)`
+        } else {
+          expectation = `legacy need-serving ${needN}/${N} (${needPct.toFixed(0)}%) — compare to S1`
+          pass = true
+        }
+      } else if (sc.id === 'S2') {
+        const hits = rows.filter(
+          (r) => r.action === 'commission' || houseSaving(r.reasoning),
+        ).length
+        pass = hits >= 1
+        expectation = `commission OR house-saving reasoning ${hits}/${N} (≥1)`
+      } else if (sc.id === 'S3') {
+        const hits = actions.filter((a) => SURVIVAL.has(a)).length
+        pass = hits >= 9
+        expectation = `eat/forage/buy ${hits}/${N} (≥9)`
+      }
+
+      const result = {
+        id: sc.id,
+        label: sc.label,
+        histogram: hist,
+        samples,
+        expectation,
+        verdict: pass ? 'PASS' : 'FAIL',
+        rows: rows.map((r) => ({
+          action: r.action,
+          reasoning: r.reasoning,
+          ok: r.ok,
+        })),
+      }
+      report.scenarios[sc.id] = result
+      printScenario(`${sc.id} ${sc.label}`, result)
+    }
+
+    if (report.scenarios.S1 && report.scenarios.S1L) {
+      const s1Need = (report.scenarios.S1.rows ?? []).filter((r) =>
+        NEED_SERVING.has(r.action),
+      ).length
+      const s1lNeed = (report.scenarios.S1L.rows ?? []).filter((r) =>
+        NEED_SERVING.has(r.action),
+      ).length
+      report.s1VsS1L = {
+        s1NeedServing: s1Need,
+        s1lNeedServing: s1lNeed,
+        deltaLegacyMinusNew: s1lNeed - s1Need,
+        moreNeedServingOnLegacy: s1lNeed > s1Need,
+      }
+      log(
+        `S1 vs S1L need-serving: new ${s1Need}/${N} vs legacy ${s1lNeed}/${N} (Δ legacy-new ${s1lNeed - s1Need})`,
+      )
+    }
+
+    fs.mkdirSync(path.join(ROOT, 'artifacts'), { recursive: true })
+    const outPath = path.join(ROOT, 'artifacts', `mind-probe-${report.ts}.json`)
+    fs.writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf8')
+    log(`wrote ${outPath}`)
+
+    const s3fail = report.scenarios.S3 && report.scenarios.S3.verdict !== 'PASS'
+    if (s3fail) {
+      log('S3 FAILED — reframe may have broken survival. Do not ship.')
+      await shutdown()
+      process.exitCode = 2
+      return
+    }
+  } finally {
+    await shutdown()
+  }
+}
+
+main().catch((err) => {
+  console.error('[mind-probe] fatal', err)
+  process.exit(1)
+})
