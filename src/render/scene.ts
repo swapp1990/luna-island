@@ -124,6 +124,21 @@ declare global {
     }
     /** DEV/e2e: aim orbit camera at world xz. */
     __renderLookAt?: (x: number, z: number, dist?: number) => void
+    /** DEV: mesh facing / hat / variant for portrait picking. */
+    __agentFacing?: (id: string) => {
+      x: number
+      y: number
+      z: number
+      yaw: number
+      rx: number
+      hat: boolean
+      variant: 'mind' | 'sheep'
+    } | null
+    /** DEV: close-up in front of an agent's facing (portraits). */
+    __framePortrait?: (
+      agentId: string,
+      dist?: number,
+    ) => { yaw: number; elev?: number; rescued?: boolean } | null
     /** DEV/e2e: world pos of a place mesh. */
     __placePos?: (placeId: string) => { x: number; y: number; z: number } | null
     /** DEV/e2e: last photo frame azimuth (default vs rescued). */
@@ -950,6 +965,79 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   if (import.meta.env.DEV) {
     window.__renderLookAt = lookAt
     window.__placePos = (placeId: string) => terrain.getPlaceWorldPos(placeId)
+    window.__agentFacing = (id: string) => agents.getFacing(id)
+    window.__framePortrait = (agentId: string, dist = 2.15) => {
+      const f = agents.getFacing(agentId)
+      if (!f) return null
+      controls.enableDamping = false
+      controls.minDistance = 1.45
+      const lying = Math.abs(f.rx) > 0.75
+      const lookY = lying ? 0.4 : 0.72
+      const headY = lying ? 0.42 : 0.9
+      const facing = f.yaw
+      const azims = lying
+        ? [facing + Math.PI / 2, facing - Math.PI / 2, facing + 0.9, facing - 0.9]
+        : [
+            facing,
+            facing + 0.32,
+            facing - 0.32,
+            facing + 0.65,
+            facing - 0.65,
+            Math.atan2(0.7, 0.62),
+            facing + Math.PI * 0.5,
+            facing - Math.PI * 0.5,
+          ]
+      const elevs = lying ? [14, 20, 28] : [12, 18, 24, 34]
+      const dists = lying
+        ? [1.65, 1.85, 2.1]
+        : [Math.max(1.7, dist), 1.9, 2.25, 2.55]
+      const pose = (azim: number, elevDeg: number, d: number) => {
+        const elev = (elevDeg * Math.PI) / 180
+        const horiz = d * Math.cos(elev)
+        controls.target.set(f.x, lookY, f.z)
+        camera.position.set(
+          f.x + Math.sin(azim) * horiz,
+          lookY + d * Math.sin(elev),
+          f.z + Math.cos(azim) * horiz,
+        )
+        camera.updateMatrixWorld()
+      }
+      let used = { azim: azims[0]!, elev: elevs[0]!, d: dists[0]! }
+      let found = false
+      for (const d of dists) {
+        if (found) break
+        for (const elev of elevs) {
+          if (found) break
+          for (const azim of azims) {
+            pose(azim, elev, d)
+            if (!subjectOccluded(f.x, headY, f.z, 0.22)) {
+              used = { azim, elev, d }
+              found = true
+              break
+            }
+          }
+        }
+      }
+      if (!found) {
+        if (lying) {
+          controls.minDistance = 1.2
+          pose(facing + Math.PI / 2, 18, 1.95)
+          controls.update()
+          return { yaw: f.yaw, elev: 18, rescued: false, x: f.x, z: f.z }
+        }
+        controls.minDistance = 0.75
+        const fx = Math.sin(facing)
+        const fz = Math.cos(facing)
+        controls.target.set(f.x + fx * 0.06, 0.8, f.z + fz * 0.06)
+        camera.position.set(f.x + fx * 0.72, 0.96, f.z + fz * 0.72)
+        camera.updateMatrixWorld()
+        controls.update()
+        return { yaw: f.yaw, elev: 8, rescued: false, x: f.x, z: f.z }
+      }
+      pose(used.azim, used.elev, used.d)
+      controls.update()
+      return { yaw: f.yaw, elev: used.elev, rescued: found, x: f.x, z: f.z }
+    }
   }
 
   return {

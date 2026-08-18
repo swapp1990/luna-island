@@ -195,6 +195,7 @@ export interface SimControlBridge {
     glyph: string | null
     prop: string | null
     traveling?: boolean
+    variant?: 'mind' | 'sheep'
   } | null
 }
 

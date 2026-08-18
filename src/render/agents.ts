@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { AgentState, Good, Place, SimEvent } from '../sim/types'
+import { isLunaAgent } from '../mind/personas'
 import type { FxHandle } from './fx'
 import {
   describeAgent,
@@ -20,6 +21,24 @@ const LEAN = 0.12
 const WORK_LEAN = 0.18
 const HEAD_Y = GROUND_Y + BODY_H + HEAD_R * 0.85
 const HAT_Y = HEAD_Y + HEAD_R * 0.55
+const EYE_R_SHEEP = 0.036
+const EYE_R_MIND = 0.041
+const ARM_R = 0.038
+const ARM_LEN = 0.22
+const SHOULDER_Y = GROUND_Y + BODY_H * 0.78
+const SHOULDER_X = BODY_R * 0.95
+const ARM_SWING = (18 * Math.PI) / 180
+const WOOL_CREAM = 0xf3eee3
+
+/** Per-Luna accent — 6 distinct hues that read against body tints, day and night. */
+const MIND_ACCENT: Record<string, number> = {
+  'agent-0': 0xd94a62,
+  'agent-1': 0x2f8f6a,
+  'agent-2': 0xd07a18,
+  'agent-4': 0x7a3cb8,
+  'agent-8': 0x2a6dcc,
+  'agent-11': 0xc44e22,
+}
 
 const CARRY_TINT: Record<Good, number> = {
   food: 0x5aaf4a,
@@ -63,6 +82,16 @@ export interface AgentsHandle {
   agentIdFromObject: (obj: THREE.Object3D) => string | null
   /** Visible hat / tool counts for DEV probe. */
   getJuiceCounts: () => { hats: number; tools: number; destMarkers: number }
+  /** Mesh facing for portrait framing (render-only). */
+  getFacing: (id: string) => {
+    x: number
+    y: number
+    z: number
+    yaw: number
+    rx: number
+    hat: boolean
+    variant: 'mind' | 'sheep'
+  } | null
   dispose: () => void
 }
 
@@ -154,6 +183,14 @@ interface AgentMesh {
   lastPosture: PostureKind
   glyphSprite: THREE.Sprite
   glyphKind: GlyphKind | null
+  variant: 'mind' | 'sheep'
+  eyeL: THREE.Mesh
+  eyeR: THREE.Mesh
+  armLRoot: THREE.Group
+  armRRoot: THREE.Group
+  woolRoot: THREE.Group | null
+  hairMesh: THREE.Object3D | null
+  scarfMesh: THREE.Object3D | null
 }
 
 function primaryCarryGood(agent: AgentState): Good | null {
@@ -309,6 +346,46 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
   const bodyGeo = track(new THREE.CylinderGeometry(BODY_R * 0.85, BODY_R, BODY_H, 10))
   const headGeo = track(new THREE.SphereGeometry(HEAD_R, 12, 10))
   const carryGeo = track(new THREE.BoxGeometry(0.16, 0.14, 0.12))
+  const eyeGeoSheep = track(new THREE.SphereGeometry(EYE_R_SHEEP, 8, 6))
+  const eyeGeoMind = track(new THREE.SphereGeometry(EYE_R_MIND, 8, 6))
+  const armGeo = track(new THREE.CapsuleGeometry(ARM_R, ARM_LEN, 3, 6))
+  const woolGeoA = track(new THREE.SphereGeometry(0.086, 8, 6))
+  const woolGeoB = track(new THREE.SphereGeometry(0.07, 8, 6))
+  const woolGeoC = track(new THREE.SphereGeometry(0.064, 8, 6))
+  const hairGeo = track(new THREE.SphereGeometry(HEAD_R * 1.08, 10, 8))
+  const scarfGeo = track(new THREE.TorusGeometry(0.128, 0.02, 6, 12))
+
+  const eyeMat = track(
+    new THREE.MeshStandardMaterial({
+      color: 0x1a1520,
+      roughness: 0.42,
+      metalness: 0.04,
+      emissive: 0x0c0a10,
+      emissiveIntensity: 0.28,
+    }),
+  )
+  const woolMat = track(
+    new THREE.MeshStandardMaterial({
+      color: WOOL_CREAM,
+      roughness: 0.94,
+      metalness: 0,
+    }),
+  )
+  const mindAccentMats = new Map<string, THREE.MeshStandardMaterial>()
+  for (const [id, hex] of Object.entries(MIND_ACCENT)) {
+    mindAccentMats.set(
+      id,
+      track(
+        new THREE.MeshStandardMaterial({
+          color: hex,
+          roughness: 0.62,
+          metalness: 0.08,
+          emissive: hex,
+          emissiveIntensity: 0.12,
+        }),
+      ),
+    )
+  }
 
   // Shared hat geometries
   const strawGeo = track(new THREE.ConeGeometry(0.22, 0.08, 10))
@@ -381,6 +458,77 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     head.castShadow = true
     head.userData.agentId = agent.id
     group.add(head)
+
+    const mind = isLunaAgent(agent.id)
+    const eyeGeo = mind ? eyeGeoMind : eyeGeoSheep
+    const eyeX = HEAD_R * (mind ? 0.36 : 0.33)
+    const eyeY = HEAD_R * 0.08
+    const eyeZ = HEAD_R * 0.84
+    const eyeL = new THREE.Mesh(eyeGeo, eyeMat)
+    eyeL.position.set(-eyeX, eyeY, eyeZ)
+    eyeL.castShadow = false
+    head.add(eyeL)
+    const eyeR = new THREE.Mesh(eyeGeo, eyeMat)
+    eyeR.position.set(eyeX, eyeY, eyeZ)
+    eyeR.castShadow = false
+    head.add(eyeR)
+
+    const armLRoot = new THREE.Group()
+    armLRoot.position.set(-SHOULDER_X, SHOULDER_Y, 0)
+    const armL = new THREE.Mesh(armGeo, bodyMat)
+    armL.position.y = -(ARM_LEN / 2 + ARM_R)
+    armL.castShadow = true
+    armL.userData.agentId = agent.id
+    armLRoot.add(armL)
+    group.add(armLRoot)
+
+    const armRRoot = new THREE.Group()
+    armRRoot.position.set(SHOULDER_X, SHOULDER_Y, 0)
+    const armR = new THREE.Mesh(armGeo, bodyMat)
+    armR.position.y = -(ARM_LEN / 2 + ARM_R)
+    armR.castShadow = true
+    armR.userData.agentId = agent.id
+    armRRoot.add(armR)
+    group.add(armRRoot)
+
+    let woolRoot: THREE.Group | null = null
+    let hairMesh: THREE.Object3D | null = null
+    let scarfMesh: THREE.Object3D | null = null
+    if (mind) {
+      const accent = mindAccentMats.get(agent.id) ?? eyeMat
+      const hair = new THREE.Mesh(hairGeo, accent)
+      hair.scale.set(1.02, 0.52, 1.04)
+      hair.position.set(0, HEAD_R * 0.42, -0.012)
+      hair.castShadow = true
+      head.add(hair)
+      hairMesh = hair
+      const scarf = new THREE.Mesh(scarfGeo, accent)
+      scarf.rotation.x = Math.PI / 2
+      scarf.position.y = GROUND_Y + BODY_H - 0.055
+      scarf.castShadow = true
+      group.add(scarf)
+      scarfMesh = scarf
+    } else {
+      woolRoot = new THREE.Group()
+      const h = hashId(agent.id)
+      const puffN = 3 + (h % 3)
+      const puffs: Array<{ geo: THREE.SphereGeometry; x: number; y: number; z: number }> = [
+        { geo: woolGeoA, x: 0, y: HEAD_R * 0.7, z: 0.01 },
+        { geo: woolGeoB, x: -0.108, y: HEAD_R * 0.26, z: 0.05 },
+        { geo: woolGeoB, x: 0.108, y: HEAD_R * 0.26, z: 0.05 },
+        { geo: woolGeoC, x: 0.01, y: HEAD_R * 0.36, z: -0.1 },
+        { geo: woolGeoC, x: 0, y: HEAD_R * 0.58, z: 0.06 },
+      ]
+      for (let i = 0; i < puffN; i++) {
+        const p = puffs[i]!
+        const jitter = ((h >> (i * 3)) % 7) / 220
+        const puff = new THREE.Mesh(p.geo, woolMat)
+        puff.position.set(p.x + jitter, p.y, p.z - jitter * 0.4)
+        puff.castShadow = true
+        woolRoot.add(puff)
+      }
+      head.add(woolRoot)
+    }
 
     const carryMat = track(
       new THREE.MeshStandardMaterial({
@@ -482,6 +630,14 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       lastPosture: 'standing',
       glyphSprite,
       glyphKind: null,
+      variant: mind ? 'mind' : 'sheep',
+      eyeL,
+      eyeR,
+      armLRoot,
+      armRRoot,
+      woolRoot,
+      hairMesh,
+      scarfMesh,
     })
   }
 
@@ -594,6 +750,70 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     m.group.rotation.set(m.poseRx, m.poseRy, m.poseRz)
     m.group.scale.set(1, m.poseSy, 1)
     m.head.position.y = m.poseHeadY
+  }
+
+  const applyCharm = (
+    m: AgentMesh,
+    posture: PostureKind,
+    simT: number,
+    walkPhase = 0,
+    workSwing = 0,
+  ) => {
+    const cycle = simT * 0.58 + m.phase * 13.7
+    const frac = cycle - Math.floor(cycle)
+    const closed = frac < 0.065 ? Math.sin((frac / 0.065) * Math.PI) : 0
+    const eyeSy = 1 - closed * 0.9
+    m.eyeL.scale.set(1, eyeSy, 1)
+    m.eyeR.scale.set(1, eyeSy, 1)
+
+    const restZ = 0.14
+    let lrx = 0
+    let lrz = restZ
+    let rrx = 0
+    let rrz = -restZ
+    if (posture === 'walking') {
+      const swing = Math.sin(walkPhase) * ARM_SWING
+      lrx = swing
+      rrx = -swing
+    } else if (posture === 'working') {
+      const raise = -0.48 - Math.max(0, workSwing) * 0.62
+      lrx = raise
+      rrx = raise
+      lrz = 0.18
+      rrz = -0.18
+    } else if (posture === 'sitting') {
+      rrx = -1.08
+      rrz = -0.26
+      lrx = 0.12
+      lrz = 0.2
+    } else if (posture === 'lying') {
+      lrx = 0.1
+      lrz = 0.4
+      rrx = 0.1
+      rrz = -0.4
+    } else if (posture === 'fallen') {
+      lrx = 0.28
+      lrz = 1.22
+      rrx = 0.34
+      rrz = -1.22
+    } else if (posture === 'lean-in') {
+      rrx = -0.48
+      rrz = -0.1
+      lrx = 0.06
+    } else if (posture === 'socializing') {
+      lrz = 0.22
+      rrz = -0.22
+    }
+    m.armLRoot.rotation.set(lrx, 0, lrz)
+    m.armRRoot.rotation.set(rrx, 0, rrz)
+
+    if (m.woolRoot) {
+      const hatOn =
+        m.hatFarm.visible || m.hatStall.visible || m.hatCap.visible || m.hatHelmet.visible
+      const s = hatOn ? 0.88 : 1
+      m.woolRoot.scale.setScalar(s)
+      m.woolRoot.position.y = hatOn ? -0.006 : 0
+    }
   }
 
   const applyGlyph = (
@@ -752,6 +972,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         rx = Math.PI / 2 - 0.2
         rz = 0.16
         applyPose(m, x, z, ty, rx, yaw, rz, 1, HEAD_Y, settle)
+        applyCharm(m, posture, simTime)
         m.lastPosture = posture
         continue
       }
@@ -762,6 +983,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         rx = Math.PI / 2
         rz = 0.04
         applyPose(m, x, z, ty, rx, yaw, rz, 1, HEAD_Y, settle)
+        applyCharm(m, posture, simTime)
         m.lastPosture = posture
         continue
       }
@@ -779,6 +1001,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         rx = 0.38
         headY = HEAD_Y - 0.08
         applyPose(m, x, z, ty, rx, yaw, 0, 1, headY, settle)
+        applyCharm(m, posture, simTime)
         m.lastPosture = posture
         continue
       }
@@ -797,6 +1020,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
           : undefined
         facePlace(sitPlace)
         applyPose(m, x, z, 0, 0.08, yaw, 0, 0.62, HEAD_Y, settle)
+        applyCharm(m, posture, simTime)
         m.lastPosture = posture
         continue
       }
@@ -830,6 +1054,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
 
           rx = WORK_LEAN * (0.4 + 0.6 * Math.max(0, swing))
           applyPose(m, x, z, 0, rx, yaw, 0, 1, HEAD_Y, settle)
+          applyCharm(m, posture, simTime, 0, swing)
 
           if (atApex && fx) {
             const tipX = x + Math.sin(yaw) * 0.35
@@ -860,6 +1085,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
           if (moved > 1e-5) yaw = Math.atan2(dx, dz)
         }
         applyPose(m, x, z, ty, LEAN * 0.7, yaw, 0, 1, HEAD_Y, settle)
+        applyCharm(m, walking || moved > 1e-5 ? 'walking' : posture, simTime, m.walkDist * BOB_FREQ)
         m.lastPosture = posture
         continue
       }
@@ -871,6 +1097,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         if (moved > 1e-5) yaw = Math.atan2(dx, dz)
         rx = LEAN * Math.min(1, moved * 8)
         applyPose(m, x, z, bob, rx, yaw, 0, 1, HEAD_Y, settle)
+        applyCharm(m, posture, simTime, m.walkDist * BOB_FREQ)
         m.lastPosture = posture
         continue
       }
@@ -896,12 +1123,14 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         const pulse = Math.pow(Math.max(0, Math.sin(t)), 10)
         const s = 1 + pulse * 0.03
         applyPose(m, x, z, 0, 0, yaw, 0, s, HEAD_Y, settle)
+        applyCharm(m, posture, simTime)
         m.lastPosture = posture
         continue
       }
 
       setTool(m, null)
       applyPose(m, x, z, 0, 0, yaw, 0, 1, HEAD_Y, settle)
+      applyCharm(m, posture, simTime)
       m.lastPosture = posture
     }
 
@@ -972,6 +1201,21 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
 
   const getJuiceCounts = () => ({ hats: hatCount, tools: toolCount, destMarkers: destMarkerCount })
 
+  const getFacing = (id: string) => {
+    const m = meshes.get(id)
+    if (!m) return null
+    return {
+      x: m.group.position.x,
+      y: m.group.position.y,
+      z: m.group.position.z,
+      yaw: m.group.rotation.y,
+      rx: m.group.rotation.x,
+      hat:
+        m.hatFarm.visible || m.hatStall.visible || m.hatCap.visible || m.hatHelmet.visible,
+      variant: m.variant,
+    }
+  }
+
   const dispose = () => {
     scene.remove(root)
     for (const d of disposables) d.dispose()
@@ -979,5 +1223,5 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     objectToId.clear()
   }
 
-  return { root, update, getPickables, agentIdFromObject, getJuiceCounts, dispose }
+  return { root, update, getPickables, agentIdFromObject, getJuiceCounts, getFacing, dispose }
 }

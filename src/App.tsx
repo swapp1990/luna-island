@@ -744,7 +744,11 @@ export function App() {
               .filter((e) => e.tick <= sim.state.tick)
             const visual = describeAgent(agent, sim.state.tick, { events })
             const dest = describeDestination(agent)
-            return { ...visual, traveling: dest !== null }
+            return {
+              ...visual,
+              traveling: dest !== null,
+              variant: isLunaAgent(agentId) ? 'mind' : 'sheep',
+            }
           },
           setSympathy: (agentId: string, otherId: string, value: number) => {
             const live = liveRef.current
