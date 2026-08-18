@@ -58,6 +58,17 @@ export interface LoopController {
 const SPEEDS = new Set([0, 1, 8, 64])
 const MAX_TICKS_PER_FRAME = 256
 
+/**
+ * Max wall-seconds credited per rAF so 1× stays 1 tick/s when frames are sparse.
+ * Chrome occludes headed soak windows to ~1 fps; a 0.1s cap then yields exactly
+ * 6 ticks/min (the P3-14b wedge) while speed stays 1 and the mind line is empty.
+ */
+export function frameDtCap(speed: number): number {
+  if (speed >= 64) return 1.0
+  if (speed >= 8) return 0.25
+  return 1.0
+}
+
 function capturePositions(sim: Simulation): Map<string, { x: number; y: number }> {
   const m = new Map<string, { x: number; y: number }>()
   for (const a of sim.state.agents) {
@@ -585,7 +596,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
     // Higher speeds must not drop wall time on slow WebGL frames (headless + terrain).
     // Cap still bounds spiral-of-death; pure sim is >> 1k ticks/s so a 1s catch-up is fine.
     applyBreathe()
-    const dtCap = speed >= 64 ? 1.0 : speed >= 8 ? 0.25 : 0.1
+    const dtCap = frameDtCap(speed)
     const dt = Math.min(dtCap, (ts - lastTs) / 1000)
     lastTs = ts
 

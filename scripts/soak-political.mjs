@@ -122,7 +122,18 @@ process.on('SIGTERM', () => shutdown(143))
 try {
   await waitForServer()
   log('server healthy; launching headed chromium')
-  browser = await chromium.launch({ headless: false })
+  browser = await chromium.launch({
+    headless: false,
+    args: [
+      // Headed soaks lose foreground; without these Chrome 1-fps-throttles rAF.
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
+      '--enable-webgl',
+      '--use-angle=default',
+      '--ignore-gpu-blocklist',
+    ],
+  })
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
   page.on('pageerror', (e) => log(`PAGEERROR: ${String(e).slice(0, 200)}`))
   // Explicit brain param: auto-detect races on a cold profile (health probe
@@ -179,6 +190,7 @@ try {
         day: s.day, hour: s.hour, minute: s.minute, tick: s.tick, speed: s.speed,
         mind: {
           pending: s.mind.pending,
+          thinking: s.mind.thinking,
           decisions: s.mind.decisions,
           fallbacks: s.mind.fallbacks,
           budgetH: s.mind.budgetUsedHour,
@@ -232,7 +244,9 @@ try {
     lastStale = stale
     const breatheShown = Math.round(snap.breathePct)
     const lat = snap.mind.meanLatencyMs ?? 0
-    log(`t+${snap.wallMin}m D${snap.day} ${clock(snap)} decisions=${snap.mind.decisions} say=${snap.counts['mind:say'] || 0} budgetH=${snap.mind.budgetH} breathe=${breatheShown}% lat=${lat}ms BUDGET ${usedHour}/${maxHour}`)
+    const decideCalls = snap.mind.decideCalls ?? 0
+    const thinking = snap.mind.thinking ?? 0
+    log(`t+${snap.wallMin}m D${snap.day} ${clock(snap)} decisions=${snap.mind.decisions} say=${snap.counts['mind:say'] || 0} budgetH=${snap.mind.budgetH} decideCalls=${decideCalls} thinking=${thinking} pending=${snap.mind.pending} breathe=${breatheShown}% lat=${lat}ms BUDGET ${usedHour}/${maxHour}`)
   }
 
   log('soak window complete — exporting world + story, then IDB save')

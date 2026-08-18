@@ -500,12 +500,13 @@ export class LunaBrainService {
   }
 
   getMeter(): MindMeter {
-    // Breathe for the whole line: queue + in-flight + rate-floor wait
-    const lineDepth =
-      this.queue.size() +
-      this.activeDispatches.size +
-      (this.rateFloorWaiting ? 1 : 0)
-    const thinking = lineDepth
+    // Breathe for the whole line: queue + in-flight + rate-floor wait.
+    // Floor-wait only counts while work is actually queued — never hold the
+    // world when the line is empty (P3-14b invariant).
+    const queued = this.queue.size()
+    const inFlight = this.activeDispatches.size
+    const floorWait = this.rateFloorWaiting && queued > 0 ? 1 : 0
+    const thinking = queued + inFlight + floorWait
     const pending =
       thinking + this.holds.length + this.noteHolds.length + this.sayHolds.length
     return {

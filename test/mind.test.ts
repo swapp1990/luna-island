@@ -19,6 +19,7 @@ import {
   mindMinGapTicksFromLocation,
   resolveMinGapTicks,
 } from '../src/mind/lunaBrain'
+import { frameDtCap } from '../src/loop'
 import {
   MockProvider,
   type MindDecisionResult,
@@ -1331,6 +1332,93 @@ describe('frameless apply-on-resolve (P3-2d)', () => {
     await Promise.resolve()
     expect(mind.getMeter().decisions).toBeGreaterThanOrEqual(6)
     expect(mind.getSafetySweepHits()).toBe(0)
+
+    mind.dispose()
+  })
+})
+
+/**
+ * P3-14b: auto-breathe must never hold the world when the mind line is empty.
+ * The soak "90% breathe" was lost wall-time (1 fps rAF × 0.1s dtCap = 6 ticks/min),
+ * not a thinking>0 hold — still lock the idle invariant and the dt cap that
+ * made an empty line look frozen.
+ */
+describe('auto-breathe idle invariant (P3-14b)', () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+  it('1× dt cap credits a full second so 1 fps rAF still yields 60 ticks/min', () => {
+    expect(frameDtCap(1)).toBe(1.0)
+    expect(frameDtCap(8)).toBe(0.25)
+    expect(frameDtCap(64)).toBe(1.0)
+
+    const ticksFromFrames = (dtCap: number, frameIntervalSec: number, wallSec: number) => {
+      let acc = 0
+      let ticks = 0
+      const frames = Math.round(wallSec / frameIntervalSec)
+      for (let i = 0; i < frames; i++) {
+        acc += Math.min(dtCap, frameIntervalSec)
+        const steps = Math.floor(acc)
+        acc -= steps
+        ticks += steps
+      }
+      return ticks
+    }
+    // The wedged soak: 1 fps × 0.1s cap keeps ~6 ticks / wall-min (IEEE 0.1
+    // may floor to 5); the 1.0s cap restores 1×.
+    expect(ticksFromFrames(0.1, 1, 60)).toBeLessThanOrEqual(6)
+    expect(ticksFromFrames(0.1, 1, 60)).toBeGreaterThanOrEqual(5)
+    expect(ticksFromFrames(frameDtCap(1), 1, 60)).toBe(60)
+    // Focused 60 fps is unchanged
+    expect(ticksFromFrames(frameDtCap(1), 1 / 60, 60)).toBe(60)
+  })
+
+  it('does not hold speed when queue is empty, pending is 0, and no conversation turn is in flight', async () => {
+    const WALL_MS = 20
+    const provider = new MockProvider({ wallDelayMs: WALL_MS })
+    const userSpeed = 64
+    let speed = userSpeed
+    const applyBreathe = () => {
+      speed = mind.getMeter().thinking > 0 ? 1 : userSpeed
+    }
+    const mind = new LunaBrainService('mock', {
+      provider,
+      concurrency: 3,
+      wallFloorMs: 0,
+      safetySweep: false,
+      suppressNewConversations: true,
+      minGapTicks: 15,
+      onPipelineChange: () => applyBreathe(),
+    })
+    await mind.init()
+    const sim = new Simulation(42)
+
+    mind.onAfterTick(sim)
+    applyBreathe()
+    expect(mind.getMeter().thinking).toBeGreaterThan(0)
+    expect(speed).toBe(1)
+
+    // Drain both K=3 batches
+    await sleep(WALL_MS + 30)
+    await Promise.resolve()
+    await Promise.resolve()
+    await sleep(WALL_MS + 30)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    applyBreathe()
+    expect(mind.getMeter().thinking).toBe(0)
+    expect(mind.getMeter().pending).toBe(0)
+    expect(mind.getActiveConversations().some((c) => c.turnInFlight)).toBe(false)
+    expect(speed).toBe(userSpeed)
+
+    // Cadence has not elapsed (1 tick << 15). Empty line must stay unrested.
+    sim.advanceTicks(1)
+    mind.onAfterTick(sim)
+    applyBreathe()
+    expect(mind.getMeter().thinking).toBe(0)
+    expect(mind.getMeter().pending).toBe(0)
+    expect(mind.getActiveConversations().some((c) => c.turnInFlight)).toBe(false)
+    expect(speed).toBe(userSpeed)
 
     mind.dispose()
   })
