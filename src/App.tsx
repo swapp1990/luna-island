@@ -17,7 +17,13 @@ import { createScene, type FrameSubjectOpts, type SceneHandle } from './render/s
 import { createLoop, type LoopController } from './loop'
 import { initBridge, type PhotoModeOpts, type SimStateBridge } from './bridge'
 import { pickHighlights } from './replay/highlights'
-import { describeAgent, describeDestination } from './render/actionLanguage'
+import {
+  describeAgent,
+  describeCommissionCeremonies,
+  describeDestination,
+  describeFacingTarget,
+  speechTextFor,
+} from './render/actionLanguage'
 import { Hud } from './ui/Hud'
 import { Timeline } from './ui/Timeline'
 import { Inspector } from './ui/Inspector'
@@ -139,6 +145,7 @@ function emptyHud(): SimStateBridge {
     agent0: null,
     mind: null,
     photoMode: false,
+    photoSubjectId: null,
   }
 }
 
@@ -496,7 +503,6 @@ export function App() {
                 kicker,
               })
               document.getElementById('app-root')?.classList.add('photo-mode')
-              loop.setPhotoMode(true)
 
               const agentIds =
                 opts.agentIds && opts.agentIds.length > 0
@@ -509,6 +515,8 @@ export function App() {
               const frameOnly =
                 opts.frameOnly ??
                 (placeId ? 'place' : agentIds.length >= 2 ? 'pair' : 'agent')
+              // Staging subject stays the named agent even when place-hero selects the building.
+              loop.setPhotoMode(true, agentId ?? null)
               scene.overlays.setPhotoSubject(agentId ?? null)
               scene.overlays.clearEphemeral()
 
@@ -566,18 +574,36 @@ export function App() {
                   const a = sim.state.agents.find((ag) => ag.id === agentIds[0])
                   const b = sim.state.agents.find((ag) => ag.id === agentIds[1])
                   if (a && b) {
+                    // Speaker (first named) carries the 3D bubble — include its
+                    // world-space top so hero framing cannot clip it.
+                    const bubbleY = PHOTO_HEAD_Y + 1.15
                     frameOpts.probes = [
                       { x: a.x, y: PHOTO_HEAD_Y, z: a.y },
                       { x: b.x, y: PHOTO_HEAD_Y, z: b.y },
                       { x: a.x, y: 0.48, z: a.y },
                       { x: b.x, y: 0.48, z: b.y },
+                      { x: a.x, y: bubbleY, z: a.y },
                     ]
                     frameOpts.subjectAgentIds = [a.id, b.id]
+                    // 3/4 on the speaker's face (they face the partner).
+                    const pdx = b.x - a.x
+                    const pdz = b.y - a.y
+                    const ox = -pdz + pdx * 0.35
+                    const oz = pdx + pdz * 0.35
+                    if (ox * ox + oz * oz > 1e-6) {
+                      frameOpts.preferredAzim = Math.atan2(oz, ox)
+                    }
                   }
                 } else if (frameOnly === 'place' && placeId) {
                   const kind = sim.state.places.find((p) => p.id === placeId)?.kind
                   frameOpts.placeId = placeId
                   frameOpts.probes = placeHeroProbes(fx, fz, height, kind)
+                  if (kind === 'berry-bush' || kind === 'home' || kind === 'farm') {
+                    frameOpts.probes = [
+                      ...frameOpts.probes,
+                      { x: fx, y: 2.35, z: fz },
+                    ]
+                  }
                   frameOpts.occluderAgents = sim.state.agents.map((ag) => ({
                     id: ag.id,
                     x: ag.x,
@@ -589,6 +615,21 @@ export function App() {
                       const pos = placePos(p.id)
                       return pos ? { x: pos.x, z: pos.z } : { x: p.x, z: p.y }
                     })
+                } else if (agentId) {
+                  const agent = sim.state.agents.find((ag) => ag.id === agentId)
+                  if (agent) {
+                    const bubbleY = PHOTO_HEAD_Y + 1.15
+                    frameOpts.probes = [
+                      { x: agent.x, y: PHOTO_HEAD_Y, z: agent.y },
+                      { x: agent.x, y: bubbleY, z: agent.y },
+                    ]
+                    if (placeId) {
+                      const pos = placePos(placeId)
+                      if (pos) {
+                        frameOpts.probes.push({ x: pos.x, y: 2.35, z: pos.z })
+                      }
+                    }
+                  }
                 }
                 scene.frameSubject(fx, fz, opts.zoom ?? 1, frameOpts)
               }
@@ -750,6 +791,31 @@ export function App() {
               variant: isLunaAgent(agentId) ? 'mind' : 'sheep',
             }
           },
+          describeStaging: (agentId: string) => {
+            const loop = loopRef.current
+            const scene = sceneRef.current
+            if (!loop) return null
+            const sim = loop.getViewSim()
+            const live = liveRef.current
+            const agent = sim.state.agents.find((a) => a.id === agentId)
+            if (!agent) return null
+            const tick = sim.state.tick
+            const events = (live ?? sim).getEvents().filter((e) => e.tick <= tick)
+            const visual = describeAgent(agent, tick, { events })
+            const face = describeFacingTarget(agent, tick, { events })
+            const mesh = scene?.agents.getStaging(agentId)
+            return {
+              speechText: speechTextFor(events, agentId, tick),
+              speechVisible: mesh?.speechVisible ?? false,
+              glyphPlaceId: visual.glyphPlaceId ?? null,
+              glyphVisible: mesh?.glyphVisible ?? false,
+              prop: visual.prop,
+              faceId: face?.id ?? null,
+              faceKind: face?.kind ?? null,
+              yaw: mesh?.yaw ?? null,
+              ceremonies: describeCommissionCeremonies(events, tick),
+            }
+          },
           setSympathy: (agentId: string, otherId: string, value: number) => {
             const live = liveRef.current
             if (!live) return
@@ -822,12 +888,11 @@ export function App() {
               pin()
               const says = live.getEvents().filter((e) => e.type === 'mind:say').length
               if (says >= minSays) {
-                // Drain a few more ticks so transcript can grow + bubble applies
-                for (let j = 0; j < 16; j++) {
-                  pin()
-                  loop.ffwd(1)
-                  pin()
-                }
+                // Stay inside SAY_WINDOW (~8): one settle tick so staging/bubble apply.
+                pin()
+                loop.ffwd(1)
+                pin()
+                loop.forceRender()
                 apiRef.current?.syncFromLoop()
                 return {
                   ok: true,

@@ -28,6 +28,13 @@ export interface TerrainHandle {
   popHome: (placeId: string, now: number) => void
   /** Celebrate construction complete / harvest position lookup. */
   getPlaceWorldPos: (placeId: string) => { x: number; y: number; z: number } | null
+  /**
+   * Event-derived commission ceremony: stakes + rising flag on listed sites.
+   * `ageTicks` (0..COMMISSION_WINDOW) phases the flag rise — same tick ⇒ same pose.
+   */
+  syncCommissionCeremonies: (
+    rows: Array<{ placeId: string; ageTicks: number; seq: number }>,
+  ) => void
   /** Invisible hit volumes for building selection. */
   getPlacePickables: () => THREE.Object3D[]
   /** Resolve raycast hit to place id. */
@@ -66,6 +73,9 @@ interface SiteVisual {
   frameMid: THREE.Object3D
   frameHigh: THREE.Object3D
   pile: THREE.Object3D[]
+  /** Commission ceremony: corner stakes + rising flag (distinct from frame posts). */
+  ceremony: THREE.Group
+  flag: THREE.Object3D
 }
 
 const HEIGHTS: Record<Exclude<TerrainKind, 'water'>, number> = {
@@ -784,6 +794,29 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     return null
   }
 
+  const syncCommissionCeremonies = (
+    rows: Array<{ placeId: string; ageTicks: number; seq: number }>,
+  ) => {
+    const active = new Map(rows.map((r) => [r.placeId, r]))
+    for (const [id, vis] of siteVisuals) {
+      const row = active.get(id)
+      if (!row) {
+        vis.ceremony.visible = false
+        continue
+      }
+      vis.ceremony.visible = true
+      // Flag rises over the window: age 0 at top-of-pole settle, age N lower.
+      // Seq phases a tiny deterministic flutter so same (seq, age) ⇒ same pose.
+      const rise = 1 - row.ageTicks / 6
+      const baseY = 0.22
+      const y = baseY + 0.55 + Math.max(0, rise) * 0.28
+      const flutter = ((row.seq % 7) - 3) * 0.02
+      vis.flag.position.y = y
+      vis.flag.rotation.y = flutter
+      vis.flag.rotation.z = flutter * 0.5
+    }
+  }
+
   const dispose = () => {
     scene.remove(root)
     root.traverse(() => {
@@ -808,6 +841,7 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     shakeTreeAt,
     popHome,
     getPlaceWorldPos,
+    syncCommissionCeremonies,
     getPlacePickables,
     placeIdFromObject,
     dispose,
@@ -926,7 +960,45 @@ function buildSiteVisual(
     group.add(m)
     pile.push(m)
   }
-  return { group, frameLow, frameMid, frameHigh, pile }
+
+  // Commission ceremony — bright corner stakes + rising red flag (distinct from timber frame).
+  const ceremony = new THREE.Group()
+  ceremony.name = 'commission-ceremony'
+  ceremony.visible = false
+  // Unlit so ceremony reads at dusk/night photo ticks.
+  const stakeMat = track(new THREE.MeshBasicMaterial({ color: 0xffe9a8 }))
+  const tipMat = track(new THREE.MeshBasicMaterial({ color: 0xfff6d0 }))
+  const stakeGeo = track(new THREE.CylinderGeometry(0.028, 0.034, 0.95, 6))
+  const tipGeo = track(new THREE.ConeGeometry(0.055, 0.1, 5))
+  for (const [ox, oz] of [
+    [-0.62, -0.62],
+    [0.62, -0.62],
+    [-0.62, 0.62],
+    [0.62, 0.62],
+  ] as Array<[number, number]>) {
+    const stake = new THREE.Mesh(stakeGeo, stakeMat)
+    stake.position.set(ox, baseY + 0.48, oz)
+    stake.castShadow = true
+    ceremony.add(stake)
+    const tip = new THREE.Mesh(tipGeo, tipMat)
+    tip.position.set(ox, baseY + 0.98, oz)
+    ceremony.add(tip)
+  }
+  // Flag rises from site CENTER so any photo azimuth sees it.
+  const poleMat = track(new THREE.MeshBasicMaterial({ color: 0x5a3a18 }))
+  const pole = new THREE.Mesh(track(new THREE.CylinderGeometry(0.025, 0.025, 1.1, 6)), poleMat)
+  pole.position.set(0, baseY + 0.85, 0)
+  ceremony.add(pole)
+  const flagMat = track(
+    new THREE.MeshBasicMaterial({ color: 0xff3030, side: THREE.DoubleSide }),
+  )
+  const flag = new THREE.Mesh(track(new THREE.PlaneGeometry(0.5, 0.3)), flagMat)
+  flag.position.set(0.26, baseY + 1.25, 0)
+  flag.name = 'commission-flag'
+  ceremony.add(flag)
+  group.add(ceremony)
+
+  return { group, frameLow, frameMid, frameHigh, pile, ceremony, flag }
 }
 
 function addPlace(

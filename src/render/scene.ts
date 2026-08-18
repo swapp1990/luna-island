@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { AgentState, SimEvent, WorldState } from '../sim/types'
-import { describeBursts } from './actionLanguage'
+import { describeBursts, describeCommissionCeremonies } from './actionLanguage'
 import { buildTerrain, type TerrainHandle } from './terrain'
 import { createDayNight, type DayNightHandle } from './daynight'
 import { createAgents, type AgentsHandle } from './agents'
@@ -29,6 +29,8 @@ export interface FrameSubjectOpts {
   placeId?: string
   /** Pair / named agents that are not occluders. */
   subjectAgentIds?: string[]
+  /** Override the default SE azimuth (pair 3/4 so the speaker's face reads). */
+  preferredAzim?: number
   /** Non-subject agents; those near the camera ray can occlude pair/place shots. */
   occluderAgents?: Array<{ id: string; x: number; z: number }>
   /** Same-kind places; a closer rival on this azimuth counts as occlusion. */
@@ -116,12 +118,26 @@ export interface SceneHandle {
 declare global {
   interface Window {
     __cameraTarget?: { x: number; y: number; z: number }
+    __cameraPos?: { x: number; y: number; z: number }
     __renderProbe?: {
       hats: number
       tools: number
       particles: number
       destMarkers: number
+      ceremonies?: number
+      speechTexts?: Record<string, string>
+      glyphPlaces?: Record<string, string>
+      props?: Record<string, string | null>
     }
+    /** DEV/e2e: interaction staging for one agent. */
+    __agentStaging?: (id: string) => {
+      speechText: string | null
+      glyphPlaceId: string | null
+      prop: string | null
+      faceId: string | null
+      faceKind: 'agent' | 'place' | null
+      yaw: number
+    } | null
     /** DEV/e2e: aim orbit camera at world xz. */
     __renderLookAt?: (x: number, z: number, dist?: number) => void
     /** DEV: mesh facing / hat / variant for portrait picking. */
@@ -294,15 +310,33 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     }
     fx.syncBursts(bursts, sites, tick, alpha)
 
+    const ceremonies = describeCommissionCeremonies(events, tick)
+    terrain.syncCommissionCeremonies(ceremonies)
+
     // DEV-gated render probe for e2e (vite dev / e2e webServer)
     if (import.meta.env.DEV) {
       const juice = agents.getJuiceCounts()
+      const speechTexts: Record<string, string> = {}
+      const glyphPlaces: Record<string, string> = {}
+      const props: Record<string, string | null> = {}
+      for (const ag of list) {
+        const st = agents.getStaging(ag.id)
+        if (!st) continue
+        if (st.speechText) speechTexts[ag.id] = st.speechText
+        if (st.glyphPlaceId) glyphPlaces[ag.id] = st.glyphPlaceId
+        if (st.prop) props[ag.id] = st.prop
+      }
       window.__renderProbe = {
         hats: juice.hats,
         tools: juice.tools,
         particles: fx.activeCount(),
         destMarkers: juice.destMarkers,
+        ceremonies: ceremonies.length,
+        speechTexts,
+        glyphPlaces,
+        props,
       }
+      window.__agentStaging = (id: string) => agents.getStaging(id)
     }
     void now
   }
@@ -509,11 +543,20 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     // pull the camera back to a postcard.
     const span = Math.min(2.2, Math.max(0, opts?.span ?? 0))
 
+    const probeMaxY = (opts?.probes ?? []).reduce(
+      (m, p) => Math.max(m, p.y),
+      0,
+    )
+    // Speech / examine markers sit at y≈1.8–2.4. Framing only the body
+    // (lookY≤0.42, height≈1.05) parks a hero camera at ~head height looking
+    // at the dirt, so those sprites land above the 50° FOV and never hit pixels.
+    const frameH = Math.max(height, probeMaxY * 0.55, 0.45)
+
     // Perspective + off-center look-at shrinks apparent size; 0.34 lands
     // near 1/5–1/4 of frame after that loss.
     const vFov = (camera.fov * Math.PI) / 180
     const halfTan = Math.tan(vFov / 2)
-    let dist = height / (2 * 0.34 * halfTan)
+    let dist = frameH / (2 * 0.34 * halfTan)
     if (span > 0.5) {
       const aspect = Math.max(1.2, camera.aspect || 16 / 9)
       const hFov = 2 * Math.atan(halfTan * aspect)
@@ -523,8 +566,8 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     dist = Math.max(2.4, Math.min(9.5, dist / zMul))
 
     // SE azimuth (village-facing). Camera-right = up × view.
-    const DEFAULT_AZIM = Math.atan2(0.7, 0.62)
-    const lookY = Math.min(0.42, height * 0.28)
+    const DEFAULT_AZIM = opts?.preferredAzim ?? Math.atan2(0.7, 0.62)
+    const lookY = Math.min(1.15, Math.max(0.28, height * 0.28, probeMaxY * 0.42))
 
     const prevDamp = controls.enableDamping
     controls.enableDamping = false
@@ -711,12 +754,23 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
       return true
     }
 
+    const ndcScratch = new THREE.Vector3()
+    const probeInView = (px: number, py: number, pz: number): boolean => {
+      ndcScratch.set(px, py, pz).project(camera)
+      if (ndcScratch.z < -1 || ndcScratch.z > 1) return false
+      return (
+        Math.abs(ndcScratch.x) < 0.9 &&
+        ndcScratch.y < 0.78 &&
+        ndcScratch.y > -0.9
+      )
+    }
+
     const evaluatePose = () => {
       let hits = 0
       let probeHits = 0
       const why: string[] = []
       probes.forEach((p, i) => {
-        if (probeClear(p.x, p.y, p.z)) {
+        if (probeClear(p.x, p.y, p.z) && probeInView(p.x, p.y, p.z)) {
           hits += 1
           probeHits += 1
         } else why.push(`probe${i}`)
@@ -847,6 +901,11 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
       y: controls.target.y,
       z: controls.target.z,
     }
+    window.__cameraPos = {
+      x: camera.position.x,
+      y: camera.position.y,
+      z: camera.position.z,
+    }
   }
 
   const bindSelection = (cb: SelectionCallbacks): (() => void) => {
@@ -889,6 +948,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
       const wasDrag = dx * dx + dy * dy > 25 || dragging
       dragging = false
       if (wasDrag) return // drag — ignore (>5px)
+      // Photo stills must keep the named speaker selected.
+      if (document.getElementById('app-root')?.classList.contains('photo-mode')) {
+        return
+      }
 
       const rect = canvas.getBoundingClientRect()
       pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1

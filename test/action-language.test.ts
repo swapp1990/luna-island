@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
   BURST_WINDOW,
+  COMMISSION_WINDOW,
   CRITICAL_NEED,
   describeAgent,
   describeBursts,
+  describeCommissionCeremonies,
   describeDestination,
+  describeFacingTarget,
+  describeSpeechBubbles,
+  SAY_MAX_CHARS,
+  SAY_WINDOW,
+  truncateSay,
   type AgentVisual,
 } from '../src/render/actionLanguage'
 import type { AgentState, Needs, SimEvent } from '../src/sim/types'
@@ -164,13 +171,18 @@ describe('action language registry', () => {
       50,
     )
     expect(critExam.posture).toBe('lean-in')
-    expect(critExam.glyph).toBe('hunger')
+    // P3-13: examine interaction glyph beats ambient critical needs.
+    expect(critExam.glyph).toBe('examine')
+    expect(critExam.glyphPlaceId).toBeUndefined()
 
     const examOnly = describeAgent(
-      agent({ action: { kind: 'examine', reason: 'look' } }),
+      agent({
+        action: { kind: 'examine', reason: 'look', targetPlaceId: 'bush-0' },
+      }),
       50,
     )
     expect(examOnly.glyph).toBe('examine')
+    expect(examOnly.glyphPlaceId).toBe('bush-0')
   })
 
   it('glyph priority: critical beats sleep; examine beats sleep when both apply via events', () => {
@@ -361,5 +373,220 @@ describe('action language bursts', () => {
       13,
     )
     expect(out[0]!.ageTicks).toBe(3)
+  })
+})
+
+describe('interaction staging (P3-13)', () => {
+  it('say-window bubble: text, truncation, latest-wins, expiry', () => {
+    const long =
+      'This is a very long utterance that should be clipped with an ellipsis at the end for the bubble'
+    const events: SimEvent[] = [
+      ev({
+        tick: 10,
+        seq: 1,
+        type: 'mind:say',
+        agentId: 'agent-0',
+        data: { text: 'first', partnerId: 'agent-1' },
+      }),
+      ev({
+        tick: 12,
+        seq: 2,
+        type: 'mind:say',
+        agentId: 'agent-0',
+        data: { text: long, partnerId: 'agent-1' },
+      }),
+      ev({
+        tick: 12,
+        seq: 3,
+        type: 'mind:say',
+        agentId: 'agent-1',
+        data: { text: 'reply', partnerId: 'agent-0' },
+      }),
+    ]
+    const at12 = describeSpeechBubbles(events, 12)
+    expect(at12).toHaveLength(2)
+    const a0 = at12.find((b) => b.agentId === 'agent-0')!
+    expect(a0.text).toBe(truncateSay(long))
+    expect(a0.text.endsWith('...')).toBe(true)
+    expect(a0.text.length).toBe(SAY_MAX_CHARS)
+    expect(a0.seq).toBe(2)
+    expect(a0.partnerId).toBe('agent-1')
+
+    const expired = describeSpeechBubbles(events, 12 + SAY_WINDOW + 1)
+    expect(expired).toEqual([])
+
+    const a = describeSpeechBubbles(events, 12)
+    const b = describeSpeechBubbles(events, 12)
+    expect(a).toEqual(b)
+  })
+
+  it('examine glyph relocates to target place id', () => {
+    const during = describeAgent(
+      agent({
+        action: { kind: 'examine', reason: 'look', targetPlaceId: 'bush-0' },
+      }),
+      50,
+    )
+    expect(during.glyph).toBe('examine')
+    expect(during.glyphPlaceId).toBe('bush-0')
+
+    const residual = describeAgent(
+      agent({ action: { kind: 'idle', reason: 'done' } }),
+      40,
+      {
+        events: [
+          ev({
+            tick: 38,
+            seq: 9,
+            type: 'discovery:examined',
+            agentId: 'agent-0',
+            data: { target: 'home-0' },
+          }),
+        ],
+      },
+    )
+    expect(residual.glyph).toBe('examine')
+    expect(residual.glyphPlaceId).toBe('home-0')
+  })
+
+  it('commission ceremony window + scroll prop', () => {
+    const events: SimEvent[] = [
+      ev({
+        tick: 100,
+        seq: 5,
+        type: 'construction:commissioned',
+        agentId: 'agent-0',
+        data: { placeId: 'site-0' },
+      }),
+    ]
+    const at101 = describeCommissionCeremonies(events, 101)
+    expect(at101).toHaveLength(1)
+    expect(at101[0]).toMatchObject({
+      agentId: 'agent-0',
+      placeId: 'site-0',
+      ageTicks: 1,
+      seq: 5,
+    })
+    const stale = describeCommissionCeremonies(events, 100 + COMMISSION_WINDOW + 1)
+    expect(stale).toEqual([])
+
+    const visual = describeAgent(agent({ action: { kind: 'idle', reason: 'done' } }), 101, {
+      events,
+    })
+    expect(visual.prop).toBe('scroll')
+  })
+
+  it('facing-target resolution: partner > examine > commission > none', () => {
+    const partnerEvents: SimEvent[] = [
+      ev({
+        tick: 10,
+        seq: 1,
+        type: 'mind:say',
+        agentId: 'agent-0',
+        data: { text: 'hi', partnerId: 'agent-2' },
+      }),
+      ev({
+        tick: 10,
+        seq: 2,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: { target: 'bush-0' },
+      }),
+      ev({
+        tick: 10,
+        seq: 3,
+        type: 'construction:commissioned',
+        agentId: 'agent-0',
+        data: { placeId: 'site-0' },
+      }),
+    ]
+    expect(
+      describeFacingTarget(agent({ action: { kind: 'idle', reason: 'x' } }), 10, {
+        events: partnerEvents,
+      }),
+    ).toEqual({ kind: 'agent', id: 'agent-2' })
+
+    const examineOnly: SimEvent[] = [
+      ev({
+        tick: 10,
+        seq: 2,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: { target: 'bush-0' },
+      }),
+      ev({
+        tick: 10,
+        seq: 3,
+        type: 'construction:commissioned',
+        agentId: 'agent-0',
+        data: { placeId: 'site-0' },
+      }),
+    ]
+    expect(
+      describeFacingTarget(agent({ action: { kind: 'idle', reason: 'x' } }), 10, {
+        events: examineOnly,
+      }),
+    ).toEqual({ kind: 'place', id: 'bush-0' })
+
+    const commissionOnly: SimEvent[] = [
+      ev({
+        tick: 10,
+        seq: 3,
+        type: 'construction:commissioned',
+        agentId: 'agent-0',
+        data: { placeId: 'site-0' },
+      }),
+    ]
+    expect(
+      describeFacingTarget(agent({ action: { kind: 'idle', reason: 'x' } }), 10, {
+        events: commissionOnly,
+      }),
+    ).toEqual({ kind: 'place', id: 'site-0' })
+
+    expect(
+      describeFacingTarget(agent({ action: { kind: 'idle', reason: 'x' } }), 10, {
+        events: [],
+      }),
+    ).toBeNull()
+  })
+
+  it('same events + tick → identical staging twice', () => {
+    const events: SimEvent[] = [
+      ev({
+        tick: 20,
+        seq: 1,
+        type: 'mind:say',
+        agentId: 'agent-0',
+        data: { text: 'hey', partnerId: 'agent-1' },
+      }),
+      ev({
+        tick: 21,
+        seq: 2,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: { target: 'farm-0' },
+      }),
+      ev({
+        tick: 22,
+        seq: 3,
+        type: 'construction:commissioned',
+        agentId: 'agent-1',
+        data: { placeId: 'site-1' },
+      }),
+    ]
+    const tick = 22
+    const a = {
+      speech: describeSpeechBubbles(events, tick),
+      ceremonies: describeCommissionCeremonies(events, tick),
+      face: describeFacingTarget(agent(), tick, { events }),
+      visual: describeAgent(agent(), tick, { events }),
+    }
+    const b = {
+      speech: describeSpeechBubbles(events, tick),
+      ceremonies: describeCommissionCeremonies(events, tick),
+      face: describeFacingTarget(agent(), tick, { events }),
+      visual: describeAgent(agent(), tick, { events }),
+    }
+    expect(a).toEqual(b)
   })
 })

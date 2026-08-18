@@ -5,6 +5,9 @@ import type { FxHandle } from './fx'
 import {
   describeAgent,
   describeDestination,
+  describeFacingTarget,
+  describeSpeechBubbles,
+  examineTargetId,
   GLYPH_EMOJI,
   type GlyphKind,
   type PostureKind,
@@ -55,7 +58,7 @@ const HAT_COLORS = {
 } as const
 
 type HatKind = keyof typeof HAT_COLORS
-type ToolKind = 'hoe' | 'axe' | 'pick' | 'hammer' | 'berry' | 'mug'
+type ToolKind = 'hoe' | 'axe' | 'pick' | 'hammer' | 'berry' | 'mug' | 'scroll'
 
 export interface AgentsHandle {
   root: THREE.Group
@@ -92,6 +95,17 @@ export interface AgentsHandle {
     hat: boolean
     variant: 'mind' | 'sheep'
   } | null
+  /** Interaction-staging probe (speech / glyph place / scroll / ceremony flags). */
+  getStaging: (id: string) => {
+    speechText: string | null
+    speechVisible: boolean
+    glyphPlaceId: string | null
+    glyphVisible: boolean
+    prop: PropKind | null
+    faceId: string | null
+    faceKind: 'agent' | 'place' | null
+    yaw: number
+  } | null
   dispose: () => void
 }
 
@@ -122,16 +136,98 @@ function makeGlyphTexture(kind: GlyphKind): THREE.CanvasTexture {
     ctx.arc(48, 48, 40, 0, Math.PI * 2)
     ctx.fillStyle = 'rgba(160, 20, 20, 0.72)'
     ctx.fill()
+  } else if (kind === 'examine') {
+    // High-contrast disc — place-hero stills need this against sky/foliage.
+    ctx.beginPath()
+    ctx.arc(48, 48, 44, 0, Math.PI * 2)
+    ctx.fillStyle = '#f5d76e'
+    ctx.fill()
+    ctx.strokeStyle = '#1c2333'
+    ctx.lineWidth = 5
+    ctx.stroke()
   }
   ctx.font = '64px system-ui, Segoe UI Emoji, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillStyle = kind === 'collapsed' ? '#ffe0e0' : '#f4f6fa'
-  ctx.strokeStyle = 'rgba(0,0,0,0.55)'
+  ctx.fillStyle = kind === 'collapsed' ? '#ffe0e0' : kind === 'examine' ? '#1c2333' : '#f4f6fa'
+  ctx.strokeStyle = kind === 'examine' ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.55)'
   ctx.lineWidth = 4
   const emoji = GLYPH_EMOJI[kind]
   ctx.strokeText(emoji, 48, 52)
   ctx.fillText(emoji, 48, 52)
+  const tex = new THREE.CanvasTexture(c)
+  tex.needsUpdate = true
+  return tex
+}
+
+/** Photo-safe speech bubble (HTML overlays do not composite into stills). */
+function makeSpeechTexture(raw: string): THREE.CanvasTexture {
+  // ASCII-safe: same font stack as makeGlyphTexture (proven in headless stills).
+  const text = raw
+    .replace(/[\u2018\u2019\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u2033]/g, '"')
+    .replace(/\u2026/g, '...')
+    .replace(/[^\x20-\x7E]/g, '?')
+  const padX = 24
+  const padY = 20
+  const maxInner = 420
+  const c = document.createElement('canvas')
+  c.width = 512
+  c.height = 256
+  const ctx = c.getContext('2d')!
+  ctx.clearRect(0, 0, c.width, c.height)
+  // Match glyph channel — known to fillText under Playwright headless.
+  ctx.font = '28px system-ui, Segoe UI, Arial, sans-serif'
+  const lines: string[] = []
+  const words = text.split(/\s+/).filter(Boolean)
+  let line = ''
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w
+    if (ctx.measureText(next).width > maxInner && line) {
+      lines.push(line)
+      line = w
+    } else {
+      line = next
+    }
+  }
+  if (line) lines.push(line)
+  const use = (lines.length ? lines : [text.slice(0, 40) || '...']).slice(0, 4)
+  const lineH = 34
+  const textW = Math.max(100, ...use.map((l) => ctx.measureText(l).width))
+  const boxH = padY * 2 + use.length * lineH
+  const boxW = Math.min(480, textW + padX * 2)
+  const bx = (c.width - boxW) / 2
+  const by = 24
+  ctx.fillStyle = 'rgba(28, 35, 51, 0.95)'
+  ctx.beginPath()
+  const r = 16
+  ctx.moveTo(bx + r, by)
+  ctx.arcTo(bx + boxW, by, bx + boxW, by + boxH, r)
+  ctx.arcTo(bx + boxW, by + boxH, bx, by + boxH, r)
+  ctx.arcTo(bx, by + boxH, bx, by, r)
+  ctx.arcTo(bx, by, bx + boxW, by, r)
+  ctx.closePath()
+  ctx.fill()
+  ctx.strokeStyle = 'rgba(200, 220, 255, 0.5)'
+  ctx.lineWidth = 3
+  ctx.stroke()
+  ctx.beginPath()
+  ctx.moveTo(c.width / 2 - 12, by + boxH)
+  ctx.lineTo(c.width / 2, by + boxH + 16)
+  ctx.lineTo(c.width / 2 + 12, by + boxH)
+  ctx.closePath()
+  ctx.fillStyle = 'rgba(28, 35, 51, 0.95)'
+  ctx.fill()
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  for (let i = 0; i < use.length; i++) {
+    const ty = by + padY + lineH * (i + 0.42)
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)'
+    ctx.lineWidth = 3
+    ctx.strokeText(use[i]!, c.width / 2, ty)
+    ctx.fillStyle = '#f4f6fa'
+    ctx.fillText(use[i]!, c.width / 2, ty)
+  }
   const tex = new THREE.CanvasTexture(c)
   tex.needsUpdate = true
   return tex
@@ -144,6 +240,7 @@ interface ToolMeshes {
   hammer: THREE.Group
   berry: THREE.Group
   mug: THREE.Group
+  scroll: THREE.Group
 }
 
 interface AgentMesh {
@@ -183,6 +280,13 @@ interface AgentMesh {
   lastPosture: PostureKind
   glyphSprite: THREE.Sprite
   glyphKind: GlyphKind | null
+  glyphPlaceId: string | null
+  speechSprite: THREE.Sprite
+  speechMat: THREE.SpriteMaterial
+  speechText: string | null
+  stagingFaceId: string | null
+  stagingFaceKind: 'agent' | 'place' | null
+  stagingProp: PropKind | null
   variant: 'mind' | 'sheep'
   eyeL: THREE.Mesh
   eyeR: THREE.Mesh
@@ -319,6 +423,39 @@ function buildMug(track: <T extends { dispose: () => void }>(o: T) => T): THREE.
   handle.rotation.y = Math.PI / 2
   handle.position.set(0.05, 0.05, 0)
   g.add(handle)
+  return g
+}
+
+/** Blueprint / commission scroll held during construction:commissioned window. */
+function buildScroll(track: <T extends { dispose: () => void }>(o: T) => T): THREE.Group {
+  const g = new THREE.Group()
+  const paper = track(
+    new THREE.MeshStandardMaterial({
+      color: 0xe8d9b0,
+      roughness: 0.85,
+      emissive: 0x3a3020,
+      emissiveIntensity: 0.08,
+    }),
+  )
+  const rod = track(new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.7 }))
+  const sheet = new THREE.Mesh(track(new THREE.BoxGeometry(0.14, 0.18, 0.012)), paper)
+  sheet.position.y = 0.1
+  g.add(sheet)
+  const top = new THREE.Mesh(track(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 6)), rod)
+  top.rotation.z = Math.PI / 2
+  top.position.y = 0.19
+  g.add(top)
+  const bot = new THREE.Mesh(track(new THREE.CylinderGeometry(0.012, 0.012, 0.16, 6)), rod)
+  bot.rotation.z = Math.PI / 2
+  bot.position.y = 0.01
+  g.add(bot)
+  // Tiny ink mark so it reads as a blueprint, not a blank card
+  const ink = new THREE.Mesh(
+    track(new THREE.BoxGeometry(0.08, 0.01, 0.014)),
+    track(new THREE.MeshStandardMaterial({ color: 0x2a3550, roughness: 0.6 })),
+  )
+  ink.position.set(0, 0.12, 0.002)
+  g.add(ink)
   return g
 }
 
@@ -575,7 +712,8 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     const hammer = buildHammer(track)
     const berry = buildBerry(track)
     const mug = buildMug(track)
-    for (const t of [hoe, axe, pick, hammer, berry, mug]) {
+    const scroll = buildScroll(track)
+    for (const t of [hoe, axe, pick, hammer, berry, mug, scroll]) {
       t.visible = false
       toolRoot.add(t)
     }
@@ -588,6 +726,23 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     glyphSprite.renderOrder = 80
     glyphSprite.userData.agentId = agent.id
     root.add(glyphSprite)
+
+    const speechMat = track(
+      new THREE.SpriteMaterial({
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+        opacity: 1,
+        color: 0xffffff,
+        sizeAttenuation: true,
+      }),
+    )
+    const speechSprite = new THREE.Sprite(speechMat)
+    speechSprite.scale.set(2.2, 1.1, 1)
+    speechSprite.visible = false
+    speechSprite.renderOrder = 85
+    speechSprite.userData.agentId = agent.id
+    root.add(speechSprite)
 
     group.position.set(agent.x, 0, agent.y)
     root.add(group)
@@ -617,7 +772,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       hatStall,
       hatCap,
       hatHelmet,
-      tools: { hoe, axe, pick, hammer, berry, mug },
+      tools: { hoe, axe, pick, hammer, berry, mug, scroll },
       toolRoot,
       lastApexBin: -1,
       poseInited: false,
@@ -630,6 +785,13 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       lastPosture: 'standing',
       glyphSprite,
       glyphKind: null,
+      glyphPlaceId: null,
+      speechSprite,
+      speechMat,
+      speechText: null,
+      stagingFaceId: null,
+      stagingFaceKind: null,
+      stagingProp: null,
       variant: mind ? 'mind' : 'sheep',
       eyeL,
       eyeR,
@@ -714,6 +876,7 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     m.tools.hammer.visible = tool === 'hammer'
     m.tools.berry.visible = tool === 'berry'
     m.tools.mug.visible = tool === 'mug'
+    m.tools.scroll.visible = tool === 'scroll'
     m.toolRoot.visible = tool !== null
   }
 
@@ -824,9 +987,17 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     z: number,
     posture: PostureKind,
     subjectId: string | null,
+    glyphPlaceId: string | null,
+    placeById: Map<string, Place>,
   ) => {
+    // Track place id for probes even when the 3D sprite is photo-only.
+    m.glyphPlaceId = kind === 'examine' ? glyphPlaceId : null
     // 3D sprites are the photo-safe channel; live HUD uses HTML overlays.
-    const show = !!kind && subjectId !== null && subjectId === agentId
+    // Examine glyph may hover the TARGET place (interaction staging).
+    const show =
+      !!kind &&
+      subjectId !== null &&
+      (subjectId === agentId || (kind === 'examine' && !!glyphPlaceId))
     if (!show || !kind) {
       m.glyphSprite.visible = false
       m.glyphKind = null
@@ -836,9 +1007,55 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       m.glyphKind = kind
       m.glyphSprite.material = glyphMats[kind]
     }
-    const gy = posture === 'fallen' || posture === 'lying' ? 0.5 : HEAD_Y + 0.55
-    m.glyphSprite.position.set(x, gy, z)
+    let gx = x
+    let gz = z
+    let gy = posture === 'fallen' || posture === 'lying' ? 0.5 : HEAD_Y + 0.55
+    let gScale = 0.45
+    if (kind === 'examine' && glyphPlaceId) {
+      const place = placeById.get(glyphPlaceId)
+      if (place) {
+        gx = place.x
+        gz = place.y
+        gy = 2.35
+        gScale = 0.95
+      }
+    }
+    m.glyphSprite.scale.set(gScale, gScale, 1)
+    m.glyphSprite.position.set(gx, gy, gz)
     m.glyphSprite.visible = true
+    m.glyphSprite.renderOrder = 90
+  }
+
+  const applySpeech = (
+    m: AgentMesh,
+    agentId: string,
+    text: string | null,
+    x: number,
+    z: number,
+    subjectId: string | null,
+  ) => {
+    // Always track text for probes; 3D sprite is photo-safe (HTML covers live HUD).
+    if (m.speechText !== text) {
+      m.speechText = text
+      if (text) {
+        const prev = m.speechMat.map
+        const tex = makeSpeechTexture(text)
+        track(tex)
+        m.speechMat.map = tex
+        m.speechMat.needsUpdate = true
+        if (prev) prev.dispose()
+      }
+    }
+    const show = !!text && subjectId !== null && subjectId === agentId
+    if (!show) {
+      m.speechSprite.visible = false
+      return
+    }
+    // Tight to the hat so hero cameras can keep the card in the upper third.
+    m.speechSprite.position.set(x, HEAD_Y + 0.82, z)
+    m.speechSprite.scale.set(2.6, 1.3, 1)
+    m.speechSprite.frustumCulled = false
+    m.speechSprite.visible = true
   }
 
   const nearestTree = (
@@ -886,6 +1103,9 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     destMarkerCount = 0
 
     const placeById = new Map(places.map((p) => [p.id, p]))
+    const speechByAgent = new Map(
+      describeSpeechBubbles(events, tick).map((b) => [b.agentId, b.text] as const),
+    )
 
     const interp = new Map<string, { x: number; z: number; agent: AgentState }>()
     for (const agent of agentsIn) {
@@ -914,9 +1134,25 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
       m.lastX = x
       m.lastZ = z
 
-      const visual = describeAgent(agent, tick, { events })
+      const sayText = speechByAgent.get(agent.id) ?? null
+      const visual = describeAgent(agent, tick, {
+        events,
+        speechActive: sayText !== null,
+      })
       const posture = visual.posture
-      applyGlyph(m, agent.id, visual.glyph, x, z, posture, photoSubjectId)
+      m.stagingProp = visual.prop
+      applyGlyph(
+        m,
+        agent.id,
+        visual.glyph,
+        x,
+        z,
+        posture,
+        photoSubjectId,
+        visual.glyphPlaceId ?? null,
+        placeById,
+      )
+      applySpeech(m, agent.id, sayText, x, z, photoSubjectId)
       const hauling = isHauling(agent)
       const walking = isOnPath(agent) && moved > 1e-5
       const working = isPerformingWork(agent)
@@ -959,6 +1195,31 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         const fdz = place.y - z
         if (fdx * fdx + fdz * fdz > 1e-4) yaw = Math.atan2(fdx, fdz)
       }
+      const faceAgentId = (id: string | undefined | null) => {
+        if (!id) return false
+        const other = interp.get(id)
+        if (!other) return false
+        const fdx = other.x - x
+        const fdz = other.z - z
+        if (fdx * fdx + fdz * fdz <= 1e-4) return false
+        yaw = Math.atan2(fdx, fdz)
+        return true
+      }
+      /** Staging facing when not pathing — path yaw wins while moving. */
+      const applyStagingFace = () => {
+        if (isOnPath(agent) && moved > 1e-5) {
+          m.stagingFaceId = null
+          m.stagingFaceKind = null
+          return
+        }
+        const face = describeFacingTarget(agent, tick, { events })
+        m.stagingFaceId = face?.id ?? null
+        m.stagingFaceKind = face?.kind ?? null
+        if (!face) return
+        if (face.kind === 'agent') faceAgentId(face.id)
+        else facePlace(placeById.get(face.id))
+      }
+      applyStagingFace()
 
       let ty = 0
       let rx = 0
@@ -990,13 +1251,13 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
 
       if (posture === 'lean-in') {
         setTool(m, null)
-        const target = agent.action.targetPlaceId
-          ? placeById.get(agent.action.targetPlaceId)
-          : undefined
-        facePlace(target)
+        // Prefer staging examine target (action + residual window).
+        const examId = examineTargetId(agent, tick, events) ?? agent.action.targetPlaceId
+        facePlace(examId ? placeById.get(examId) : undefined)
         if (moved > 1e-5) {
           m.walkDist += moved
           ty = Math.sin(m.walkDist * BOB_FREQ) * BOB_AMP * 0.5
+          if (isOnPath(agent)) yaw = Math.atan2(dx, dz)
         }
         rx = 0.38
         headY = HEAD_Y - 0.08
@@ -1008,7 +1269,8 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
 
       if (posture === 'sitting') {
         const prop: PropKind | null = visual.prop
-        held = prop === 'berry' ? 'berry' : prop === 'mug' ? 'mug' : null
+        held =
+          prop === 'berry' ? 'berry' : prop === 'mug' ? 'mug' : prop === 'scroll' ? 'scroll' : null
         setTool(m, held)
         if (held) {
           toolCount++
@@ -1104,21 +1366,24 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
 
       if (posture === 'socializing') {
         setTool(m, null)
-        let bestD = Infinity
-        let faceX = 0
-        let faceZ = 1
-        for (const o of socialStanding) {
-          if (o.id === agent.id) continue
-          const ddx = o.x - x
-          const ddz = o.z - z
-          const d2 = ddx * ddx + ddz * ddz
-          if (d2 < bestD && d2 > 1e-6) {
-            bestD = d2
-            faceX = ddx
-            faceZ = ddz
+        // Staging partner wins; else nearest socializing neighbor (legacy).
+        if (!m.stagingFaceId || m.stagingFaceKind !== 'agent') {
+          let bestD = Infinity
+          let faceX = 0
+          let faceZ = 1
+          for (const o of socialStanding) {
+            if (o.id === agent.id) continue
+            const ddx = o.x - x
+            const ddz = o.z - z
+            const d2 = ddx * ddx + ddz * ddz
+            if (d2 < bestD && d2 > 1e-6) {
+              bestD = d2
+              faceX = ddx
+              faceZ = ddz
+            }
           }
+          if (bestD < Infinity) yaw = Math.atan2(faceX, faceZ)
         }
-        if (bestD < Infinity) yaw = Math.atan2(faceX, faceZ)
         const t = simTime * 2.2 + m.phase * Math.PI * 2
         const pulse = Math.pow(Math.max(0, Math.sin(t)), 10)
         const s = 1 + pulse * 0.03
@@ -1128,7 +1393,15 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
         continue
       }
 
-      setTool(m, null)
+      // Standing / idle — scroll prop during commission window
+      if (visual.prop === 'scroll') {
+        setTool(m, 'scroll')
+        toolCount++
+        m.toolRoot.rotation.x = -0.55
+        m.toolRoot.rotation.z = 0.25
+      } else {
+        setTool(m, null)
+      }
       applyPose(m, x, z, 0, 0, yaw, 0, 1, HEAD_Y, settle)
       applyCharm(m, posture, simTime)
       m.lastPosture = posture
@@ -1216,6 +1489,36 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     }
   }
 
+  const getStaging = (id: string) => {
+    const m = meshes.get(id)
+    if (!m) return null
+    return {
+      speechText: m.speechText,
+      speechVisible: m.speechSprite.visible,
+      speechPos: {
+        x: m.speechSprite.position.x,
+        y: m.speechSprite.position.y,
+        z: m.speechSprite.position.z,
+        sx: m.speechSprite.scale.x,
+        sy: m.speechSprite.scale.y,
+        hasMap: !!m.speechMat.map,
+      },
+      glyphPlaceId: m.glyphPlaceId,
+      glyphVisible: m.glyphSprite.visible,
+      glyphPos: m.glyphSprite.visible
+        ? {
+            x: m.glyphSprite.position.x,
+            y: m.glyphSprite.position.y,
+            z: m.glyphSprite.position.z,
+          }
+        : null,
+      prop: m.stagingProp,
+      faceId: m.stagingFaceId,
+      faceKind: m.stagingFaceKind,
+      yaw: m.group.rotation.y,
+    }
+  }
+
   const dispose = () => {
     scene.remove(root)
     for (const d of disposables) d.dispose()
@@ -1223,5 +1526,14 @@ export function createAgents(scene: THREE.Scene, agents: AgentState[]): AgentsHa
     objectToId.clear()
   }
 
-  return { root, update, getPickables, agentIdFromObject, getJuiceCounts, getFacing, dispose }
+  return {
+    root,
+    update,
+    getPickables,
+    agentIdFromObject,
+    getJuiceCounts,
+    getFacing,
+    getStaging,
+    dispose,
+  }
 }

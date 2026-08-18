@@ -176,8 +176,9 @@ describe('highlight moment registry', () => {
     const cands = collectHighlightCandidates(events, names)
     const says = cands.filter((c) => c.type === 'mind:say')
     expect(says).toHaveLength(2)
-    expect(says[0]!.tick).toBe(33)
-    expect(says[1]!.tick).toBe(1200)
+    // Pose tick is event.tick + 1 so stills land inside the say staging window.
+    expect(says[0]!.tick).toBe(34)
+    expect(says[1]!.tick).toBe(1201)
   })
 
   it('ownership:transfer only when firstPrivate', () => {

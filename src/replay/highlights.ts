@@ -296,8 +296,16 @@ export function collectHighlightCandidates(
     const cap = captionForEvent(e, names)
     if (!cap) continue
 
+    // Land INSIDE staging windows (say / examine / commission) so stills
+    // capture bubble text, target glyph, and ceremony — not the event edge.
+    const poseBump =
+      e.type === 'mind:say' ||
+      e.type === 'discovery:examined' ||
+      e.type === 'construction:commissioned'
+        ? 1
+        : 0
     out.push({
-      tick: e.tick,
+      tick: e.tick + poseBump,
       type: e.type,
       priority: prio,
       agentIds: cap.agentIds,

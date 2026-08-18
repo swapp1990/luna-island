@@ -52,7 +52,7 @@ export interface LoopController {
    */
   forceRender: () => void
   /** Publish photo-mode flag on `__simState` (UI-only). */
-  setPhotoMode: (on: boolean) => void
+  setPhotoMode: (on: boolean, subjectId?: string | null) => void
 }
 
 const SPEEDS = new Set([0, 1, 8, 64])
@@ -91,6 +91,8 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
   let visibilityUnbind: (() => void) | null = null
   /** UI-only: cinematic photo mode (bridge flag; does not touch sim). */
   let photoMode = false
+  /** Photo-safe 3D staging subject — independent of place/agent HUD selection. */
+  let photoSubjectId: string | null = null
 
   /**
    * Whole mind line: queue + in-flight + rate-floor wait (meter.thinking).
@@ -232,6 +234,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
             minGapTicks: 30,
           },
       photoMode,
+      photoSubjectId,
       actionLanguage: {
         destMarkerAgentId:
           selectedAgentId &&
@@ -402,7 +405,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       sim.state.tick,
       events,
       settle,
-      photoMode ? selectedAgentId : null,
+      photoMode ? photoSubjectId : null,
     )
     if (follow && selectedAgentId) {
       scene.followAgent(sim.state.agents, prevPositions, alpha, selectedAgentId, 0.08)
@@ -699,8 +702,9 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       scene.render()
       refreshBridge(getState())
     },
-    setPhotoMode: (on: boolean) => {
+    setPhotoMode: (on: boolean, subjectId?: string | null) => {
       photoMode = !!on
+      photoSubjectId = on ? (subjectId ?? selectedAgentId) : null
       refreshBridge(getState())
     },
   }

@@ -72,6 +72,8 @@ export interface SimStateBridge {
   mind?: MindBridgeState | null
   /** Additive: cinematic photo mode active (HUD hidden, caption card on). */
   photoMode?: boolean
+  /** Additive: photo-safe 3D staging subject (speech/glyphs). */
+  photoSubjectId?: string | null
   /** Additive: action-language probe (posture/glyph/prop are on describeAgentVisual). */
   actionLanguage?: {
     destMarkerAgentId: string | null
@@ -194,8 +196,23 @@ export interface SimControlBridge {
     posture: string
     glyph: string | null
     prop: string | null
+    glyphPlaceId?: string | null
     traveling?: boolean
     variant?: 'mind' | 'sheep'
+  } | null
+  /**
+   * Additive (e2e): interaction staging — speech / face / glyph place / ceremony.
+   */
+  describeStaging?: (agentId: string) => {
+    speechText: string | null
+    speechVisible?: boolean
+    glyphPlaceId: string | null
+    glyphVisible?: boolean
+    prop: string | null
+    faceId: string | null
+    faceKind: 'agent' | 'place' | null
+    yaw: number | null
+    ceremonies: Array<{ placeId: string; agentId: string; ageTicks: number }>
   } | null
 }
 
