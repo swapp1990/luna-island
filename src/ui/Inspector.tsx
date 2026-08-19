@@ -47,6 +47,10 @@ function actionVerb(kind: string, workPhase?: string | null): string {
     case 'work':
       if (workPhase === 'hauling' || workPhase === 'returning') return 'Hauling'
       return 'Working'
+    case 'gather':
+      return 'Gathering'
+    case 'deliver':
+      return 'Delivering materials'
     case 'commission':
       return 'Commissioning a house'
     case 'propose':

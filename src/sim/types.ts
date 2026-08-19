@@ -1,7 +1,7 @@
 export type Tick = number // 1 tick = 1 sim minute; 1440 ticks = 1 day
 
-/** World-gen intensity. Same rules; lean is a harsher fact sheet. */
-export type WorldPreset = 'default' | 'lean'
+/** World-gen intensity. Same rules; lean is a harsher fact sheet; wild is unbuilt. */
+export type WorldPreset = 'default' | 'lean' | 'wild'
 
 export interface SimTime { day: number; hour: number; minute: number; tick: Tick }
 
@@ -131,6 +131,7 @@ export type ActionKind =
   | 'wander'
   | 'forage'
   | 'gather'
+  | 'deliver'
   | 'work'
   | 'buy'
   | 'commission'

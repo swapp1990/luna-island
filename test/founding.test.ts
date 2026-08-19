@@ -626,6 +626,7 @@ describe('founding — shoreline drink and sleeping rough', () => {
 describe('founding — mind boundary', () => {
   it('gather is not a strategic verb; commission still is', () => {
     expect(STRATEGIC_ACTION_KINDS.has('gather')).toBe(false)
+    expect(STRATEGIC_ACTION_KINDS.has('deliver')).toBe(false)
     expect(STRATEGIC_ACTION_KINDS.has('commission')).toBe(true)
   })
 })

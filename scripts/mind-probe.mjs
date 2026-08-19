@@ -85,7 +85,7 @@ function baseWorld(places, agents, extra = {}) {
     tiles: extra.tiles ?? [],
     places,
     agents,
-    preset: 'default',
+    preset: extra.preset ?? 'default',
     treasury: 200,
     owners: extra.owners ?? { 'home-0': 'commons', 'plaza-0': 'commons' },
     stats: [],
@@ -196,27 +196,37 @@ function foundingWildFixture() {
       tiles.push({ x, y, kind, walkable, elevation: 0.5 })
     }
   }
-  const agent = baseAgent('agent-0', 'Mira', 10, 10, {
-    wallet: 8,
-    employedAt: null,
-    needs: emptyNeeds(0.8),
-    homeId: 'home-0',
-  })
-  const home = {
-    id: 'home-0',
-    kind: 'home',
-    x: 8,
-    y: 8,
-    slots: 1,
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 14,
+    slots: 12,
     inventory: emptyInv(),
   }
+  const bush = {
+    id: 'bush-0',
+    kind: 'berry-bush',
+    x: 11,
+    y: 14,
+    slots: 2,
+    inventory: { food: 6, wood: 0, stone: 0 },
+  }
+  const agent = baseAgent('agent-0', 'Mira', 10, 10, {
+    wallet: 20,
+    employedAt: null,
+    needs: emptyNeeds(0.8),
+    homeId: '',
+    inventory: emptyInv(),
+  })
   return {
     agent,
-    world: baseWorld([home], [agent], {
-      owners: { 'home-0': 'commons' },
+    world: baseWorld([plaza, bush], [agent], {
+      owners: { 'plaza-0': 'commons', 'bush-0': 'commons' },
       tiles,
       width,
       height,
+      preset: 'wild',
     }),
     events: [],
   }

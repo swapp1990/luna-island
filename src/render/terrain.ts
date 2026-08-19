@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import type { Place, TerrainKind, WorldState } from '../sim/types'
+import type { Place, TerrainKind, Tile, WorldState } from '../sim/types'
 
 /** Place kinds that can be selected for the building panel. */
 const SELECTABLE_PLACE_KINDS = new Set([
@@ -18,8 +18,8 @@ export interface TerrainHandle {
   root: THREE.Group
   /** Show N berry dots on each bush from place inventory stock (0–6). */
   updateBushStock: (places: Place[]) => void
-  /** Discrete farm crop stages; stall/storehouse crates; sync dynamic sites. */
-  updateEconomyVisuals: (places: Place[], now?: number) => void
+  /** Discrete farm crop stages; stall/storehouse crates; sync dynamic sites + gather dressing. */
+  updateEconomyVisuals: (places: Place[], now?: number, tiles?: Tile[]) => void
   /** Tree world positions (for forestry tool facing / shake). */
   getTreePositions: () => Array<{ x: number; z: number }>
   /** Shake nearest tree at (x,z) for ~200 ms. */
@@ -64,6 +64,31 @@ interface TreeInstance {
   baseYawTrunk: number
   baseYawFoliage: number
   shakeUntil: number
+}
+
+/** Instanced boulder on a rock tile — scaled by gatherStock. */
+interface BoulderInstance {
+  x: number
+  z: number
+  mesh: THREE.InstancedMesh
+  index: number
+  baseS: number
+  ox: number
+  oz: number
+  rx: number
+  ry: number
+  rz: number
+  sy: number
+  baseH: number
+}
+
+/** Matches sim GATHER_STOCK_MAX — keep in sync. */
+const GATHER_STOCK_MAX = 6
+
+function gatherStockScale(tile: Tile | undefined): number {
+  if (!tile || (tile.kind !== 'forest' && tile.kind !== 'rock')) return 1
+  const stock = tile.gatherStock ?? GATHER_STOCK_MAX
+  return 0.28 + 0.72 * Math.max(0, Math.min(1, stock / GATHER_STOCK_MAX))
 }
 
 /** Materials pile + frame stages for a construction site (render-only). */
@@ -439,12 +464,22 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     }
   }
 
+  let latestTiles: Tile[] | null = world.tiles
+
+  const tileAt = (x: number, y: number): Tile | undefined => {
+    if (!latestTiles) return undefined
+    const ix = Math.round(x)
+    const iy = Math.round(y)
+    if (ix < 0 || iy < 0 || ix >= world.width || iy >= world.height) return undefined
+    return latestTiles[iy * world.width + ix]
+  }
+
   const applyTreeMatrix = (rec: TreeInstance, now: number) => {
     const dummy = new THREE.Object3D()
     const baseY = HEIGHTS.forest
     const shaking = now < rec.shakeUntil
     const jitter = shaking ? ((Math.sin(now * 0.08) * Math.PI) / 180) * 3 : 0
-    const scale = rec.baseScale
+    const scale = rec.baseScale * gatherStockScale(tileAt(rec.x, rec.z))
     // Trunk
     if (trunkInstRef) {
       dummy.position.set(rec.x, baseY + 0.175 * scale, rec.z)
@@ -495,6 +530,7 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   }
 
   // Rocks: terraced terrain already drawn; ~15% get a boulder (no trees here)
+  const boulderRecords: BoulderInstance[] = []
   {
     const rocks = byKind.rock
     let minE = Infinity
@@ -521,15 +557,30 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
           const rnd = tileRng(t.x, t.y, 99)
           const s = 0.5 + rnd() * 0.5 // 0.5–1.0
           const baseH = rockTileHeight(t.elev, minE, maxE)
-          dummy.position.set(
-            t.x + (rnd() - 0.5) * 0.2,
-            baseH + 0.15 * s,
-            t.y + (rnd() - 0.5) * 0.2,
-          )
-          dummy.rotation.set(rnd() * Math.PI, rnd() * Math.PI, rnd() * Math.PI)
+          const ox = (rnd() - 0.5) * 0.2
+          const oz = (rnd() - 0.5) * 0.2
+          const rx = rnd() * Math.PI
+          const ry = rnd() * Math.PI
+          const rz = rnd() * Math.PI
+          dummy.position.set(t.x + ox, baseH + 0.15 * s, t.y + oz)
+          dummy.rotation.set(rx, ry, rz)
           dummy.scale.set(s, s * 0.7, s)
           dummy.updateMatrix()
           inst.setMatrixAt(i, dummy.matrix)
+          boulderRecords.push({
+            x: t.x,
+            z: t.y,
+            mesh: inst,
+            index: i,
+            baseS: s,
+            ox,
+            oz,
+            rx,
+            ry,
+            rz,
+            sy: s * 0.7,
+            baseH,
+          })
         }
         inst.instanceMatrix.needsUpdate = true
         root.add(inst)
@@ -539,6 +590,18 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     }
   }
 
+  const applyBoulderMatrix = (rec: BoulderInstance) => {
+    const dummy = new THREE.Object3D()
+    const frac = gatherStockScale(tileAt(rec.x, rec.z))
+    const s = rec.baseS * frac
+    dummy.position.set(rec.x + rec.ox, rec.baseH + 0.15 * s, rec.z + rec.oz)
+    dummy.rotation.set(rec.rx, rec.ry, rec.rz)
+    dummy.scale.set(s, rec.sy * frac, s)
+    dummy.updateMatrix()
+    rec.mesh.setMatrixAt(rec.index, dummy.matrix)
+    rec.mesh.instanceMatrix.needsUpdate = true
+  }
+
   // Places — berry meshes keyed by place id for stock-driven visibility
   const bushBerries = new Map<string, THREE.Mesh[]>()
   const farmCrops = new Map<string, FarmCropPlot>()
@@ -546,6 +609,8 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   const storeCrates = new Map<string, THREE.Mesh[]>()
   const siteVisuals = new Map<string, SiteVisual>()
   const dynamicHomes = new Map<string, THREE.Group>()
+  /** Completed non-home places added after worldgen (wild founding). */
+  const dynamicCompleted = new Set<string>()
   /** Home pop-in: placeId → born ms (300 ms overshoot scale). */
   const homePops = new Map<string, number>()
   /** Invisible selection volumes keyed by place id. */
@@ -641,21 +706,35 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         for (let i = 0; i < vis.pile.length; i++) {
           vis.pile[i]!.visible = i < pileN
         }
-      } else if (place.kind === 'home' && !staticIds.has(place.id)) {
-        // Completed private house: remove site visual, add home mesh once
+      } else if (!staticIds.has(place.id)) {
+        // Site finished → swap stake mesh for the completed kind (live, no reload)
         if (siteVisuals.has(place.id)) {
           root.remove(siteVisuals.get(place.id)!.group)
           siteVisuals.delete(place.id)
         }
-        if (!dynamicHomes.has(place.id)) {
-          const g = buildHomeMesh(place, track, plaza)
-          root.add(g)
-          dynamicHomes.set(place.id, g)
-          // Auto pop if not already scheduled
-          if (!homePops.has(place.id)) {
-            homePops.set(place.id, performance.now())
-            g.scale.set(0.2, 0.2, 0.2)
+        if (place.kind === 'home') {
+          if (!dynamicHomes.has(place.id)) {
+            const g = buildHomeMesh(place, track, plaza)
+            root.add(g)
+            dynamicHomes.set(place.id, g)
+            if (!homePops.has(place.id)) {
+              homePops.set(place.id, performance.now())
+              g.scale.set(0.2, 0.2, 0.2)
+            }
           }
+        } else if (!dynamicCompleted.has(place.id)) {
+          addPlace(
+            root,
+            place,
+            track,
+            plaza,
+            bushBerries,
+            farmCrops,
+            stallCrates,
+            storeCrates,
+            siteVisuals,
+          )
+          dynamicCompleted.add(place.id)
         }
       }
     }
@@ -676,10 +755,17 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     return 0.35 + u * 0.75 + Math.sin(u * Math.PI) * 0.12
   }
 
-  const updateEconomyVisuals = (places: Place[], now = performance.now()) => {
+  const updateEconomyVisuals = (
+    places: Place[],
+    now = performance.now(),
+    tiles?: Tile[],
+  ) => {
+    if (tiles) latestTiles = tiles
     updateBushStock(places)
     syncDynamicPlaces(places)
     updateTreeShakes(now)
+    for (const rec of treeRecords) applyTreeMatrix(rec, now)
+    for (const rec of boulderRecords) applyBoulderMatrix(rec)
 
     // Home pop-in scale
     for (const [id, born] of homePops) {
@@ -829,6 +915,7 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     storeCrates.clear()
     siteVisuals.clear()
     dynamicHomes.clear()
+    dynamicCompleted.clear()
     placePicks.clear()
     pickObjectToId.clear()
   }

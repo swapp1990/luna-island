@@ -1,7 +1,7 @@
 import { ensureMindFields, Simulation, type DayArchiveMeta, type SimSnapshot } from './sim'
 import type { EconomyStat, SimEvent, Tick, WorldState } from './types'
 
-/** Current on-disk save schema version (v5 proposals+rules; v4 sayLog; v3 mindNoteLog; v2 externalIntentLog + mindStats). */
+/** Current on-disk save schema version (v5 proposals+rules; wild is a WorldPreset string — no bump). */
 export const SAVE_FORMAT_VERSION = 5 as const
 
 /** Oldest format we can still load (upgrades with empty mind fields as needed). */

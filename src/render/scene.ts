@@ -85,8 +85,12 @@ export interface SceneHandle {
   ) => void
   /** Sync bush berry-dot visibility to place inventory stock. */
   updateBushStock: (places: WorldState['places']) => void
-  /** Sync farm growth + stall crate visuals. */
-  updateEconomyVisuals: (places: WorldState['places'], now?: number) => void
+  /** Sync farm growth + stall crate visuals + live-built place meshes. */
+  updateEconomyVisuals: (
+    places: WorldState['places'],
+    now?: number,
+    tiles?: WorldState['tiles'],
+  ) => void
   /** Live-only celebration FX from events. */
   celebrateConstruction: (placeId: string | null, now: number) => void
   celebrateHarvest: (placeId: string | null, now: number) => void
@@ -476,9 +480,13 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   const updateBushStock = (places: WorldState['places']) => {
     terrain.updateBushStock(places)
   }
-  const updateEconomyVisuals = (places: WorldState['places'], now = performance.now()) => {
+  const updateEconomyVisuals = (
+    places: WorldState['places'],
+    now = performance.now(),
+    tiles?: WorldState['tiles'],
+  ) => {
     hoverPlaces = places
-    terrain.updateEconomyVisuals(places, now)
+    terrain.updateEconomyVisuals(places, now, tiles)
   }
 
   const celebrateConstruction = (placeId: string | null, now: number) => {

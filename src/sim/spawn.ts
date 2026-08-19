@@ -68,14 +68,108 @@ function jitterFactor(rng: Rng): number {
   return 0.85 + rng.next() * 0.3
 }
 
+function makeAgent(
+  i: number,
+  x: number,
+  y: number,
+  homeId: string,
+  rng: Rng,
+  spawnFood: number,
+): AgentState {
+  const hunger = needInRange(rng)
+  const energy = needInRange(rng)
+  const social = needInRange(rng)
+  const needs = { hunger, energy, social }
+  return {
+    id: `agent-${i}`,
+    name: AGENT_NAMES[i]!,
+    color: AGENT_COLORS[i % AGENT_COLORS.length]!,
+    x,
+    y,
+    homeId,
+    needs: { ...needs },
+    action: { kind: 'idle', reason: 'Just woke up on the island' },
+    needJitter: {
+      hunger: jitterFactor(rng),
+      energy: jitterFactor(rng),
+      social: jitterFactor(rng),
+    },
+    actionTicks: 0,
+    lastDecideTick: 0,
+    pathIndex: 0,
+    criticalFired: { hunger: false, energy: false, social: false },
+    actionStartNeeds: { ...needs },
+    inventory: { ...emptyInventory(), food: spawnFood },
+    wallet: 20,
+    collapsed: false,
+    employedAt: null,
+    workedTicks: 0,
+    daysIdleOnJob: 0,
+    workPhase: null,
+    haulAmount: 0,
+    haulGood: null,
+    haulSourceId: null,
+    haulDropoffId: null,
+    sympathy: {},
+  }
+}
+
+/** Unsheltered spawn: walkable grass near the plaza, one agent per tile. */
+function spawnUnsheltered(world: WorldState, rng: Rng): void {
+  const plaza = world.places.find((p) => p.kind === 'plaza')
+  if (!plaza) {
+    world.agents = []
+    return
+  }
+  const food = presetFacts(world.preset).spawnFood
+  const taken = new Set<string>()
+  const spots: Array<[number, number]> = []
+  const consider = (x: number, y: number) => {
+    if (spots.length >= AGENT_NAMES.length) return
+    if (!isWalkable(world, x, y)) return
+    const t = world.tiles[y * world.width + x]
+    if (!t || t.kind !== 'grass') return
+    const k = `${x},${y}`
+    if (taken.has(k)) return
+    taken.add(k)
+    spots.push([x, y])
+  }
+  for (let r = 0; r <= 20 && spots.length < AGENT_NAMES.length; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue
+        consider(plaza.x + dx, plaza.y + dy)
+      }
+    }
+  }
+  if (spots.length < AGENT_NAMES.length) {
+    for (const t of world.tiles) {
+      if (spots.length >= AGENT_NAMES.length) break
+      if (!t.walkable) continue
+      const k = `${t.x},${t.y}`
+      if (taken.has(k)) continue
+      taken.add(k)
+      spots.push([t.x, t.y])
+    }
+  }
+  const agents: AgentState[] = []
+  for (let i = 0; i < AGENT_NAMES.length; i++) {
+    const spot = spots[i]
+    if (!spot) break
+    agents.push(makeAgent(i, spot[0], spot[1], '', rng, food))
+  }
+  world.agents = agents
+}
+
 /**
  * Spawns 24 agents onto `world.agents` using the sim rng.
  * Homes are round-robined; agents start at their home tile.
+ * No homes (wild) → walkable grass near the plaza, still one-per-tile.
  */
 export function spawnAgents(world: WorldState, rng: Rng): void {
   const homes = world.places.filter((p): p is Place => p.kind === 'home')
   if (homes.length === 0) {
-    world.agents = []
+    spawnUnsheltered(world, rng)
     return
   }
 
@@ -123,42 +217,9 @@ export function spawnAgents(world: WorldState, rng: Rng): void {
     }
     taken.add(`${sx},${sy}`)
 
-    const hunger = needInRange(rng)
-    const energy = needInRange(rng)
-    const social = needInRange(rng)
-    const needs = { hunger, energy, social }
-    agents.push({
-      id: `agent-${i}`,
-      name: AGENT_NAMES[i]!,
-      color: AGENT_COLORS[i % AGENT_COLORS.length]!,
-      x: sx,
-      y: sy,
-      homeId: home.id,
-      needs: { ...needs },
-      action: { kind: 'idle', reason: 'Just woke up on the island' },
-      needJitter: {
-        hunger: jitterFactor(rng),
-        energy: jitterFactor(rng),
-        social: jitterFactor(rng),
-      },
-      actionTicks: 0,
-      lastDecideTick: 0,
-      pathIndex: 0,
-      criticalFired: { hunger: false, energy: false, social: false },
-      actionStartNeeds: { ...needs },
-      inventory: { ...emptyInventory(), food: presetFacts(world.preset).spawnFood },
-      wallet: 20,
-      collapsed: false,
-      employedAt: null,
-      workedTicks: 0,
-      daysIdleOnJob: 0,
-      workPhase: null,
-      haulAmount: 0,
-      haulGood: null,
-      haulSourceId: null,
-      haulDropoffId: null,
-      sympathy: {},
-    })
+    agents.push(
+      makeAgent(i, sx, sy, home.id, rng, presetFacts(world.preset).spawnFood),
+    )
   }
   world.agents = agents
 

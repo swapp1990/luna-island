@@ -25,6 +25,7 @@ const ACTION_KINDS = [
   'wander',
   'forage',
   'gather',
+  'deliver',
   'work',
   'buy',
   'commission',
@@ -44,6 +45,7 @@ const WORLD_RULES = `WORLD RULES (scaffold only — you choose what to do):
 - One standing agent per tile; using a place = stand on a free slot tile.
 - Structures can be commissioned on buildable ground for wood, stone, and labour.
 - Wood comes from forest tiles; stone from rock tiles (gather).
+- Carried wood or stone can be delivered to a construction site that still needs it.
 - Water can be drunk at the shore; a well restores more.
 - Sleeping without a roof rests you less.
 - You feel your needs. The world contains places and things whose workings you learn by living, examining, and listening.
@@ -53,7 +55,7 @@ const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
 target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
-propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock).
+propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs.
 When nothing is urgent, act on who you are.`
 
 export function buildSystemPrompt(agentId: string): string {

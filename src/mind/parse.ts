@@ -24,6 +24,7 @@ const ACTION_KINDS = new Set<ActionKind>([
   'wander',
   'forage',
   'gather',
+  'deliver',
   'work',
   'buy',
   'commission',
@@ -429,6 +430,7 @@ export function resolveMindIntent(
       case 'walk':
       case 'commission':
       case 'gather':
+      case 'deliver':
         break
       case 'claim':
         if (target && !PLACE_KINDS.has(kindTarget)) {
@@ -475,6 +477,22 @@ export function resolveMindIntent(
       return { kind: 'wander', reason, targetX: Math.round(agent.x), targetY: Math.round(agent.y) }
     }
     return { kind: 'gather', reason, targetX: tile.x, targetY: tile.y }
+  }
+
+  if (kind === 'deliver') {
+    if (!place || place.kind !== 'construction-site') {
+      place = pickNearestPlace(world, agent, 'construction-site', true)
+    }
+    if (!place) {
+      return { kind: 'wander', reason, targetX: Math.round(agent.x), targetY: Math.round(agent.y) }
+    }
+    return {
+      kind: 'deliver',
+      reason,
+      targetPlaceId: place.id,
+      targetX: place.x,
+      targetY: place.y,
+    }
   }
 
   if (kind === 'wander' || kind === 'idle' || kind === 'eat') {

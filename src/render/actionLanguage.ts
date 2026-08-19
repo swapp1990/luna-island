@@ -97,6 +97,8 @@ const ACTION_TABLE: Partial<Record<string, ActionRow>> = {
   eat: { posture: 'sitting', prop: 'berry' },
   drink: { posture: 'sitting', prop: 'mug' },
   work: { posture: 'working' },
+  gather: { posture: 'working' },
+  deliver: { posture: 'working' },
   socialize: { posture: 'socializing' },
   walk: { posture: 'walking' },
   wander: { posture: 'walking' },
@@ -428,7 +430,11 @@ export function describeAgent(
     })
   }
 
-  if (!traveling && row && kind === 'work') {
+  if (
+    !traveling &&
+    row &&
+    (kind === 'work' || kind === 'gather' || kind === 'deliver')
+  ) {
     return finish({
       posture: 'working',
       glyph: pickGlyph(agent, null, recentExamine, speechActive),

@@ -1880,6 +1880,11 @@ export class Simulation {
       return
     }
 
+    if (kind === 'deliver') {
+      this.performDeliver(agent, place)
+      return
+    }
+
     if (kind === 'sleep') {
       // energy regen applied in stepNeeds (bed full rate, ground 60%)
       const curr = toSimTime(this.state.tick)
@@ -2078,6 +2083,9 @@ export class Simulation {
   private performConstructionTend(agent: AgentState, workplace: Place): void {
     const c = workplace.construction
     if (!c) return
+
+    // Standing on the site: inventory can fill the bill (wild / no depot).
+    this.depositInventoryToSite(agent, workplace)
 
     // Prefer hauling when storehouse can fill a shortfall
     const shortGood = this.constructionShortfall(workplace)
@@ -2569,6 +2577,7 @@ export class Simulation {
         agent.action.kind === 'drink' ||
         agent.action.kind === 'forage' ||
         agent.action.kind === 'gather' ||
+        agent.action.kind === 'deliver' ||
         agent.action.kind === 'buy') &&
       this.isPerforming(agent) &&
       agent.actionTicks > 0 &&
@@ -2853,6 +2862,26 @@ export class Simulation {
           tx = shore.x
           ty = shore.y
         }
+      }
+    }
+
+    // Deliver: walk to a construction site that still needs carried goods
+    if (kind === 'deliver') {
+      if (!place || place.kind !== 'construction-site') {
+        place = this.pickSiteNeedingCarried(agent)
+        targetPlaceId = place?.id
+      }
+      if (!place || place.kind !== 'construction-site') {
+        kind = 'wander'
+        targetPlaceId = undefined
+        place = undefined
+        reason = 'Nothing to deliver — wandering'
+        tx = Math.round(agent.x)
+        ty = Math.round(agent.y)
+      } else {
+        targetPlaceId = place.id
+        tx = place.x
+        ty = place.y
       }
     }
 
@@ -3795,6 +3824,92 @@ export class Simulation {
         site.slots = 2
         break
     }
+  }
+
+  /**
+   * World rule: standing on/adjacent to a construction site, move carried
+   * wood/stone into the site inventory up to the remaining bill. Emits
+   * `goods:transfer` per good. Returns units moved.
+   */
+  private depositInventoryToSite(agent: AgentState, site: Place): number {
+    if (site.kind !== 'construction-site' || !site.construction) return 0
+    if (!isStanding(agent)) return 0
+    if (!isSlotTile(this.state, site, agent.x, agent.y)) return 0
+    const c = site.construction
+    let moved = 0
+    for (const g of ['wood', 'stone'] as Good[]) {
+      const need = Math.max(0, (c.needs[g] ?? 0) - (site.inventory[g] ?? 0))
+      const have = agent.inventory[g] ?? 0
+      const amt = Math.min(need, have)
+      if (amt <= 0) continue
+      const ok = this.transferGoods(
+        { kind: 'agent', id: agent.id },
+        { kind: 'place', id: site.id },
+        g,
+        amt,
+        `${agent.name} delivered ${amt} ${g} to the build at ${site.id}`,
+      )
+      if (ok) moved += amt
+    }
+    return moved
+  }
+
+  private pickSiteNeedingCarried(agent: AgentState): Place | undefined {
+    const sites = this.state.places.filter((p) => p.kind === 'construction-site')
+    let best: Place | undefined
+    let bestD = Infinity
+    for (const site of sites) {
+      const c = site.construction
+      if (!c) continue
+      let match = false
+      for (const g of ['wood', 'stone'] as Good[]) {
+        const need = Math.max(0, (c.needs[g] ?? 0) - (site.inventory[g] ?? 0))
+        if (need > 0 && (agent.inventory[g] ?? 0) > 0) {
+          match = true
+          break
+        }
+      }
+      if (!match) continue
+      const d = (site.x - agent.x) ** 2 + (site.y - agent.y) ** 2
+      if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && (!best || site.id < best.id))) {
+        bestD = d
+        best = site
+      }
+    }
+    return best
+  }
+
+  private performDeliver(agent: AgentState, place: Place | undefined): void {
+    const site =
+      place?.kind === 'construction-site'
+        ? place
+        : this.pickSiteNeedingCarried(agent)
+    if (!site) {
+      this.endAction(agent, 'no construction site needs what they carry')
+      agent.action = { kind: 'idle', reason: 'Nothing to drop off' }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+    const onSite =
+      isStanding(agent) && isSlotTile(this.state, site, agent.x, agent.y)
+    if (!onSite) return
+    const moved = this.depositInventoryToSite(agent, site)
+    this.endAction(
+      agent,
+      moved > 0
+        ? `delivered ${moved} material${moved === 1 ? '' : 's'} to the build`
+        : 'site did not need what they carry',
+    )
+    agent.action = {
+      kind: 'idle',
+      reason:
+        moved > 0
+          ? `Dropped off materials at the ${site.construction?.targetKind ?? 'site'}`
+          : 'Nothing the site needed',
+    }
+    agent.actionTicks = 0
+    agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
   }
 
   /** Gather wood (forest) / stone (rock) from the tile the agent is on or beside. */

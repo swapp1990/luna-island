@@ -4,7 +4,7 @@
  * consciously raised mind budgets. Appends a JSONL journal and prints
  * notable civic/mind events to stdout for the orchestrator's monitor.
  *
- * Usage: node scripts/soak-political.mjs [--minutes 120] [--port 5178] [--seed 42] [--preset lean]
+ * Usage: node scripts/soak-political.mjs [--minutes 120] [--port 5178] [--seed 42] [--preset lean|wild]
  *   [--min-gap 15] [--budget-hour 900] [--budget-day 3000] [--concurrency 3] [--brain codex]
  */
 import { spawn } from 'node:child_process'
@@ -19,7 +19,8 @@ const arg = (name, dflt) => {
 const MINUTES = Number(arg('minutes', '120'))
 const PORT = Number(arg('port', '5178'))
 const SEED = Number(arg('seed', '42'))
-const PRESET = arg('preset', 'default') === 'lean' ? 'lean' : 'default'
+const rawPreset = arg('preset', 'default')
+const PRESET = rawPreset === 'lean' || rawPreset === 'wild' ? rawPreset : 'default'
 const MIN_GAP = Number(arg('min-gap', '15'))
 const BUDGET_HOUR = Number(arg('budget-hour', '900'))
 const BUDGET_DAY = Number(arg('budget-day', '3000'))
@@ -188,6 +189,7 @@ try {
       const counts = window.__simControl.countEventTypes(civic)
       return {
         day: s.day, hour: s.hour, minute: s.minute, tick: s.tick, speed: s.speed,
+        placesByKind: s.placeCounts || {},
         mind: {
           pending: s.mind.pending,
           thinking: s.mind.thinking,

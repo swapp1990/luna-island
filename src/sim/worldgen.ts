@@ -12,10 +12,12 @@ import {
 export const PRESET_FACTS = {
   default: { bushes: 10, bushRegrowInterval: 100, farmYield: 14, spawnFood: 4 },
   lean: { bushes: 6, bushRegrowInterval: 300, farmYield: 8, spawnFood: 2 },
+  wild: { bushes: 10, bushRegrowInterval: 100, farmYield: 14, spawnFood: 2 },
 } as const
 
 export function resolveWorldPreset(preset?: WorldPreset | string): WorldPreset {
-  return preset === 'lean' ? 'lean' : 'default'
+  if (preset === 'lean' || preset === 'wild') return preset
+  return 'default'
 }
 
 export interface PresetFacts {
@@ -318,6 +320,11 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
     }
   }
 
+  let occupied = new Set<string>()
+  occupied.add(`${plazaX},${plazaY}`)
+  for (const p of places) occupied.add(`${p.x},${p.y}`)
+
+  if (resolved !== 'wild') {
   // Well adjacent to plaza (prefer +1,0 then others)
   const wellOffsets: Array<[number, number]> = [
     [1, 0],
@@ -405,7 +412,7 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
   }
 
   // 10 homes on a ring radius 4–7 (expand outer radius if needed), Chebyshev spacing ≥ 2
-  const occupied = new Set<string>()
+  occupied = new Set<string>()
   occupied.add(`${plazaX},${plazaY}`)
   for (const p of places) occupied.add(`${p.x},${p.y}`)
 
@@ -810,6 +817,7 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
       }
     }
   }
+  } // end developed-preset structures (wild: plaza + bushes only)
 
   // Berry-bushes on grass/forest, 4–12 tiles from plaza (10 default / 6 lean)
   const bushCandidates: Array<[number, number]> = []

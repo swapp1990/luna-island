@@ -138,12 +138,39 @@ function workReason(place: Place): string {
 
 /** ≥ 2 other agents share this home (crowded shared housing). */
 function homeMateCount(world: WorldState, agent: AgentState): number {
+  if (!agent.homeId) return 0
   let n = 0
   for (const a of world.agents) {
     if (a.id === agent.id) continue
     if (a.homeId === agent.homeId) n++
   }
   return n
+}
+
+/** Nearest construction-site whose remaining bill matches carried wood/stone. */
+function pickSiteNeedingCarried(
+  world: WorldState,
+  agent: AgentState,
+): Place | null {
+  const wood = agent.inventory?.wood ?? 0
+  const stone = agent.inventory?.stone ?? 0
+  if (wood <= 0 && stone <= 0) return null
+  let best: Place | null = null
+  let bestD = Infinity
+  for (const p of world.places) {
+    if (p.kind !== 'construction-site') continue
+    const c = p.construction
+    if (!c) continue
+    const needWood = Math.max(0, (c.needs.wood ?? 0) - (p.inventory.wood ?? 0))
+    const needStone = Math.max(0, (c.needs.stone ?? 0) - (p.inventory.stone ?? 0))
+    if ((needWood <= 0 || wood <= 0) && (needStone <= 0 || stone <= 0)) continue
+    const d = (p.x - agent.x) ** 2 + (p.y - agent.y) ** 2
+    if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && (!best || p.id < best.id))) {
+      bestD = d
+      best = p
+    }
+  }
+  return best
 }
 
 function agentOwnsAnyPlace(world: WorldState, agentId: string): boolean {
@@ -264,20 +291,32 @@ export class UtilityBrain implements Brain {
 
     const candidates: Scored[] = []
 
-    // sleep → own home
+    // sleep → own home, or the ground when unsheltered
     if (self.needs.energy < 0.85) {
-      const home = placeById(world, self.homeId)
+      const home = self.homeId ? placeById(world, self.homeId) : undefined
       const score = sleepScore(self.needs.energy, hour)
-      candidates.push({
-        score,
-        intent: {
-          kind: 'sleep',
-          targetPlaceId: home?.id ?? self.homeId,
-          targetX: home?.x,
-          targetY: home?.y,
-          reason: sleepReason(self.needs.energy, night),
-        },
-      })
+      if (home) {
+        candidates.push({
+          score,
+          intent: {
+            kind: 'sleep',
+            targetPlaceId: home.id,
+            targetX: home.x,
+            targetY: home.y,
+            reason: sleepReason(self.needs.energy, night),
+          },
+        })
+      } else {
+        candidates.push({
+          score,
+          intent: {
+            kind: 'sleep',
+            reason: night
+              ? `Night has fallen (energy ${pct(self.needs.energy)}%) — sleeping on the ground`
+              : `Feeling tired (energy ${pct(self.needs.energy)}%) — lying down on the ground`,
+          },
+        })
+      }
     }
 
     // eat → anywhere, requires carried food
@@ -369,6 +408,31 @@ export class UtilityBrain implements Brain {
             },
           })
         }
+      }
+    }
+
+    // deliver → construction site, only when already carrying a needed good
+    if (!self.collapsed) {
+      const site = pickSiteNeedingCarried(world, self)
+      if (site) {
+        const bits: string[] = []
+        const c = site.construction
+        if (c && (self.inventory.wood ?? 0) > 0 && (c.needs.wood ?? 0) > (site.inventory.wood ?? 0)) {
+          bits.push('wood')
+        }
+        if (c && (self.inventory.stone ?? 0) > 0 && (c.needs.stone ?? 0) > (site.inventory.stone ?? 0)) {
+          bits.push('stone')
+        }
+        candidates.push({
+          score: 0.22,
+          intent: {
+            kind: 'deliver',
+            targetPlaceId: site.id,
+            targetX: site.x,
+            targetY: site.y,
+            reason: `Dropping off ${bits.join(' and ') || 'materials'} at the construction site`,
+          },
+        })
       }
     }
 
@@ -550,6 +614,10 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
       if (wood >= 3 && stone >= 3) return 0
       return 0.16
     }
+    case 'deliver': {
+      if (!pickSiteNeedingCarried(world, self)) return 0
+      return 0.22
+    }
     case 'drink':
       if (!isDaytime(hour)) return -1
       return (1 - self.needs.energy) * 0.35
@@ -600,6 +668,7 @@ export function urgentDifferentNeed(agent: AgentState): boolean {
     case 'eat':
     case 'forage':
     case 'gather':
+    case 'deliver':
     case 'buy':
       return energy < 0.15 || social < 0.15
     case 'work':
