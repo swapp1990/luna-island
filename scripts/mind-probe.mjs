@@ -279,6 +279,131 @@ function survivalFixture() {
   }
 }
 
+/** W1: owns a home, carries 8 wood / 4 stone, comfortable — menu present via system prompt. */
+function w1OwnedStallDreamFixture() {
+  const home = {
+    id: 'home-mira',
+    kind: 'home',
+    x: 10,
+    y: 10,
+    slots: 1,
+    inventory: emptyInv(),
+  }
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 14,
+    y: 12,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const agent = baseAgent('agent-0', 'Mira', 12, 11, {
+    wallet: 20,
+    homeId: 'home-mira',
+    inventory: { food: 2, wood: 8, stone: 4 },
+    needs: emptyNeeds(0.85),
+  })
+  return {
+    agent,
+    world: baseWorld([home, plaza], [agent], {
+      owners: { 'home-mira': 'agent-0', 'plaza-0': 'commons' },
+      preset: 'wild',
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'home-mira', 8),
+      usedPlaceEvent('agent-0', 'plaza-0', 12),
+      {
+        seq: 20,
+        tick: 20,
+        type: 'ownership:transfer',
+        agentId: 'agent-0',
+        data: { placeId: 'home-mira', from: 'commons', to: 'agent-0', firstPrivate: true },
+        reason: 'built and paid for it',
+      },
+    ],
+  }
+}
+
+/** W2: comfortable villager with food; observation will show Sela COLLAPSED nearby. */
+function w2CollapseInViewFixture() {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const mira = baseAgent('agent-0', 'Mira', 10, 10, {
+    wallet: 20,
+    inventory: { food: 3, wood: 0, stone: 0 },
+    needs: emptyNeeds(0.85),
+  })
+  const sela = baseAgent('agent-7', 'Sela', 14, 10, {
+    wallet: 5,
+    inventory: emptyInv(),
+    needs: { hunger: 0.01, energy: 0.4, social: 0.5 },
+  })
+  sela.collapsed = true
+  sela.action = { kind: 'idle', reason: 'Collapsed from hunger' }
+  return {
+    agent: mira,
+    world: baseWorld([plaza], [mira, sela], {
+      owners: { 'plaza-0': 'commons' },
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'plaza-0', 8),
+      {
+        seq: 30,
+        tick: 30,
+        type: 'agent:collapsed',
+        agentId: 'agent-7',
+        data: { agentName: 'Sela', hunger: 0.01 },
+        reason: 'Sela collapsed from hunger (1%) — needs food',
+      },
+    ],
+  }
+}
+
+/** W3: owns home, carries 3 wood; board costs 2 wood — reachability check. */
+function w3BoardReachabilityFixture() {
+  const home = {
+    id: 'home-mira',
+    kind: 'home',
+    x: 10,
+    y: 10,
+    slots: 1,
+    inventory: emptyInv(),
+  }
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 14,
+    y: 12,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const agent = baseAgent('agent-0', 'Mira', 12, 11, {
+    wallet: 20,
+    homeId: 'home-mira',
+    inventory: { food: 1, wood: 3, stone: 0 },
+    needs: emptyNeeds(0.85),
+  })
+  return {
+    agent,
+    world: baseWorld([home, plaza], [agent], {
+      owners: { 'home-mira': 'agent-0', 'plaza-0': 'commons' },
+      preset: 'wild',
+    }),
+    events: [usedPlaceEvent('agent-0', 'home-mira', 8), usedPlaceEvent('agent-0', 'plaza-0', 12)],
+  }
+}
+
+/** W4: survival regression — starving, food nearby. */
+function w4SurvivalFixture() {
+  return survivalFixture()
+}
+
 async function poolMap(items, limit, fn) {
   const out = new Array(items.length)
   let next = 0
@@ -336,6 +461,7 @@ async function decideOnce(port, system, user, parseMindJson) {
     ok: true,
     action: parsed.intent.kind,
     reasoning: parsed.intent.reason,
+    target: parsed.raw?.target ?? '',
     raw: text.slice(0, 400),
   }
 }
@@ -394,6 +520,10 @@ async function main() {
     const s2fix = affordableHouseFixture()
     const s3fix = survivalFixture()
     const s4fix = foundingWildFixture()
+    const w1fix = w1OwnedStallDreamFixture()
+    const w2fix = w2CollapseInViewFixture()
+    const w3fix = w3BoardReachabilityFixture()
+    const w4fix = w4SurvivalFixture()
 
     const sysNew = buildSystemPrompt('agent-0')
     const sysLegacy = `${sysNew}\n${LEGACY_SAFE_DEFAULT}`
@@ -401,17 +531,37 @@ async function main() {
     const userS2 = buildUserPrompt(s2fix.agent, s2fix.world, s2fix.events)
     const userS3 = buildUserPrompt(s3fix.agent, s3fix.world, s3fix.events)
     const userS4 = buildUserPrompt(s4fix.agent, s4fix.world, s4fix.events)
+    const userW1 = buildUserPrompt(w1fix.agent, w1fix.world, w1fix.events)
+    const userW2 = buildUserPrompt(w2fix.agent, w2fix.world, w2fix.events)
+    const userW3 = buildUserPrompt(w3fix.agent, w3fix.world, w3fix.events)
+    const userW4 = buildUserPrompt(w4fix.agent, w4fix.world, w4fix.events)
+
+    if (!sysNew.includes('Buildable (wood/stone):')) {
+      throw new Error('WORLD_RULES missing generated Buildable menu')
+    }
+    if (!userW2.includes('COLLAPSED')) {
+      throw new Error('W2 fixture observation missing COLLAPSED nearby line')
+    }
 
     const fatTokens = {
       s1: approxTokens(sysNew, userS1),
       s2: approxTokens(sysNew, userS2),
       s3: approxTokens(sysNew, userS3),
       s4: approxTokens(sysNew, userS4),
+      w1: approxTokens(sysNew, userW1),
+      w2: approxTokens(sysNew, userW2),
+      w3: approxTokens(sysNew, userW3),
+      w4: approxTokens(sysNew, userW4),
     }
-    log(`approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4}`)
+    log(
+      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4}`,
+    )
     if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
       throw new Error('legacy safe-default sentence still in production prompt')
     }
+
+    const HELP_ACTIONS = new Set(['give', 'walk', 'socialize', 'eat'])
+    const NON_HOME_COMMISSION = /stall|farm|well|storehouse|forestry|quarry|notice-board|board/i
 
     const allScenarios = [
       { id: 'S1', label: 'slack-discovery', system: sysNew, user: userS1 },
@@ -419,6 +569,10 @@ async function main() {
       { id: 'S2', label: 'affordable-house', system: sysNew, user: userS2 },
       { id: 'S3', label: 'survival-regression', system: sysNew, user: userS3 },
       { id: 'S4', label: 'founding-wild', system: sysNew, user: userS4 },
+      { id: 'W1', label: 'owned-stall-dream', system: sysNew, user: userW1 },
+      { id: 'W2', label: 'collapse-in-view', system: sysNew, user: userW2 },
+      { id: 'W3', label: 'board-reachability', system: sysNew, user: userW3 },
+      { id: 'W4', label: 'survival-regression-wild', system: sysNew, user: userW4 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -443,13 +597,18 @@ async function main() {
       const samples = rows
         .filter((r) => r.ok)
         .slice(0, 3)
-        .map((r) => ({ action: r.action, reasoning: r.reasoning }))
+        .map((r) => ({
+          action: r.action,
+          target: r.target ?? '',
+          reasoning: r.reasoning,
+        }))
       if (samples.length < 3) {
         for (const r of rows) {
           if (samples.length >= 3) break
           if (!samples.some((s) => s.reasoning === r.reasoning && s.action === r.action)) {
             samples.push({
               action: r.action,
+              target: r.target ?? '',
               reasoning: r.reasoning || r.raw || r.error || '',
             })
           }
@@ -484,6 +643,38 @@ async function main() {
       } else if (sc.id === 'S4') {
         expectation = `read-only founding reachability (gather/commission/drink/wander) — not a pass/fail gate`
         pass = true
+      } else if (sc.id === 'W1') {
+        const commissionN = actions.filter((a) => a === 'commission').length
+        const nonHomeN = rows.filter((r) => {
+          if (r.action !== 'commission') return false
+          const t = String(r.target ?? '')
+          if (t && t !== 'home') return true
+          return NON_HOME_COMMISSION.test(r.reasoning) || NON_HOME_COMMISSION.test(r.raw ?? '')
+        }).length
+        expectation = `commission ${commissionN}/${N}; non-home commission ${nonHomeN}/${N} (measurement)`
+        pass = true
+      } else if (sc.id === 'W2') {
+        const giveN = actions.filter((a) => a === 'give').length
+        const helpN = rows.filter((r) => {
+          if (r.action === 'give') return true
+          if (HELP_ACTIONS.has(r.action) && /sela|collaps|help|feed|give|food/i.test(r.reasoning))
+            return true
+          return false
+        }).length
+        const ignoreN = N - helpN
+        expectation = `help ${helpN}/${N}; give ${giveN}/${N}; ignore ${ignoreN}/${N} (measurement)`
+        pass = true
+      } else if (sc.id === 'W3') {
+        const boardN = rows.filter((r) => {
+          const blob = `${r.target ?? ''} ${r.reasoning} ${r.raw ?? ''}`
+          return /notice-board|notice board|\bboard\b/i.test(blob)
+        }).length
+        expectation = `notice-board mention ${boardN}/${N} (advisory measurement)`
+        pass = true
+      } else if (sc.id === 'W4') {
+        const hits = actions.filter((a) => SURVIVAL.has(a)).length
+        pass = hits >= 9
+        expectation = `eat/forage/buy ${hits}/${N} (≥9) HARD GATE`
       }
 
       const result = {
@@ -495,6 +686,7 @@ async function main() {
         verdict: pass ? 'PASS' : 'FAIL',
         rows: rows.map((r) => ({
           action: r.action,
+          target: r.target ?? '',
           reasoning: r.reasoning,
           ok: r.ok,
         })),
@@ -527,8 +719,9 @@ async function main() {
     log(`wrote ${outPath}`)
 
     const s3fail = report.scenarios.S3 && report.scenarios.S3.verdict !== 'PASS'
-    if (s3fail) {
-      log('S3 FAILED — reframe may have broken survival. Do not ship.')
+    const w4fail = report.scenarios.W4 && report.scenarios.W4.verdict !== 'PASS'
+    if (s3fail || w4fail) {
+      log('S3/W4 FAILED — survival regression. Do not ship.')
       await shutdown()
       process.exitCode = 2
       return

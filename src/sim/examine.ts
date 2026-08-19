@@ -1,6 +1,6 @@
 /** World-authored examine results — what a place yields when looked at closely. */
 
-import type { Place, PlaceKind } from './types'
+import type { Good, Place, PlaceKind, WorldState } from './types'
 
 /** Full-rate bed restore vs ground sleep (per tick, before jitter). */
 export const SLEEP_BED_ENERGY = 1 / 420
@@ -10,7 +10,7 @@ export const SLEEP_GROUND_ENERGY = 1 / 700
 /** How far an agent can notice / tag places in an observation. */
 export const PLACE_VIEW_RADIUS = 6
 
-const EXAMINE_BY_KIND: Record<PlaceKind, string> = {
+const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, string> = {
   'notice-board':
     'Anyone may propose (2 coins) — posts your words here for a day. Vote yes or no on an open proposal. Sanction (1 coin) posts a public censure. Claim (15 coins) takes a commons place as yours. Posted rules may be followed or broken.',
   'berry-bush': 'Berries grow here, sparser in lean times.',
@@ -22,11 +22,58 @@ const EXAMINE_BY_KIND: Record<PlaceKind, string> = {
   quarry: 'Stone comes loose here when someone works it.',
   forestry: 'Wood is cut here when someone works it.',
   plaza: 'People gather here; standing near others felt less lonely.',
-  'construction-site': 'A house taking shape — wood and stone go in, walls go up.',
 }
 
-export function examineKnowledgeFor(place: Place): string {
-  return EXAMINE_BY_KIND[place.kind] ?? `A ${place.kind} stands here.`
+export interface ExamineContext {
+  owners?: WorldState['owners']
+  agents?: ReadonlyArray<{ id: string; name: string }>
+}
+
+function ownerPossessive(
+  placeId: string,
+  ctx?: ExamineContext,
+): string | null {
+  const ownerId = ctx?.owners?.[placeId]
+  if (!ownerId || ownerId === 'commons') return null
+  const name = ctx?.agents?.find((a) => a.id === ownerId)?.name
+  return name ? `${name}'s` : null
+}
+
+function remainingBill(needs: Partial<Record<Good, number>> | undefined): string {
+  if (!needs) return 'nothing more'
+  const parts: string[] = []
+  const wood = needs.wood ?? 0
+  const stone = needs.stone ?? 0
+  if (wood > 0) parts.push(`${wood} wood`)
+  if (stone > 0) parts.push(`${stone} stone`)
+  return parts.length > 0 ? parts.join(' and ') : 'nothing more'
+}
+
+export function examineKnowledgeFor(place: Place, ctx?: ExamineContext): string {
+  if (place.kind === 'construction-site') {
+    const target = place.construction?.targetKind ?? 'home'
+    const whose = ownerPossessive(place.id, ctx)
+    const bill = remainingBill(place.construction?.needs)
+    const label = target === 'home' ? 'house' : target
+    if (whose) {
+      return bill === 'nothing more'
+        ? `A ${label} taking shape — ${whose}; materials in, walls going up`
+        : `A ${label} taking shape — ${whose}; still needs ${bill}`
+    }
+    return bill === 'nothing more'
+      ? `A ${label} taking shape — materials in, walls going up`
+      : `A ${label} taking shape — still needs ${bill}`
+  }
+
+  const base =
+    EXAMINE_BY_KIND[place.kind as Exclude<PlaceKind, 'construction-site'>] ??
+    `A ${place.kind} stands here.`
+  const whose = ownerPossessive(place.id, ctx)
+  if (!whose) return base
+  if (place.kind === 'home') {
+    return `A bed under a roof — ${whose}. Sleeping here left me deeply rested.`
+  }
+  return `${base} Belongs to ${whose.replace(/'s$/, '')}.`
 }
 
 export function placeKindLabel(kind: PlaceKind | string): string {

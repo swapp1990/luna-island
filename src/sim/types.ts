@@ -140,6 +140,7 @@ export type ActionKind =
   | 'sanction'
   | 'claim'
   | 'examine'
+  | 'give'
 
 export type VoteChoice = 'yes' | 'no'
 export type ProposalStatus = 'open' | 'passed' | 'failed'
@@ -392,9 +393,10 @@ export interface Intent {
   ruleId?: string
   /**
    * Commissioned place kind (commission). Missing ⇒ home.
+   * May be a non-buildable string — sim refuses with unknown-kind.
    * Additive; old external-intent logs treat as home.
    */
-  placeKind?: PlaceKind
+  placeKind?: PlaceKind | string
 }
 
 /** THE brain seam. UtilityBrain (Phase 1) and LunaBrain (Phase 3, LLM) both implement this. */

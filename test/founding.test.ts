@@ -322,13 +322,12 @@ describe('founding — completed kinds are working places', () => {
     forceComplete(sim, site, 'agent-3')
     expect(site.kind).toBe(kind)
 
+    // Founder owns every commissioned kind (worldgen places stay commons).
+    expect(sim.state.owners[site.id]).toBe('agent-0')
     if (kind === 'home') {
       expect(site.slots).toBe(1)
       expect(site.jobSlots ?? 0).toBe(0)
-      expect(sim.state.owners[site.id]).toBe('agent-0')
       expect(commissioner.homeId).toBe(site.id)
-    } else {
-      expect(sim.state.owners[site.id]).toBe('commons')
     }
 
     if (kind === 'farm') {
@@ -735,7 +734,9 @@ describe('founding trap — fee, cooldown, observation', () => {
     )
 
     agent.wallet = 50
-    sim.state.owners['plaza-0'] = 'agent-0'
+    // Same-kind ownership: owning a home blocks another home (not any place).
+    const home = sim.state.places.find((p) => p.kind === 'home')!
+    sim.state.owners[home.id] = 'agent-0'
     expect(sim.commission('agent-0', 'home')).toBe(false)
     const ev = sim
       .getEvents()

@@ -33,6 +33,7 @@ const ACTION_KINDS = new Set<ActionKind>([
   'sanction',
   'claim',
   'examine',
+  'give',
 ])
 
 export interface MindIntentJson {
@@ -142,6 +143,10 @@ export function parseMindJson(text: string): ParseMindResult {
   } else if (action === 'examine') {
     if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
       return { ok: false, error: 'examine requires target place' }
+    }
+  } else if (action === 'give') {
+    if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
+      return { ok: false, error: 'give requires target villager name' }
     }
   }
   // Build a partial — target resolution needs world
@@ -369,18 +374,40 @@ export function resolveMindIntent(
     }
   }
 
-  // Agent name → socialize near them
+  // Agent name → socialize near them (or give food / walk toward them)
   if (target) {
     const other = world.agents.find(
       (a) => a.name.toLowerCase() === target.toLowerCase(),
     )
     if (other) {
+      if (kind === 'give') {
+        return {
+          kind: 'give',
+          reason,
+          targetAgentId: other.id,
+          targetX: Math.round(other.x),
+          targetY: Math.round(other.y),
+        }
+      }
       return {
         kind: kind === 'idle' || kind === 'walk' ? 'socialize' : kind,
         targetX: Math.round(other.x),
         targetY: Math.round(other.y),
         reason,
+        ...(kind !== 'socialize' && kind !== 'idle' && kind !== 'walk'
+          ? { targetAgentId: other.id }
+          : {}),
       }
+    }
+  }
+
+  if (kind === 'give') {
+    return {
+      kind: 'give',
+      reason,
+      targetAgentId: '',
+      targetX: Math.round(agent.x),
+      targetY: Math.round(agent.y),
     }
   }
 
@@ -457,9 +484,14 @@ export function resolveMindIntent(
   }
 
   if (kind === 'commission') {
-    const buildKind = BUILDABLE_KINDS.has(kindTarget as PlaceKind)
-      ? (kindTarget as PlaceKind)
-      : 'home'
+    // Unknown targets stay unknown — sim refuses with a menu felt line.
+    // Missing target still defaults to home (legacy minds).
+    const buildKind =
+      kindTarget.length === 0
+        ? 'home'
+        : BUILDABLE_KINDS.has(kindTarget as PlaceKind)
+          ? (kindTarget as PlaceKind)
+          : kindTarget
     return { kind: 'commission', reason, placeKind: buildKind }
   }
 

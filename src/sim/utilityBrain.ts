@@ -270,6 +270,7 @@ export const STRATEGIC_ACTION_KINDS: ReadonlySet<ActionKind> = new Set([
   'sanction',
   'claim',
   'examine',
+  'give',
 ])
 
 /**

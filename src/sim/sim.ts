@@ -154,8 +154,36 @@ export const BUILD_RECIPES: Record<
   well: { wood: 2, stone: 16, labourTicks: 360 },
 }
 
+/** Kinds whose sale revenue goes to a private owner (else treasury). */
+const OWNER_REVENUE_KINDS: ReadonlySet<PlaceKind> = new Set(['stall'])
+/** Kinds whose wages are paid from a private owner's wallet (else treasury). */
+const OWNER_PAYROLL_KINDS: ReadonlySet<PlaceKind> = new Set([
+  'farm',
+  'forestry',
+  'quarry',
+  'stall',
+])
+
+/** Collapsed villagers stay visible this far (observation, not use). */
+export const COLLAPSE_VIEW_RADIUS = 12
+/** Adjacent tile distance for give-food (Chebyshev). */
+export const GIVE_ADJACENCY = 1
+
 export function isBuildableKind(kind: string): kind is BuildableKind {
   return Object.prototype.hasOwnProperty.call(BUILD_RECIPES, kind)
+}
+
+/** Compact buildable menu — single source of truth for WORLD_RULES / refusals. */
+export function buildableMenuLine(): string {
+  const parts = (Object.keys(BUILD_RECIPES) as BuildableKind[]).map((k) => {
+    const r = BUILD_RECIPES[k]
+    return `${k} ${r.wood}/${r.stone}`
+  })
+  return `Buildable (wood/stone): ${parts.join(', ')}.`
+}
+
+export function buildableKindList(): string {
+  return (Object.keys(BUILD_RECIPES) as BuildableKind[]).join(', ')
 }
 
 /** Coin party: agent id or the village treasury. */
@@ -2370,12 +2398,21 @@ export class Simulation {
         agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
         return
       }
+      const payee = this.stallRevenueParty(place)
       const paid = this.transferCoins(
         agent.id,
-        'treasury',
+        payee,
         price,
-        `${agent.name} paid ${price} coins for food at the stall`,
-        { kind: 'buy', good: 'food', unitPrice: price },
+        payee === 'treasury'
+          ? `${agent.name} paid ${price} coins for food at the stall`
+          : `${agent.name} paid ${price} coins for food at ${place.id} (to owner)`,
+        {
+          kind: 'buy',
+          good: 'food',
+          unitPrice: price,
+          placeId: place.id,
+          toOwner: payee !== 'treasury',
+        },
       )
       if (paid) {
         this.transferGoods(
@@ -2485,7 +2522,10 @@ export class Simulation {
   }
 
   private completeExamine(agent: AgentState, place: Place): void {
-    const knowledge = examineKnowledgeFor(place)
+    const knowledge = examineKnowledgeFor(place, {
+      owners: this.state.owners,
+      agents: this.state.agents,
+    })
     const label = placeKindLabel(place.kind)
     this.events.append({
       tick: this.state.tick,
@@ -2800,6 +2840,32 @@ export class Simulation {
         reason: ok
           ? `Commissioned a ${buildKind === 'home' ? 'house' : buildKind} site`
           : 'Could not commission',
+      }
+      agent.actionTicks = 0
+      agent.pathIndex = 0
+      agent.actionStartNeeds = cloneNeeds(agent.needs)
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+
+    // Instant give: adjacent agent may feed a collapsed villager (capability, not policy)
+    if (kind === 'give') {
+      const ok = this.giveFoodToCollapsed(agent, intent.targetAgentId ?? '')
+      this.events.append({
+        tick: this.state.tick,
+        type: 'action:start',
+        agentId: agent.id,
+        data: {
+          kind: 'give',
+          target: intent.targetAgentId ?? '',
+          agentName: agent.name,
+          ok,
+        },
+        reason,
+      })
+      agent.action = {
+        kind: 'idle',
+        reason: ok ? 'Gave food to a collapsed neighbor' : 'Could not give food',
       }
       agent.actionTicks = 0
       agent.pathIndex = 0
@@ -3476,6 +3542,12 @@ export class Simulation {
     }
   }
 
+  private otherBuildableKinds(ownedKind: string): string {
+    return (Object.keys(BUILD_RECIPES) as BuildableKind[])
+      .filter((k) => k !== ownedKind)
+      .join(', ')
+  }
+
   private commissionRefusalFelt(
     kind: string,
     why: string,
@@ -3486,17 +3558,23 @@ export class Simulation {
       why === 'cannot-afford'
         ? `${this.homeCommissionFee()}-coin fee, you have ${agent.wallet}`
         : why === 'already-owns'
-          ? 'you already own a place'
+          ? `you already own a ${kind}; you could commission a different kind (${this.otherBuildableKinds(kind)})`
           : why === 'already-commissioning'
             ? 'you already have a construction site'
             : why === 'site-cap'
               ? `${MAX_ACTIVE_SITES} sites already underway`
               : why === 'unknown-kind'
-                ? 'unknown structure'
+                ? `unknown-kind: ${kind} — buildable kinds are ${buildableKindList()}`
                 : why === 'tile-not-buildable'
                   ? 'no buildable ground'
                   : why
+    if (why === 'unknown-kind') {
+      return `could not commission a ${kind} — ${whyText}`
+    }
     if (!recipe) {
+      return `could not commission a ${kind} — ${whyText}`
+    }
+    if (why === 'already-owns') {
       return `could not commission a ${kind} — ${whyText}`
     }
     const wood = agent.inventory.wood ?? 0
@@ -3541,7 +3619,7 @@ export class Simulation {
    */
   commission(
     agentId: string,
-    kind: PlaceKind | BuildableKind = 'home',
+    kind: PlaceKind | BuildableKind | string = 'home',
     x?: number,
     y?: number,
   ): boolean {
@@ -3563,10 +3641,10 @@ export class Simulation {
         `${agent.name} could not afford the ${fee}-coin house fee`,
       )
     }
-    if (kind === 'home' && this.agentOwnsAnyPlace(agentId)) {
+    if (this.agentOwnsKind(agentId, kind)) {
       return fail(
         'already-owns',
-        `${agent.name} already owns a place and cannot commission another home`,
+        `${agent.name} already owns a ${kind} and cannot commission another`,
       )
     }
     const activeSites = this.state.places.filter((p) => p.kind === 'construction-site')
@@ -3675,9 +3753,17 @@ export class Simulation {
     return true
   }
 
-  private agentOwnsAnyPlace(agentId: string): boolean {
-    for (const owner of Object.values(this.state.owners)) {
-      if (owner === agentId) return true
+  /** True when agent already owns a completed (or site) place of this kind. */
+  private agentOwnsKind(agentId: string, kind: BuildableKind): boolean {
+    for (const place of this.state.places) {
+      if (this.state.owners[place.id] !== agentId) continue
+      if (place.kind === kind) return true
+      if (
+        place.kind === 'construction-site' &&
+        (place.construction?.targetKind ?? 'home') === kind
+      ) {
+        return true
+      }
     }
     return false
   }
@@ -3763,7 +3849,7 @@ export class Simulation {
 
   /**
    * Site complete: becomes the commissioned kind; jobs dissolve; ownership deed.
-   * Home stays private to the commissioner; other kinds transfer to commons.
+   * Founder (commissioner) keeps the deed for every kind — worldgen places stay commons.
    */
   private completeConstruction(site: Place): void {
     if (site.kind !== 'construction-site') return
@@ -3794,8 +3880,8 @@ export class Simulation {
 
     this.applyCompletedPlace(site, finishedKind)
 
-    if (finishedKind === 'home') {
-      // Deed: ensure ownership event even if already commissioner
+    // Deed to commissioner for every commissioned kind (firstPrivate semantics).
+    if (commissioner !== 'commons') {
       if (this.state.owners[site.id] !== commissioner) {
         this.transferOwnership(site.id, commissioner, 'built and paid for it')
       } else {
@@ -3812,11 +3898,9 @@ export class Simulation {
           reason: 'built and paid for it',
         })
       }
-      if (commissionerAgent) {
+      if (finishedKind === 'home' && commissionerAgent) {
         commissionerAgent.homeId = site.id
       }
-    } else if (this.state.owners[site.id] !== 'commons') {
-      this.transferOwnership(site.id, 'commons', 'raised for the village')
     }
 
     this.events.append({
@@ -3827,7 +3911,7 @@ export class Simulation {
         placeId: site.id,
         agentName: commissionerAgent?.name,
         kind: finishedKind,
-        firstPrivate: finishedKind === 'home',
+        firstPrivate: commissioner !== 'commons',
       },
       reason: commissionerAgent
         ? `${commissionerAgent.name}'s ${finishedKind === 'home' ? 'house' : finishedKind} is finished`
@@ -4253,8 +4337,59 @@ export class Simulation {
   }
 
   /**
-   * 18:00 wage day: pay wage × min(1, workedTicks/300) from treasury.
-   * Partial if treasury is short. Idle days accumulate toward job vacation.
+   * Give 1 carried food to an adjacent collapsed villager; they consume it and
+   * may recover under the existing hunger threshold.
+   */
+  private giveFoodToCollapsed(giver: AgentState, targetId: string): boolean {
+    const target = this.state.agents.find((a) => a.id === targetId)
+    if (!target || target.id === giver.id) return false
+    if (!target.collapsed) return false
+    if ((giver.inventory.food ?? 0) < 1) return false
+    const dx = Math.abs(Math.round(giver.x) - Math.round(target.x))
+    const dy = Math.abs(Math.round(giver.y) - Math.round(target.y))
+    if (Math.max(dx, dy) > GIVE_ADJACENCY) return false
+
+    const moved = this.transferGoods(
+      { kind: 'agent', id: giver.id },
+      { kind: 'agent', id: target.id },
+      'food',
+      1,
+      `${giver.name} gave 1 food to collapsed ${target.name}`,
+    )
+    if (!moved) return false
+    const eaten = this.consumeGoods(
+      { kind: 'agent', id: target.id },
+      'food',
+      1,
+      `${target.name} ate food given by ${giver.name}`,
+    )
+    if (eaten) {
+      target.needs.hunger = clamp01(target.needs.hunger + EAT_HUNGER_PER_UNIT)
+      this.checkCollapse(target)
+    }
+    return true
+  }
+
+  /** Stall sales: private owner receives revenue; commons stalls pay treasury. */
+  private stallRevenueParty(place: Place): CoinParty {
+    if (!OWNER_REVENUE_KINDS.has(place.kind)) return 'treasury'
+    const owner = this.state.owners[place.id]
+    if (owner && owner !== 'commons') return owner
+    return 'treasury'
+  }
+
+  /** Workplace wages: private owner meets payroll; commons workplaces use treasury. */
+  private wagePayer(place: Place): CoinParty {
+    if (!OWNER_PAYROLL_KINDS.has(place.kind)) return 'treasury'
+    const owner = this.state.owners[place.id]
+    if (owner && owner !== 'commons') return owner
+    return 'treasury'
+  }
+
+  /**
+   * 18:00 wage day: pay wage × min(1, workedTicks/300) from treasury
+   * (or the private owner's wallet for owned productive places).
+   * Partial if payer is short. Idle days accumulate toward job vacation.
    */
   private stepWagePayments(): void {
     for (const agent of this.state.agents) {
@@ -4267,15 +4402,19 @@ export class Simulation {
       const wage = place.wage ?? 0
       const due = Math.floor(wage * Math.min(1, agent.workedTicks / FULL_WAGE_TICKS))
       if (due > 0) {
-        const pay = Math.min(due, this.state.treasury)
-        if (pay > 0) {
+        const payer = this.wagePayer(place)
+        const purse = this.coinBalance(payer)
+        const pay = Math.min(due, purse)
+        if (pay > 0 && payer !== agent.id) {
           const partial = pay < due
+          const payerLabel =
+            payer === 'treasury' ? 'treasury' : 'owner'
           this.transferCoins(
-            'treasury',
+            payer,
             agent.id,
             pay,
             partial
-              ? `${agent.name} earned ${pay} coins (partial; treasury short)`
+              ? `${agent.name} earned ${pay} coins (partial; ${payerLabel} short)`
               : `${agent.name} earned ${pay} coins`,
             {
               kind: 'wage',
@@ -4285,6 +4424,7 @@ export class Simulation {
               partial,
               placeId: place.id,
               placeKind: place.kind,
+              fromOwner: payer !== 'treasury',
             },
           )
         }

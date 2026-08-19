@@ -1,6 +1,10 @@
 import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
 import { toSimTime } from '../sim/time'
-import { proposalTally } from '../sim/sim'
+import {
+  buildableMenuLine,
+  COLLAPSE_VIEW_RADIUS,
+  proposalTally,
+} from '../sim/sim'
 import { personaFor } from './personas'
 import {
   memoryLinesForPrompt,
@@ -8,6 +12,7 @@ import {
   standingGoals,
 } from './memory'
 import {
+  compass8,
   feltConsequenceLines,
   formatNearbyPlaceLine,
   formatUnfamiliarPlaceFact,
@@ -34,33 +39,38 @@ const ACTION_KINDS = [
   'sanction',
   'claim',
   'examine',
+  'give',
 ] as const
 
 const GROUNDING =
   'GROUNDING: Cite only facts present in your observation and memories. Never invent numbers, events, or possessions.'
 
-const WORLD_RULES = `WORLD RULES (scaffold only — you choose what to do):
+function worldRulesText(): string {
+  return `WORLD RULES (scaffold only — you choose what to do):
 - Time: 1 tick = 1 sim minute; day 06:00 start; night 21:00–06:00.
 - Needs 0..1: hunger, energy, social decay over time; critical near 0.
 - One standing agent per tile; using a place = stand on a free slot tile.
 - Structures can be commissioned on buildable ground for wood, stone, and labour.
+- ${buildableMenuLine()}
 - Wood comes from forest tiles; stone from rock tiles (gather).
 - Carried wood or stone can be delivered to a construction site that still needs it.
 - Water can be drunk at the shore; a well restores more.
 - Sleeping without a roof rests you less.
+- An adjacent villager may give food to someone who has collapsed.
 - You feel your needs. The world contains places and things whose workings you learn by living, examining, and listening.
 - You cannot invent new action kinds or break occupancy/economy rules.`
+}
 
 const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object, no markdown:
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
 target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
-propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs.
+propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
 When nothing is urgent, act on who you are.`
 
 export function buildSystemPrompt(agentId: string): string {
   const persona = personaFor(agentId) ?? 'You are a villager on Luna Island.'
-  return `${persona}\n\n${GROUNDING}\n\n${WORLD_RULES}\n\n${RESPONSE_CONTRACT}`
+  return `${persona}\n\n${GROUNDING}\n\n${worldRulesText()}\n\n${RESPONSE_CONTRACT}`
 }
 
 /** Need below this is a warning — slack framing only when all needs are ≥ this. */
@@ -82,33 +92,79 @@ export function needsAreComfortable(needs: {
   )
 }
 
-function nearbyAgents(
+function formatNearbyAgentLine(
   self: AgentState,
-  world: WorldState,
-  radius = 6,
-): Array<{ name: string; sympathy: number; action: string }> {
-  const r2 = radius * radius
-  const out: Array<{ name: string; sympathy: number; action: string; d: number }> =
-    []
+  other: AgentState,
+): string {
+  const sympathy = Math.round((self.sympathy?.[other.id] ?? 0) * 100) / 100
+  if (other.collapsed) {
+    const dx = other.x - self.x
+    const dy = other.y - self.y
+    const dist = Math.max(1, Math.round(Math.hypot(dx, dy)))
+    const dir = compass8(dx, dy)
+    return `${other.name} (COLLAPSED, ${dist} tiles ${dir})`
+  }
+  return `${other.name}(sym ${sympathy}, ${other.action.kind})`
+}
+
+/**
+ * Nearby agents within radius 6 (cap 6), plus any collapsed villager within
+ * COLLAPSE_VIEW_RADIUS — collapse is loud even outside the normal bubble.
+ */
+function nearbyAgentLines(self: AgentState, world: WorldState): string[] {
+  const normalR2 = 6 * 6
+  const collapseR2 = COLLAPSE_VIEW_RADIUS * COLLAPSE_VIEW_RADIUS
+  const normal: Array<{ a: AgentState; d: number }> = []
+  const collapsedExtra: Array<{ a: AgentState; d: number }> = []
   for (const a of world.agents) {
     if (a.id === self.id) continue
     const dx = a.x - self.x
     const dy = a.y - self.y
     const d = dx * dx + dy * dy
-    if (d > r2) continue
-    out.push({
-      name: a.name,
-      sympathy: Math.round((self.sympathy?.[a.id] ?? 0) * 100) / 100,
-      action: a.action.kind,
-      d,
-    })
+    if (a.collapsed && d <= collapseR2) {
+      collapsedExtra.push({ a, d })
+      continue
+    }
+    if (d <= normalR2) normal.push({ a, d })
   }
-  out.sort((a, b) => a.d - b.d)
-  return out.slice(0, 6).map(({ name, sympathy, action }) => ({
-    name,
-    sympathy,
-    action,
-  }))
+  normal.sort((x, y) => x.d - y.d)
+  collapsedExtra.sort((x, y) => x.d - y.d)
+  const picked = new Map<string, AgentState>()
+  for (const row of collapsedExtra) picked.set(row.a.id, row.a)
+  for (const row of normal.slice(0, 6)) {
+    if (!picked.has(row.a.id)) picked.set(row.a.id, row.a)
+  }
+  const ordered = [...picked.values()].sort((a, b) => {
+    const da = (a.x - self.x) ** 2 + (a.y - self.y) ** 2
+    const db = (b.x - self.x) ** 2 + (b.y - self.y) ** 2
+    if (da !== db) return da - db
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  })
+  return ordered.map((a) => formatNearbyAgentLine(self, a))
+}
+
+/** Plaza news: one line naming who is collapsed and roughly where. */
+function collapsePlazaNews(
+  self: AgentState,
+  world: WorldState,
+): string | null {
+  const collapsed = world.agents.filter((a) => a.collapsed && a.id !== self.id)
+  if (collapsed.length === 0) return null
+  const plaza = world.places.find((p) => p.kind === 'plaza')
+  if (!plaza) return null
+  const onPlaza =
+    Math.max(Math.abs(self.x - plaza.x), Math.abs(self.y - plaza.y)) <= 2
+  if (!onPlaza) return null
+  const first = [...collapsed].sort((a, b) =>
+    a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  )[0]!
+  const dx = first.x - plaza.x
+  const dy = first.y - plaza.y
+  const dist = Math.max(1, Math.round(Math.hypot(dx, dy)))
+  const dir = compass8(dx, dy)
+  const extra =
+    collapsed.length > 1 ? ` (+${collapsed.length - 1} more)` : ''
+  return `News: ${first.name} is collapsed ~${dist} tiles ${dir} of the plaza${extra}`
 }
 
 function placeKindLabel(p: Place): string {
@@ -174,7 +230,8 @@ export function buildUserPrompt(
   const job = agent.employedAt
     ? world.places.find((p) => p.id === agent.employedAt)
     : null
-  const near = nearbyAgents(agent, world)
+  const near = nearbyAgentLines(agent, world)
+  const news = collapsePlazaNews(agent, world)
   const inv = agent.inventory ?? { food: 0, wood: 0, stone: 0 }
   const events = recentEvents
     .filter((e) => e.agentId === agent.id)
@@ -203,7 +260,8 @@ export function buildUserPrompt(
     `Job: ${job ? `${placeKindLabel(job)} (${job.wage ?? 0}/day)` : 'unemployed'}`,
     `Current action: ${agent.action.kind}${agent.action.targetPlaceId ? ` @${agent.action.targetPlaceId}` : ''} — ${agent.action.reason}`,
     `Stall stock: ${stock}`,
-    `Nearby: ${near.length ? near.map((n) => `${n.name}(sym ${n.sympathy}, ${n.action})`).join('; ') : 'none'}`,
+    `Nearby: ${near.length ? near.join('; ') : 'none'}`,
+    ...(news ? [news] : []),
     `Nearby places: ${
       nearbyPlaces.length
         ? nearbyPlaces.map(formatNearbyPlaceLine).join('; ')
