@@ -20,6 +20,11 @@ export function resolveWorldPreset(preset?: WorldPreset | string): WorldPreset {
   return 'default'
 }
 
+/** Home coin permit: a market mechanism. 0 on a world with no market. */
+export function commissionFeeCoinsForPreset(preset?: WorldPreset | string): number {
+  return resolveWorldPreset(preset) === 'wild' ? 0 : 30
+}
+
 export interface PresetFacts {
   bushes: number
   bushRegrowInterval: number
@@ -270,6 +275,7 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
       proposals: [],
       rules: [],
       preset: resolved,
+      commissionFeeCoins: commissionFeeCoinsForPreset(resolved),
     }
   }
 
@@ -888,5 +894,6 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
     proposals: [],
     rules: [],
     preset: resolved,
+    commissionFeeCoins: commissionFeeCoinsForPreset(resolved),
   }
 }

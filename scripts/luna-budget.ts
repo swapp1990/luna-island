@@ -3,8 +3,8 @@
  * Used by the Vite plugin and unit tests with injectable clock + persistence.
  */
 
-export const DEFAULT_MAX_PER_HOUR = 60
-export const DEFAULT_MAX_PER_DAY = 300
+export const DEFAULT_MAX_PER_HOUR = 300
+export const DEFAULT_MAX_PER_DAY = 3500
 const HOUR_MS = 60 * 60 * 1000
 
 export type WorkerKind = 'mcp' | 'exec' | 'grok'

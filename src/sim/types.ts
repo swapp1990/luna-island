@@ -350,6 +350,16 @@ export interface WorldState {
    * Missing on older saves → treat as none.
    */
   commissionCooldownUntil?: Record<string, number>
+  /**
+   * Home commission coin fee (v5 additive). Set by worldgen: 30 default/lean,
+   * 0 wild. Missing on older saves → 30, or 0 when preset is wild.
+   */
+  commissionFeeCoins?: number
+  /**
+   * Last commission-refusal why per agent (v5 additive). Used so the cooldown
+   * arms only on a second consecutive identical reason. Missing → none.
+   */
+  commissionLastRefusal?: Record<string, string>
 }
 
 export interface SimEvent {

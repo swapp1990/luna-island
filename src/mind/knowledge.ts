@@ -75,6 +75,13 @@ export function feltLineFromEvent(e: SimEvent, agentId: string): string | null {
     }
   }
 
+  if (e.type === 'construction:commission-refused') {
+    const kind = String(e.data?.kind ?? 'home')
+    const why = String(e.data?.why ?? '')
+    if (why) return `could not commission a ${kind} — ${why}`
+    return `could not commission a ${kind}`
+  }
+
   if (e.type === 'coins:transfer') {
     const amount = num(e.data?.amount)
     if (amount == null || amount <= 0) return null

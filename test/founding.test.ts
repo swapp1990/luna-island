@@ -16,6 +16,9 @@ import { presetFacts } from '../src/sim/worldgen'
 import type { BuildableKind, ExternalIntentMeta, Place } from '../src/sim/types'
 import { emptyInventory } from '../src/sim/types'
 import { STRATEGIC_ACTION_KINDS } from '../src/sim/utilityBrain'
+import { feltConsequenceLines } from '../src/mind/knowledge'
+import { buildUserPrompt } from '../src/mind/prompt'
+import { commissionFeeCoinsForPreset } from '../src/sim/worldgen'
 
 const meta = (reasoning: string): ExternalIntentMeta => ({
   reasoning,
@@ -39,6 +42,8 @@ function parkOthers(sim: Simulation, keepId: string): void {
     a.lastDecideTick = sim.state.tick
     a.action = { kind: 'idle', reason: 'parked' }
     a.actionTicks = 0
+    a.employedAt = null
+    a.workPhase = null
   }
 }
 
@@ -233,7 +238,7 @@ describe('founding — commission refusals and caps', () => {
     expect(sim.getEvents().some((e) => e.data?.why === 'site-cap')).toBe(true)
   })
 
-  it('failed commission then silent rejects for a day, then allowed again', () => {
+  it('one refusal is free; two identical refusals arm ~240 ticks of silence', () => {
     const sim = new Simulation(42)
     const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
     agent.wallet = 0
@@ -246,6 +251,9 @@ describe('founding — commission refusals and caps', () => {
             e.agentId === 'agent-0' &&
             e.data?.kind === 'commission',
         )
+    const refused = () =>
+      sim.getEvents().filter((e) => e.type === 'construction:commission-refused')
+
     sim.postExternalIntent(
       'agent-0',
       { kind: 'commission', reason: 'I will build a house.' },
@@ -254,6 +262,10 @@ describe('founding — commission refusals and caps', () => {
     sim.advanceTicks(1)
     expect(starts()).toHaveLength(1)
     expect(starts()[0]!.data?.ok).toBe(false)
+    expect(refused()).toHaveLength(1)
+    expect(sim.state.commissionCooldownUntil?.['agent-0'] ?? 0).toBeLessThanOrEqual(
+      sim.state.tick,
+    )
 
     sim.postExternalIntent(
       'agent-0',
@@ -261,16 +273,29 @@ describe('founding — commission refusals and caps', () => {
       meta('Trying again.'),
     )
     sim.advanceTicks(1)
-    expect(starts()).toHaveLength(1)
+    expect(starts()).toHaveLength(2)
+    expect(refused()).toHaveLength(2)
+    const until = sim.state.commissionCooldownUntil?.['agent-0'] ?? 0
+    expect(until).toBe(sim.state.tick + COMMISSION_COOLDOWN_TICKS)
+    expect(COMMISSION_COOLDOWN_TICKS).toBe(240)
+
+    sim.postExternalIntent(
+      'agent-0',
+      { kind: 'commission', reason: 'Spam.' },
+      meta('Spam.'),
+    )
+    sim.advanceTicks(1)
+    expect(starts()).toHaveLength(2)
+    expect(refused()).toHaveLength(2)
 
     sim.advanceTicks(COMMISSION_COOLDOWN_TICKS)
     sim.postExternalIntent(
       'agent-0',
-      { kind: 'commission', reason: 'A day later.' },
-      meta('A day later.'),
+      { kind: 'commission', reason: 'After the silence.' },
+      meta('After the silence.'),
     )
     sim.advanceTicks(1)
-    expect(starts().length).toBeGreaterThanOrEqual(2)
+    expect(starts().length).toBeGreaterThanOrEqual(3)
   })
 })
 
@@ -628,5 +653,218 @@ describe('founding — mind boundary', () => {
     expect(STRATEGIC_ACTION_KINDS.has('gather')).toBe(false)
     expect(STRATEGIC_ACTION_KINDS.has('deliver')).toBe(false)
     expect(STRATEGIC_ACTION_KINDS.has('commission')).toBe(true)
+  })
+})
+
+describe('founding trap — fee, cooldown, observation', () => {
+  it('wild fee is 0; home commissions with 0 coins when materials are present', () => {
+    expect(commissionFeeCoinsForPreset('wild')).toBe(0)
+    const sim = new Simulation(42, { preset: 'wild' })
+    expect(sim.state.commissionFeeCoins).toBe(0)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    agent.wallet = 0
+    agent.inventory.wood = 12
+    agent.inventory.stone = 6
+    const plot = findOpenPlot(sim)
+    expect(sim.commission('agent-0', 'home', plot.x, plot.y)).toBe(true)
+    const site = sim.state.places.find((p) => p.kind === 'construction-site')!
+    expect(site.construction?.targetKind).toBe('home')
+    expect(agent.wallet).toBe(0)
+    expect(
+      sim.getEvents().some((e) => e.type === 'construction:commissioned'),
+    ).toBe(true)
+  })
+
+  it('default fee is 30 and refuses a home at 29 coins', () => {
+    expect(commissionFeeCoinsForPreset('default')).toBe(30)
+    expect(commissionFeeCoinsForPreset('lean')).toBe(30)
+    const sim = new Simulation(42)
+    expect(sim.state.commissionFeeCoins).toBe(30)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    agent.wallet = 29
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    const ev = sim.getEvents().find((e) => e.type === 'construction:commission-refused')
+    expect(ev?.data?.why).toBe('cannot-afford')
+    expect(sim.state.places.some((p) => p.kind === 'construction-site')).toBe(false)
+    expect(agent.wallet).toBe(29)
+  })
+
+  it('one refusal does not arm cooldown; two consecutive identical refusals do for ~240 ticks', () => {
+    const sim = new Simulation(42)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    agent.wallet = 0
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    expect(sim.state.commissionCooldownUntil?.['agent-0'] ?? 0).toBeLessThanOrEqual(
+      sim.state.tick,
+    )
+    expect(sim.state.commissionLastRefusal?.['agent-0']).toBe('cannot-afford')
+
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    const until = sim.state.commissionCooldownUntil?.['agent-0'] ?? 0
+    expect(until).toBe(sim.state.tick + 240)
+    expect(COMMISSION_COOLDOWN_TICKS).toBe(240)
+
+    const refusedBefore = sim
+      .getEvents()
+      .filter((e) => e.type === 'construction:commission-refused').length
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    expect(
+      sim.getEvents().filter((e) => e.type === 'construction:commission-refused'),
+    ).toHaveLength(refusedBefore)
+
+    sim.advanceTicks(239)
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    expect(
+      sim.getEvents().filter((e) => e.type === 'construction:commission-refused'),
+    ).toHaveLength(refusedBefore)
+    sim.advanceTicks(1)
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    expect(
+      sim.getEvents().filter((e) => e.type === 'construction:commission-refused').length,
+    ).toBeGreaterThan(refusedBefore)
+  })
+
+  it('a different refusal reason resets the consecutive streak', () => {
+    const sim = new Simulation(42)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    agent.wallet = 0
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    expect(sim.state.commissionLastRefusal?.['agent-0']).toBe('cannot-afford')
+    expect(sim.state.commissionCooldownUntil?.['agent-0'] ?? 0).toBeLessThanOrEqual(
+      sim.state.tick,
+    )
+
+    agent.wallet = 50
+    sim.state.owners['plaza-0'] = 'agent-0'
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    const ev = sim
+      .getEvents()
+      .filter((e) => e.type === 'construction:commission-refused')
+      .at(-1)
+    expect(ev?.data?.why).toBe('already-owns')
+    expect(sim.state.commissionLastRefusal?.['agent-0']).toBe('already-owns')
+    expect(sim.state.commissionCooldownUntil?.['agent-0'] ?? 0).toBeLessThanOrEqual(
+      sim.state.tick,
+    )
+
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    expect(sim.state.commissionCooldownUntil?.['agent-0']).toBe(
+      sim.state.tick + COMMISSION_COOLDOWN_TICKS,
+    )
+  })
+
+  it('refusal reason reaches the agent observation lines', () => {
+    const sim = new Simulation(42)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    agent.wallet = 0
+    agent.inventory.wood = 0
+    agent.inventory.stone = 0
+    expect(sim.commission('agent-0', 'home')).toBe(false)
+    const felt = feltConsequenceLines('agent-0', sim.getEvents(), sim.state.tick)
+    expect(felt.some((l) => l.includes('could not commission a home'))).toBe(true)
+    expect(felt.some((l) => l.includes('12 wood 6 stone needed, you carry 0'))).toBe(
+      true,
+    )
+    const user = buildUserPrompt(agent, sim.state, sim.getEvents(), sim.state.mindNoteLog)
+    expect(user).toContain('could not commission a home')
+    expect(user).toContain('12 wood 6 stone needed, you carry 0')
+    expect(user).toMatch(/Recently felt:[\s\S]*could not commission a home/)
+  })
+})
+
+describe('founding smoke — wild notice-board (mock brain)', () => {
+  it('gathers 2 wood, commissions a notice-board at 0 coins, delivers, and the board completes', () => {
+    const sim = new Simulation(42, { preset: 'wild' })
+    expect(sim.state.commissionFeeCoins).toBe(0)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    parkOthers(sim, agent.id)
+    agent.wallet = 0
+    agent.collapsed = false
+    agent.inventory.wood = 0
+    agent.inventory.stone = 0
+
+    const forest = findForest(sim)
+    agent.x = forest.x
+    agent.y = forest.y
+    sim.postExternalIntent(
+      'agent-0',
+      { kind: 'gather', targetX: forest.x, targetY: forest.y, reason: 'chop' },
+      meta('chop'),
+    )
+    for (let i = 0; i < GATHER_TICKS_PER_UNIT * 2 + 4; i++) {
+      parkOthers(sim, agent.id)
+      sim.advanceTicks(1)
+    }
+    expect(agent.inventory.wood).toBeGreaterThanOrEqual(2)
+
+    const plot = findOpenPlot(sim)
+    expect(sim.commission('agent-0', 'notice-board', plot.x, plot.y)).toBe(true)
+    const site = sim.state.places.find((p) => p.kind === 'construction-site')!
+    expect(site.construction?.targetKind).toBe('notice-board')
+    expect(site.construction?.needs).toEqual({ wood: 2 })
+    expect(agent.wallet).toBe(0)
+
+    agent.x = site.x
+    agent.y = site.y
+    agent.action = { kind: 'idle', reason: 'at site' }
+    agent.lastDecideTick = sim.state.tick
+    sim.postExternalIntent(
+      'agent-0',
+      {
+        kind: 'deliver',
+        targetPlaceId: site.id,
+        targetX: site.x,
+        targetY: site.y,
+        reason: 'drop wood',
+      },
+      meta('drop wood'),
+    )
+    for (let i = 0; i < 4; i++) {
+      parkOthers(sim, agent.id)
+      sim.advanceTicks(1)
+    }
+    expect(site.inventory.wood).toBeGreaterThanOrEqual(2)
+    expect(site.construction?.needs.wood ?? 0).toBeLessThanOrEqual(2)
+
+    const worker = sim.state.agents.find((a) => a.id === 'agent-3')!
+    parkOthers(sim, worker.id)
+    worker.collapsed = false
+    worker.employedAt = null
+    worker.workPhase = null
+    worker.needs.hunger = 0.9
+    worker.needs.energy = 0.9
+    worker.needs.social = 0.9
+    worker.x = site.x
+    worker.y = site.y
+    worker.lastDecideTick = sim.state.tick
+    const workIntent = {
+      kind: 'work' as const,
+      targetPlaceId: site.id,
+      targetX: site.x,
+      targetY: site.y,
+      reason: 'raise the board',
+    }
+    sim.postExternalIntent('agent-3', workIntent, meta('raise the board'))
+    const labour = BUILD_RECIPES['notice-board'].labourTicks
+    for (let i = 0; i < labour + 30; i++) {
+      if (site.kind !== 'construction-site') break
+      parkOthers(sim, worker.id)
+      worker.collapsed = false
+      worker.x = site.x
+      worker.y = site.y
+      if (worker.action.kind !== 'work') {
+        worker.employedAt = null
+        worker.workPhase = null
+        worker.lastDecideTick = sim.state.tick
+        sim.postExternalIntent('agent-3', workIntent, meta('raise the board'))
+      } else {
+        worker.lastDecideTick = sim.state.tick
+      }
+      sim.advanceTicks(1)
+    }
+    expect(site.kind).toBe('notice-board')
+    expect(site.construction).toBeUndefined()
+    expect(site.slots).toBe(2)
+    expect(sim.state.places.some((p) => p.kind === 'notice-board')).toBe(true)
   })
 })

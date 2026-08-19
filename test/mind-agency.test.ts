@@ -232,8 +232,8 @@ describe('examine from adjacency (P3-14 A3)', () => {
   })
 })
 
-describe('commission cooldown (P3-14 A3)', () => {
-  it('failed attempt then silent rejects for a day, then allowed again', () => {
+describe('commission cooldown (P3-14 A3 / P4-3)', () => {
+  it('second identical refusal arms ~240 ticks of silent rejects, then allowed again', () => {
     const sim = new Simulation(42)
     const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
     agent.wallet = 0
@@ -263,16 +263,24 @@ describe('commission cooldown (P3-14 A3)', () => {
       meta('Trying again.'),
     )
     sim.advanceTicks(1)
-    expect(starts()).toHaveLength(1)
+    expect(starts()).toHaveLength(2)
+
+    sim.postExternalIntent(
+      'agent-0',
+      { kind: 'commission', reason: 'Spam.' },
+      meta('Spam.'),
+    )
+    sim.advanceTicks(1)
+    expect(starts()).toHaveLength(2)
 
     sim.advanceTicks(COMMISSION_COOLDOWN_TICKS)
     sim.postExternalIntent(
       'agent-0',
-      { kind: 'commission', reason: 'A day later.' },
-      meta('A day later.'),
+      { kind: 'commission', reason: 'After the silence.' },
+      meta('After the silence.'),
     )
     sim.advanceTicks(1)
-    expect(starts().length).toBeGreaterThanOrEqual(2)
+    expect(starts().length).toBeGreaterThanOrEqual(3)
   })
 })
 

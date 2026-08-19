@@ -86,10 +86,10 @@ const FULL_WAGE_TICKS = 300
 const HAUL_SIZE = 5
 /** Max food units per market visit. */
 const BUY_MAX_UNITS = 2
-/** Commission cost (agent → treasury) for a private home. */
+/** Default/lean home coin permit. Wild worlds set commissionFeeCoins = 0. */
 const COMMISSION_COST = 30
-/** Failed commission → next attempt accepted after this many ticks (~1 sim-day). */
-export const COMMISSION_COOLDOWN_TICKS = 1440
+/** Failed commission → silence after a second consecutive identical refusal. */
+export const COMMISSION_COOLDOWN_TICKS = 240
 /** Island-wide cap on simultaneous construction-sites. */
 export const MAX_ACTIVE_SITES = 3
 /** Ticks per wood/stone unit gathered from raw terrain. */
@@ -408,6 +408,15 @@ function deepCloneWorld(state: WorldState): WorldState {
     proposals: cloneProposals(state.proposals),
     rules: cloneRules(state.rules),
     commissionCooldownUntil: { ...(state.commissionCooldownUntil ?? {}) },
+    commissionFeeCoins:
+      typeof state.commissionFeeCoins === 'number'
+        ? state.commissionFeeCoins
+        : state.preset === 'wild'
+          ? 0
+          : COMMISSION_COST,
+    ...(state.commissionLastRefusal
+      ? { commissionLastRefusal: { ...state.commissionLastRefusal } }
+      : {}),
   }
 }
 
@@ -421,6 +430,9 @@ export function ensureMindFields(state: WorldState): void {
   if (!state.rules) state.rules = []
   if (!state.preset) state.preset = 'default'
   if (!state.commissionCooldownUntil) state.commissionCooldownUntil = {}
+  if (typeof state.commissionFeeCoins !== 'number') {
+    state.commissionFeeCoins = state.preset === 'wild' ? 0 : COMMISSION_COST
+  }
 }
 
 /** Ordered pair key for sympathy streak / met maps. */
@@ -3438,6 +3450,12 @@ export class Simulation {
     }
   }
 
+  private homeCommissionFee(): number {
+    const n = this.state.commissionFeeCoins
+    if (typeof n === 'number' && Number.isFinite(n) && n >= 0) return n
+    return this.state.preset === 'wild' ? 0 : COMMISSION_COST
+  }
+
   private isCommissionCooling(agentId: string): boolean {
     const until = this.state.commissionCooldownUntil?.[agentId] ?? 0
     return this.state.tick < until
@@ -3449,19 +3467,69 @@ export class Simulation {
       this.state.tick + COMMISSION_COOLDOWN_TICKS
   }
 
+  private clearCommissionStreak(agentId: string): void {
+    if (this.state.commissionLastRefusal) {
+      delete this.state.commissionLastRefusal[agentId]
+    }
+    if (this.state.commissionCooldownUntil) {
+      delete this.state.commissionCooldownUntil[agentId]
+    }
+  }
+
+  private commissionRefusalFelt(
+    kind: string,
+    why: string,
+    agent: AgentState,
+    recipe: { wood: number; stone: number } | null,
+  ): string {
+    const whyText =
+      why === 'cannot-afford'
+        ? `${this.homeCommissionFee()}-coin fee, you have ${agent.wallet}`
+        : why === 'already-owns'
+          ? 'you already own a place'
+          : why === 'already-commissioning'
+            ? 'you already have a construction site'
+            : why === 'site-cap'
+              ? `${MAX_ACTIVE_SITES} sites already underway`
+              : why === 'unknown-kind'
+                ? 'unknown structure'
+                : why === 'tile-not-buildable'
+                  ? 'no buildable ground'
+                  : why
+    if (!recipe) {
+      return `could not commission a ${kind} — ${whyText}`
+    }
+    const wood = agent.inventory.wood ?? 0
+    const stone = agent.inventory.stone ?? 0
+    const carry = wood === 0 && stone === 0 ? '0' : `${wood} wood ${stone} stone`
+    return `could not commission a ${kind} — ${whyText}; ${recipe.wood} wood ${recipe.stone} stone needed, you carry ${carry}`
+  }
+
   private refuseCommission(
     agentId: string,
     agentName: string,
     kind: string,
     why: string,
     reason: string,
+    agent: AgentState,
   ): void {
-    this.armCommissionCooldown(agentId)
+    const last = this.state.commissionLastRefusal?.[agentId]
+    if (last === why) {
+      this.armCommissionCooldown(agentId)
+      if (this.state.commissionLastRefusal) {
+        delete this.state.commissionLastRefusal[agentId]
+      }
+    } else {
+      if (!this.state.commissionLastRefusal) this.state.commissionLastRefusal = {}
+      this.state.commissionLastRefusal[agentId] = why
+    }
+    const recipe = isBuildableKind(kind) ? BUILD_RECIPES[kind] : null
+    const felt = this.commissionRefusalFelt(kind, why, agent, recipe)
     this.events.append({
       tick: this.state.tick,
       type: 'construction:commission-refused',
       agentId,
-      data: { agentName, kind, why },
+      data: { agentName, kind, why, felt },
       reason,
     })
   }
@@ -3481,17 +3549,18 @@ export class Simulation {
     const agent = this.state.agents.find((a) => a.id === agentId)
     if (!agent) return false
     const fail = (why: string, reason: string): false => {
-      this.refuseCommission(agentId, agent.name, String(kind), why, reason)
+      this.refuseCommission(agentId, agent.name, String(kind), why, reason, agent)
       return false
     }
     if (!isBuildableKind(kind)) {
       return fail('unknown-kind', `${agent.name} cannot commission an unknown structure`)
     }
     const recipe = BUILD_RECIPES[kind]
-    if (kind === 'home' && agent.wallet < COMMISSION_COST) {
+    const fee = kind === 'home' ? this.homeCommissionFee() : 0
+    if (kind === 'home' && fee > 0 && agent.wallet < fee) {
       return fail(
         'cannot-afford',
-        `${agent.name} could not afford the ${COMMISSION_COST}-coin house fee`,
+        `${agent.name} could not afford the ${fee}-coin house fee`,
       )
     }
     if (kind === 'home' && this.agentOwnsAnyPlace(agentId)) {
@@ -3535,18 +3604,18 @@ export class Simulation {
       }
     }
 
-    if (kind === 'home') {
+    if (kind === 'home' && fee > 0) {
       const paid = this.transferCoins(
         agentId,
         'treasury',
-        COMMISSION_COST,
-        `${agent.name} paid ${COMMISSION_COST} coins to commission a house`,
+        fee,
+        `${agent.name} paid ${fee} coins to commission a house`,
         { kind: 'commission', good: 'home' },
       )
       if (!paid) {
         return fail(
           'cannot-afford',
-          `${agent.name} could not pay the ${COMMISSION_COST}-coin house fee`,
+          `${agent.name} could not pay the ${fee}-coin house fee`,
         )
       }
     }
@@ -3588,6 +3657,7 @@ export class Simulation {
     }
     this.state.places.push(site)
     this.state.owners[siteId] = agentId
+    this.clearCommissionStreak(agentId)
     this.events.append({
       tick: this.state.tick,
       type: 'construction:commissioned',
@@ -3596,7 +3666,7 @@ export class Simulation {
         agentName: agent.name,
         placeId: siteId,
         kind,
-        cost: kind === 'home' ? COMMISSION_COST : 0,
+        cost: fee,
         x: plot.x,
         y: plot.y,
       },
