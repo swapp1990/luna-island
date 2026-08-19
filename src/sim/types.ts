@@ -15,6 +15,11 @@ export interface Tile {
   elevation: number
   /** Village footpath — agents prefer these (lower path cost). */
   path?: boolean
+  /**
+   * Remaining gatherable units on forest (wood) / rock (stone).
+   * Missing ⇒ full stock. Additive; old saves treat as full.
+   */
+  gatherStock?: number
 }
 
 export type PlaceKind =
@@ -28,6 +33,17 @@ export type PlaceKind =
   | 'quarry'
   | 'storehouse'
   | 'construction-site'
+  | 'notice-board'
+
+/** Place kinds the engine can raise from a construction site. */
+export type BuildableKind =
+  | 'home'
+  | 'farm'
+  | 'well'
+  | 'stall'
+  | 'storehouse'
+  | 'forestry'
+  | 'quarry'
   | 'notice-board'
 
 /** Extensible goods union. */
@@ -52,6 +68,11 @@ export interface ConstructionSpec {
   progress: number
   /** Worked ticks accrued toward the next 1-unit material consume. */
   consumeTicks: number
+  /**
+   * Kind this site becomes at progress ≥ 1.
+   * Missing on older saves ⇒ home.
+   */
+  targetKind?: BuildableKind
 }
 
 /** Place owner: a villager id or the village commons. */
@@ -109,6 +130,7 @@ export type ActionKind =
   | 'socialize'
   | 'wander'
   | 'forage'
+  | 'gather'
   | 'work'
   | 'buy'
   | 'commission'
@@ -357,6 +379,11 @@ export interface Intent {
   targetAgentId?: string
   /** Optional rule id cited by a sanction (display only). */
   ruleId?: string
+  /**
+   * Commissioned place kind (commission). Missing ⇒ home.
+   * Additive; old external-intent logs treat as home.
+   */
+  placeKind?: PlaceKind
 }
 
 /** THE brain seam. UtilityBrain (Phase 1) and LunaBrain (Phase 3, LLM) both implement this. */

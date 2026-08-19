@@ -4,7 +4,8 @@ import type { Place, PlaceKind } from './types'
 
 /** Full-rate bed restore vs ground sleep (per tick, before jitter). */
 export const SLEEP_BED_ENERGY = 1 / 420
-export const SLEEP_GROUND_ENERGY = 1 / 840
+/** Sleeping rough: 60% of bed rate (1/700 ÷ 1/420). */
+export const SLEEP_GROUND_ENERGY = 1 / 700
 
 /** How far an agent can notice / tag places in an observation. */
 export const PLACE_VIEW_RADIUS = 6

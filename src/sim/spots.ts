@@ -475,6 +475,141 @@ export function extendPathTo(
   agent.pathIndex = 0
 }
 
+function tileAt(world: WorldState, x: number, y: number) {
+  if (x < 0 || y < 0 || x >= world.width || y >= world.height) return undefined
+  if (!world.tiles || world.tiles.length === 0) return undefined
+  return world.tiles[y * world.width + x]
+}
+
+/** Cardinal neighbor is water (shoreline drink). */
+export function adjacentToWater(world: WorldState, x: number, y: number): boolean {
+  for (const [dx, dy] of CARDINAL) {
+    const t = tileAt(world, x + dx, y + dy)
+    if (t?.kind === 'water') return true
+  }
+  return false
+}
+
+/** Another standing agent already occupies this tile. */
+export function standingOccupied(
+  world: WorldState,
+  x: number,
+  y: number,
+  exceptId?: string,
+): boolean {
+  const tx = Math.round(x)
+  const ty = Math.round(y)
+  for (const a of world.agents) {
+    if (exceptId && a.id === exceptId) continue
+    if (!isStanding(a)) continue
+    if (Math.round(a.x) === tx && Math.round(a.y) === ty) return true
+  }
+  return false
+}
+
+/**
+ * Forest/rock tile at (x,y) or a Chebyshev-1 neighbor.
+ * Used while gathering: stand on or beside the resource.
+ */
+export function gatherResourceAt(
+  world: WorldState,
+  x: number,
+  y: number,
+): { x: number; y: number } | null {
+  const tx = Math.round(x)
+  const ty = Math.round(y)
+  const self = tileAt(world, tx, ty)
+  if (self && (self.kind === 'forest' || self.kind === 'rock')) {
+    return { x: tx, y: ty }
+  }
+  let best: { x: number; y: number } | null = null
+  for (const [dx, dy] of NEIGHBOR8) {
+    if (dx === 0 && dy === 0) continue
+    const n = tileAt(world, tx + dx, ty + dy)
+    if (!n || (n.kind !== 'forest' && n.kind !== 'rock')) continue
+    if (!best || n.x < best.x || (n.x === best.x && n.y < best.y)) {
+      best = { x: n.x, y: n.y }
+    }
+  }
+  return best
+}
+
+/** Walkable unoccupied stand tile on or adjacent to a resource tile. */
+export function pickGatherStand(
+  world: WorldState,
+  agent: AgentState,
+  rx: number,
+  ry: number,
+): { x: number; y: number } | null {
+  const cands: Array<{ x: number; y: number; d: number }> = []
+  const consider = (x: number, y: number) => {
+    if (!isWalkable(world, x, y)) return
+    if (standingOccupied(world, x, y, agent.id)) return
+    const d = (x - agent.x) ** 2 + (y - agent.y) ** 2
+    cands.push({ x, y, d })
+  }
+  consider(rx, ry)
+  for (const [dx, dy] of NEIGHBOR8) {
+    if (dx === 0 && dy === 0) continue
+    consider(rx + dx, ry + dy)
+  }
+  cands.sort((a, b) => a.d - b.d || a.x - b.x || a.y - b.y)
+  return cands[0] ?? null
+}
+
+/** Nearest walkable water-adjacent tile (shoreline drink). */
+export function pickShoreStand(
+  world: WorldState,
+  agent: AgentState,
+): { x: number; y: number } | null {
+  if (!world.tiles || world.tiles.length === 0) return null
+  const ax = Math.round(agent.x)
+  const ay = Math.round(agent.y)
+  let best: { x: number; y: number; d: number } | null = null
+  for (let y = 0; y < world.height; y++) {
+    for (let x = 0; x < world.width; x++) {
+      if (!isWalkable(world, x, y)) continue
+      if (!adjacentToWater(world, x, y)) continue
+      if (standingOccupied(world, x, y, agent.id)) continue
+      const d = (x - ax) ** 2 + (y - ay) ** 2
+      if (
+        !best ||
+        d < best.d - 1e-12 ||
+        (Math.abs(d - best.d) <= 1e-12 && (x < best.x || (x === best.x && y < best.y)))
+      ) {
+        best = { x, y, d }
+      }
+    }
+  }
+  return best ? { x: best.x, y: best.y } : null
+}
+
+/** Nearest forest/rock tile that still has gather stock. */
+export function pickGatherResource(
+  world: WorldState,
+  agent: AgentState,
+  prefer?: 'forest' | 'rock',
+): { x: number; y: number } | null {
+  if (!world.tiles || world.tiles.length === 0) return null
+  const ax = Math.round(agent.x)
+  const ay = Math.round(agent.y)
+  let best: { x: number; y: number; d: number } | null = null
+  for (const t of world.tiles) {
+    if (t.kind !== 'forest' && t.kind !== 'rock') continue
+    if (prefer && t.kind !== prefer) continue
+    if (t.gatherStock !== undefined && t.gatherStock <= 0) continue
+    const d = (t.x - ax) ** 2 + (t.y - ay) ** 2
+    if (
+      !best ||
+      d < best.d - 1e-12 ||
+      (Math.abs(d - best.d) <= 1e-12 && (t.x < best.x || (t.x === best.x && t.y < best.y)))
+    ) {
+      best = { x: t.x, y: t.y, d }
+    }
+  }
+  return best ? { x: best.x, y: best.y } : null
+}
+
 /** Nearest other agent within SOCIAL_PROXIMITY (render/UI only). */
 export function nearestAgentWithin(
   agent: AgentState,

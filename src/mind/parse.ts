@@ -1,5 +1,18 @@
-import type { ActionKind, AgentState, Intent, Place, VoteChoice, WorldState } from '../sim/types'
-import { pickPlaceForAgent, placeHasCapacity } from '../sim/spots'
+import type {
+  ActionKind,
+  AgentState,
+  Intent,
+  Place,
+  PlaceKind,
+  VoteChoice,
+  WorldState,
+} from '../sim/types'
+import {
+  pickGatherResource,
+  pickPlaceForAgent,
+  pickShoreStand,
+  placeHasCapacity,
+} from '../sim/spots'
 
 const ACTION_KINDS = new Set<ActionKind>([
   'idle',
@@ -10,6 +23,7 @@ const ACTION_KINDS = new Set<ActionKind>([
   'socialize',
   'wander',
   'forage',
+  'gather',
   'work',
   'buy',
   'commission',
@@ -283,6 +297,17 @@ const PLACE_KINDS = new Set([
   'notice-board',
 ])
 
+const BUILDABLE_KINDS = new Set<PlaceKind>([
+  'home',
+  'farm',
+  'well',
+  'stall',
+  'storehouse',
+  'forestry',
+  'quarry',
+  'notice-board',
+])
+
 const PLACE_ALIASES: Record<string, string> = {
   board: 'notice-board',
   'notice board': 'notice-board',
@@ -403,6 +428,7 @@ export function resolveMindIntent(
       case 'wander':
       case 'walk':
       case 'commission':
+      case 'gather':
         break
       case 'claim':
         if (target && !PLACE_KINDS.has(kindTarget)) {
@@ -428,12 +454,42 @@ export function resolveMindIntent(
     if (alt.place) place = alt.place
   }
 
-  if (kind === 'wander' || kind === 'idle' || kind === 'eat' || kind === 'commission') {
+  if (kind === 'commission') {
+    const buildKind = BUILDABLE_KINDS.has(kindTarget as PlaceKind)
+      ? (kindTarget as PlaceKind)
+      : 'home'
+    return { kind: 'commission', reason, placeKind: buildKind }
+  }
+
+  if (kind === 'gather') {
+    const prefer =
+      kindTarget === 'forest' || target?.toLowerCase() === 'forest'
+        ? 'forest'
+        : kindTarget === 'rock' ||
+            target?.toLowerCase() === 'rock' ||
+            target?.toLowerCase() === 'stone'
+          ? 'rock'
+          : undefined
+    const tile = pickGatherResource(world, agent, prefer)
+    if (!tile) {
+      return { kind: 'wander', reason, targetX: Math.round(agent.x), targetY: Math.round(agent.y) }
+    }
+    return { kind: 'gather', reason, targetX: tile.x, targetY: tile.y }
+  }
+
+  if (kind === 'wander' || kind === 'idle' || kind === 'eat') {
     return {
       kind,
       reason,
       targetX: kind === 'wander' ? Math.round(agent.x + 1) : undefined,
       targetY: kind === 'wander' ? Math.round(agent.y) : undefined,
+    }
+  }
+
+  if (kind === 'drink' && !place) {
+    const shore = pickShoreStand(world, agent)
+    if (shore) {
+      return { kind: 'drink', reason, targetX: shore.x, targetY: shore.y }
     }
   }
 

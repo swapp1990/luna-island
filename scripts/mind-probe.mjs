@@ -80,9 +80,9 @@ function baseWorld(places, agents, extra = {}) {
   return {
     seed: 1,
     tick: extra.tick ?? 240,
-    width: 32,
-    height: 32,
-    tiles: [],
+    width: extra.width ?? 32,
+    height: extra.height ?? 32,
+    tiles: extra.tiles ?? [],
     places,
     agents,
     preset: 'default',
@@ -173,6 +173,52 @@ function affordableHouseFixture() {
       usedPlaceEvent('agent-0', 'home-0', 8),
       usedPlaceEvent('agent-0', 'plaza-0', 12),
     ],
+  }
+}
+
+function foundingWildFixture() {
+  const width = 32
+  const height = 32
+  const tiles = []
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let kind = 'grass'
+      let walkable = true
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) {
+        kind = 'water'
+        walkable = false
+      } else if (x === 12 && y === 10) {
+        kind = 'forest'
+      } else if (x === 10 && y === 12) {
+        kind = 'rock'
+        walkable = false
+      }
+      tiles.push({ x, y, kind, walkable, elevation: 0.5 })
+    }
+  }
+  const agent = baseAgent('agent-0', 'Mira', 10, 10, {
+    wallet: 8,
+    employedAt: null,
+    needs: emptyNeeds(0.8),
+    homeId: 'home-0',
+  })
+  const home = {
+    id: 'home-0',
+    kind: 'home',
+    x: 8,
+    y: 8,
+    slots: 1,
+    inventory: emptyInv(),
+  }
+  return {
+    agent,
+    world: baseWorld([home], [agent], {
+      owners: { 'home-0': 'commons' },
+      tiles,
+      width,
+      height,
+    }),
+    events: [],
   }
 }
 
@@ -337,19 +383,22 @@ async function main() {
     const s1fix = slackDiscoveryFixture()
     const s2fix = affordableHouseFixture()
     const s3fix = survivalFixture()
+    const s4fix = foundingWildFixture()
 
     const sysNew = buildSystemPrompt('agent-0')
     const sysLegacy = `${sysNew}\n${LEGACY_SAFE_DEFAULT}`
     const userS1 = buildUserPrompt(s1fix.agent, s1fix.world, s1fix.events)
     const userS2 = buildUserPrompt(s2fix.agent, s2fix.world, s2fix.events)
     const userS3 = buildUserPrompt(s3fix.agent, s3fix.world, s3fix.events)
+    const userS4 = buildUserPrompt(s4fix.agent, s4fix.world, s4fix.events)
 
     const fatTokens = {
       s1: approxTokens(sysNew, userS1),
       s2: approxTokens(sysNew, userS2),
       s3: approxTokens(sysNew, userS3),
+      s4: approxTokens(sysNew, userS4),
     }
-    log(`approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3}`)
+    log(`approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4}`)
     if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
       throw new Error('legacy safe-default sentence still in production prompt')
     }
@@ -359,6 +408,7 @@ async function main() {
       { id: 'S1L', label: 'legacy-contrast', system: sysLegacy, user: userS1 },
       { id: 'S2', label: 'affordable-house', system: sysNew, user: userS2 },
       { id: 'S3', label: 'survival-regression', system: sysNew, user: userS3 },
+      { id: 'S4', label: 'founding-wild', system: sysNew, user: userS4 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -421,6 +471,9 @@ async function main() {
         const hits = actions.filter((a) => SURVIVAL.has(a)).length
         pass = hits >= 9
         expectation = `eat/forage/buy ${hits}/${N} (≥9)`
+      } else if (sc.id === 'S4') {
+        expectation = `read-only founding reachability (gather/commission/drink/wander) — not a pass/fail gate`
+        pass = true
       }
 
       const result = {

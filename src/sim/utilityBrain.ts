@@ -1,6 +1,8 @@
 import {
+  pickGatherResource,
   pickOpenWorkplace,
   pickPlaceForAgent,
+  pickShoreStand,
   pickSocialSlot,
   placeHasCapacity,
 } from './spots'
@@ -126,7 +128,11 @@ function workReason(place: Place): string {
   if (place.kind === 'stall') return `Working the market stall`
   if (place.kind === 'forestry') return `Working the forestry camp — chopping wood`
   if (place.kind === 'quarry') return `Working the quarry — cutting stone`
-  if (place.kind === 'construction-site') return `Building a house`
+  if (place.kind === 'construction-site') {
+    const k = place.construction?.targetKind
+    if (k && k !== 'home') return `Building a ${k}`
+    return `Building a house`
+  }
   return `Working at the ${place.kind}`
 }
 
@@ -334,7 +340,7 @@ export class UtilityBrain implements Brain {
       }
     }
 
-    // drink → nearest well with free capacity (daytime only)
+    // drink → nearest well with free capacity (daytime only); else shoreline
     if (isDaytime(hour)) {
       const { place: well } = pickPlaceForAgent(world, self, 'well')
       if (well) {
@@ -349,6 +355,50 @@ export class UtilityBrain implements Brain {
             reason: drinkReason(self.needs.energy),
           },
         })
+      } else {
+        const shore = pickShoreStand(world, self)
+        if (shore) {
+          const score = (1 - self.needs.energy) * 0.28
+          candidates.push({
+            score,
+            intent: {
+              kind: 'drink',
+              targetX: shore.x,
+              targetY: shore.y,
+              reason: `Need a drink (energy ${pct(self.needs.energy)}%) — heading to the shore`,
+            },
+          })
+        }
+      }
+    }
+
+    // gather → raw terrain when no workplace produces that good
+    if (!self.collapsed) {
+      const hasForestry = world.places.some((p) => p.kind === 'forestry')
+      const hasQuarry = world.places.some((p) => p.kind === 'quarry')
+      if (!hasForestry || !hasQuarry) {
+        const want: 'forest' | 'rock' | undefined = hasForestry
+          ? 'rock'
+          : hasQuarry
+            ? 'forest'
+            : undefined
+        const tile = pickGatherResource(world, self, want)
+        if (tile) {
+          const terrain = world.tiles[tile.y * world.width + tile.x]
+          const good = terrain?.kind === 'rock' ? 'stone' : 'wood'
+          const carry = self.inventory[good] ?? 0
+          if (carry < 3) {
+            candidates.push({
+              score: 0.16,
+              intent: {
+                kind: 'gather',
+                targetX: tile.x,
+                targetY: tile.y,
+                reason: `Gathering ${good} from the ${terrain?.kind ?? 'ground'}`,
+              },
+            })
+          }
+        }
       }
     }
 
@@ -494,6 +544,12 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
       if (agentOwnsAnyPlace(world, self.id)) return 0
       return 0.72
     }
+    case 'gather': {
+      const wood = self.inventory?.wood ?? 0
+      const stone = self.inventory?.stone ?? 0
+      if (wood >= 3 && stone >= 3) return 0
+      return 0.16
+    }
     case 'drink':
       if (!isDaytime(hour)) return -1
       return (1 - self.needs.energy) * 0.35
@@ -543,6 +599,7 @@ export function urgentDifferentNeed(agent: AgentState): boolean {
       return hunger < 0.15 || social < 0.15
     case 'eat':
     case 'forage':
+    case 'gather':
     case 'buy':
       return energy < 0.15 || social < 0.15
     case 'work':

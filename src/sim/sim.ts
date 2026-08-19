@@ -6,13 +6,17 @@ import { fnv1aHex, stableStringify } from './stableStringify'
 import { spawnAgents } from './spawn'
 import { findPath, isWalkable, pathStillValid } from './pathfind'
 import {
+  adjacentToWater,
   bedSlotForAgent,
   canRestoreThisTick,
   extendPathTo,
+  gatherResourceAt,
   isSlotTile,
   isStanding,
   isWalking,
   nudgeCandidates,
+  pickGatherStand,
+  pickShoreStand,
   reserveSpot,
   SOCIAL_PROXIMITY_SQ,
   workplaceHasOpenJob,
@@ -28,6 +32,7 @@ import {
 import type {
   AgentMindStats,
   AgentState,
+  BuildableKind,
   EconomyStat,
   ExternalIntentMeta,
   ExternalIntentRecord,
@@ -39,6 +44,7 @@ import type {
   Needs,
   OwnerId,
   Place,
+  PlaceKind,
   Proposal,
   Rng,
   Rule,
@@ -84,6 +90,18 @@ const BUY_MAX_UNITS = 2
 const COMMISSION_COST = 30
 /** Failed commission → next attempt accepted after this many ticks (~1 sim-day). */
 export const COMMISSION_COOLDOWN_TICKS = 1440
+/** Island-wide cap on simultaneous construction-sites. */
+export const MAX_ACTIVE_SITES = 3
+/** Ticks per wood/stone unit gathered from raw terrain. */
+export const GATHER_TICKS_PER_UNIT = 12
+/** Max carried units of one gathered good. */
+export const GATHER_CARRY_CAP = 3
+/** Bounded yield per forest/rock tile (same cap as a berry bush). */
+export const GATHER_STOCK_MAX = 6
+/** Energy restored per drink tick at a well (improvement). */
+export const DRINK_WELL_ENERGY = 0.02
+/** Energy restored per drink tick at the shore (weaker than a well). */
+export const DRINK_SHORE_ENERGY = 0.01
 /** Examine succeeds from this euclidean distance — observation, not use. */
 const EXAMINE_RANGE = 1.5
 const EXAMINE_RANGE_SQ = EXAMINE_RANGE * EXAMINE_RANGE
@@ -112,12 +130,33 @@ const LUNA_MIND_IDS: ReadonlySet<string> = new Set([
   'agent-8',
   'agent-11',
 ])
-/** Worked ticks to complete a house (progress += 1/N per tick). */
+/** Worked ticks to complete a house (progress += 1/N per tick). Fallback for old sites. */
 const CONSTRUCTION_TICKS = 900
 /** Worked ticks between each 1-unit material consume on a site. */
 const CONSTRUCTION_CONSUME_EVERY = 50
-/** Default construction bill for a home. */
-const HOME_BILL: Partial<Record<Good, number>> = { wood: 12, stone: 6 }
+/**
+ * Construction bills — world physics, not policy.
+ * Wood / stone / labour ticks to raise a structure. notice-board is the
+ * cheapest so posting a rule is reachable on day one; home / storehouse /
+ * stall sit in the middle; well is stone-heavy.
+ */
+export const BUILD_RECIPES: Record<
+  BuildableKind,
+  { wood: number; stone: number; labourTicks: number }
+> = {
+  'notice-board': { wood: 2, stone: 0, labourTicks: 60 },
+  farm: { wood: 6, stone: 4, labourTicks: 600 },
+  forestry: { wood: 8, stone: 2, labourTicks: 480 },
+  quarry: { wood: 4, stone: 8, labourTicks: 480 },
+  stall: { wood: 8, stone: 4, labourTicks: 480 },
+  storehouse: { wood: 10, stone: 8, labourTicks: 720 },
+  home: { wood: 12, stone: 6, labourTicks: 900 },
+  well: { wood: 2, stone: 16, labourTicks: 360 },
+}
+
+export function isBuildableKind(kind: string): kind is BuildableKind {
+  return Object.prototype.hasOwnProperty.call(BUILD_RECIPES, kind)
+}
 
 /** Coin party: agent id or the village treasury. */
 export type CoinParty = string | 'treasury'
@@ -202,6 +241,7 @@ function deepClonePlace(p: Place): Place {
           needs: { ...p.construction.needs },
           progress: p.construction.progress,
           consumeTicks: p.construction.consumeTicks,
+          targetKind: p.construction.targetKind,
         }
       : undefined,
   }
@@ -219,6 +259,7 @@ function cloneIntent(intent: Intent): Intent {
     choice: intent.choice,
     targetAgentId: intent.targetAgentId,
     ruleId: intent.ruleId,
+    placeKind: intent.placeKind,
   }
 }
 
@@ -1539,7 +1580,7 @@ export class Simulation {
     // Hunger decay always
     agent.needs.hunger = clamp01(agent.needs.hunger - (1 / 960) * j.hunger)
 
-    // Energy: decay awake; bed slots full rate, anywhere else half rate
+    // Energy: decay awake; bed slots full rate, anywhere else 60% rate
     if (sleeping) {
       const rate = onBed ? SLEEP_BED_ENERGY : SLEEP_GROUND_ENERGY
       agent.needs.energy = clamp01(agent.needs.energy + rate * j.energy)
@@ -1802,22 +1843,29 @@ export class Simulation {
     }
 
     if (kind === 'drink') {
-      // Collapse blocks drink restore
-      if (onSlot && !agent.collapsed) {
-        agent.needs.energy = clamp01(agent.needs.energy + 0.02)
+      const atWell = onSlot && place?.kind === 'well'
+      const atShore =
+        !atWell &&
+        isStanding(agent) &&
+        adjacentToWater(this.state, Math.round(agent.x), Math.round(agent.y))
+      if ((atWell || atShore) && !agent.collapsed) {
+        const rate = atWell ? DRINK_WELL_ENERGY : DRINK_SHORE_ENERGY
+        agent.needs.energy = clamp01(agent.needs.energy + rate)
       }
       if (agent.actionTicks >= DRINK_DURATION) {
         const before = agent.actionStartNeeds.energy
         const after = agent.needs.energy
         const delta = Math.round((after - before) * 100)
+        const where = atWell ? 'the well' : atShore ? 'the shore' : 'nowhere useful'
         this.endAction(
           agent,
-          `drank from the well, energy ${pct(before)}%→${pct(after)}%`,
+          `drank from ${where}, energy ${pct(before)}%→${pct(after)}%`,
           {
             need: 'energy',
             before,
             after,
-            felt: `drank at the well: energy ${delta >= 0 ? '+' : ''}${delta}%`,
+            source: atWell ? 'well' : atShore ? 'shore' : 'none',
+            felt: `drank at ${where}: energy ${delta >= 0 ? '+' : ''}${delta}%`,
           },
         )
         agent.action = { kind: 'idle', reason: 'Refreshed' }
@@ -1827,8 +1875,13 @@ export class Simulation {
       return
     }
 
+    if (kind === 'gather') {
+      this.performGather(agent)
+      return
+    }
+
     if (kind === 'sleep') {
-      // energy regen applied in stepNeeds (bed full rate, ground half)
+      // energy regen applied in stepNeeds (bed full rate, ground 60%)
       const curr = toSimTime(this.state.tick)
       const prev = toSimTime(Math.max(0, this.state.tick - 1))
       const crossed7am =
@@ -2065,7 +2118,10 @@ export class Simulation {
       return
     }
 
-    c.progress += 1 / CONSTRUCTION_TICKS
+    const labour =
+      BUILD_RECIPES[(c.targetKind ?? 'home') as BuildableKind]?.labourTicks ??
+      CONSTRUCTION_TICKS
+    c.progress += 1 / labour
     const totalNeed =
       (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
     if (totalNeed > 0) {
@@ -2512,6 +2568,7 @@ export class Simulation {
       (agent.action.kind === 'eat' ||
         agent.action.kind === 'drink' ||
         agent.action.kind === 'forage' ||
+        agent.action.kind === 'gather' ||
         agent.action.kind === 'buy') &&
       this.isPerforming(agent) &&
       agent.actionTicks > 0 &&
@@ -2688,24 +2745,30 @@ export class Simulation {
 
     // Instant commission: world rule, then idle
     if (kind === 'commission') {
+      const buildKind = intent.placeKind ?? 'home'
       if (this.isCommissionCooling(agent.id)) {
         agent.action = {
           kind: 'idle',
-          reason: 'Could not commission a house',
+          reason: 'Could not commission',
         }
         agent.actionTicks = 0
         agent.pathIndex = 0
         agent.actionStartNeeds = cloneNeeds(agent.needs)
         return
       }
-      const ok = this.commission(agent.id, 'home')
+      const ok = this.commission(
+        agent.id,
+        buildKind,
+        intent.targetX,
+        intent.targetY,
+      )
       this.events.append({
         tick: this.state.tick,
         type: 'action:start',
         agentId: agent.id,
         data: {
           kind: 'commission',
-          target: 'home',
+          target: buildKind,
           agentName: agent.name,
           ok,
         },
@@ -2713,7 +2776,9 @@ export class Simulation {
       })
       agent.action = {
         kind: 'idle',
-        reason: ok ? 'Commissioned a house site' : 'Could not commission a house',
+        reason: ok
+          ? `Commissioned a ${buildKind === 'home' ? 'house' : buildKind} site`
+          : 'Could not commission',
       }
       agent.actionTicks = 0
       agent.pathIndex = 0
@@ -2769,6 +2834,54 @@ export class Simulation {
       agent.actionStartNeeds = cloneNeeds(agent.needs)
       agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       return
+    }
+
+    // Shore drink: no well (or not targeting one) → stand on a water-adjacent tile
+    if (kind === 'drink' && (!place || place.kind !== 'well')) {
+      place = undefined
+      targetPlaceId = undefined
+      const sx = tx !== undefined ? Math.round(tx) : NaN
+      const sy = ty !== undefined ? Math.round(ty) : NaN
+      const shoreOk =
+        Number.isFinite(sx) &&
+        Number.isFinite(sy) &&
+        isWalkable(this.state, sx, sy) &&
+        adjacentToWater(this.state, sx, sy)
+      if (!shoreOk) {
+        const shore = pickShoreStand(this.state, agent)
+        if (shore) {
+          tx = shore.x
+          ty = shore.y
+        }
+      }
+    }
+
+    // Gather: walk to a free stand tile on/adjacent to the resource tile
+    if (kind === 'gather') {
+      targetPlaceId = undefined
+      place = undefined
+      let rx = tx !== undefined ? Math.round(tx) : NaN
+      let ry = ty !== undefined ? Math.round(ty) : NaN
+      const res = Number.isFinite(rx) && Number.isFinite(ry)
+        ? gatherResourceAt(this.state, rx, ry)
+        : gatherResourceAt(this.state, Math.round(agent.x), Math.round(agent.y))
+      if (res) {
+        rx = res.x
+        ry = res.y
+      }
+      const stand =
+        Number.isFinite(rx) && Number.isFinite(ry)
+          ? pickGatherStand(this.state, agent, rx, ry)
+          : null
+      if (stand) {
+        tx = stand.x
+        ty = stand.y
+      } else {
+        kind = 'wander'
+        reason = 'Nothing to gather here — wandering'
+        tx = Math.round(agent.x)
+        ty = Math.round(agent.y)
+      }
     }
 
     // Bed slots: shared-home residents sleep on distinct deterministic tiles
@@ -2902,6 +3015,7 @@ export class Simulation {
     this.stepAgents()
     this.stepSympathy()
     this.stepBushRegrowth()
+    this.stepTerrainRegrowth()
     this.stepProduction()
 
     if (this.state.tick % SNAPSHOT_INTERVAL === 0) {
@@ -3306,35 +3420,111 @@ export class Simulation {
       this.state.tick + COMMISSION_COOLDOWN_TICKS
   }
 
+  private refuseCommission(
+    agentId: string,
+    agentName: string,
+    kind: string,
+    why: string,
+    reason: string,
+  ): void {
+    this.armCommissionCooldown(agentId)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:commission-refused',
+      agentId,
+      data: { agentName, kind, why },
+      reason,
+    })
+  }
+
   /**
-   * Commission a private home: free village-ring plot + wallet ≥ cost →
-   * 30 coins agent→treasury, create construction-site owned by commissioner.
+   * Commission a structure: recipe bill + optional home coin fee →
+   * create a construction-site. At most one active site per commissioner
+   * and MAX_ACTIVE_SITES island-wide.
    */
-  commission(agentId: string, kind: 'home'): boolean {
-    if (kind !== 'home') return false
+  commission(
+    agentId: string,
+    kind: PlaceKind | BuildableKind = 'home',
+    x?: number,
+    y?: number,
+  ): boolean {
     if (this.isCommissionCooling(agentId)) return false
     const agent = this.state.agents.find((a) => a.id === agentId)
     if (!agent) return false
-    const fail = (): false => {
-      this.armCommissionCooldown(agentId)
+    const fail = (why: string, reason: string): false => {
+      this.refuseCommission(agentId, agent.name, String(kind), why, reason)
       return false
     }
-    if (agent.wallet < COMMISSION_COST) return fail()
-    // One commission per agent (already owns a private place)
-    if (this.agentOwnsAnyPlace(agentId)) return fail()
-    // One active site island-wide — materials + labor can't feed a build spree
-    if (this.state.places.some((p) => p.kind === 'construction-site')) return fail()
-    const plot = this.findFreeHomePlot()
-    if (!plot) return fail()
+    if (!isBuildableKind(kind)) {
+      return fail('unknown-kind', `${agent.name} cannot commission an unknown structure`)
+    }
+    const recipe = BUILD_RECIPES[kind]
+    if (kind === 'home' && agent.wallet < COMMISSION_COST) {
+      return fail(
+        'cannot-afford',
+        `${agent.name} could not afford the ${COMMISSION_COST}-coin house fee`,
+      )
+    }
+    if (kind === 'home' && this.agentOwnsAnyPlace(agentId)) {
+      return fail(
+        'already-owns',
+        `${agent.name} already owns a place and cannot commission another home`,
+      )
+    }
+    const activeSites = this.state.places.filter((p) => p.kind === 'construction-site')
+    if (activeSites.some((p) => this.state.owners[p.id] === agentId)) {
+      return fail(
+        'already-commissioning',
+        `${agent.name} already has an active construction site`,
+      )
+    }
+    if (activeSites.length >= MAX_ACTIVE_SITES) {
+      return fail(
+        'site-cap',
+        `${agent.name} could not commission — ${MAX_ACTIVE_SITES} sites already underway`,
+      )
+    }
 
-    const paid = this.transferCoins(
-      agentId,
-      'treasury',
-      COMMISSION_COST,
-      `${agent.name} paid ${COMMISSION_COST} coins to commission a house`,
-      { kind: 'commission', good: 'home' },
-    )
-    if (!paid) return fail()
+    let plot: { x: number; y: number } | null = null
+    if (x !== undefined && y !== undefined) {
+      const px = Math.round(x)
+      const py = Math.round(y)
+      if (!this.isBuildablePlot(px, py)) {
+        return fail(
+          'tile-not-buildable',
+          `${agent.name} cannot build a ${kind} at ${px},${py}`,
+        )
+      }
+      plot = { x: px, y: py }
+    } else {
+      plot = this.findFreeHomePlot()
+      if (!plot) {
+        return fail(
+          'tile-not-buildable',
+          `${agent.name} found no buildable ground for a ${kind}`,
+        )
+      }
+    }
+
+    if (kind === 'home') {
+      const paid = this.transferCoins(
+        agentId,
+        'treasury',
+        COMMISSION_COST,
+        `${agent.name} paid ${COMMISSION_COST} coins to commission a house`,
+        { kind: 'commission', good: 'home' },
+      )
+      if (!paid) {
+        return fail(
+          'cannot-afford',
+          `${agent.name} could not pay the ${COMMISSION_COST}-coin house fee`,
+        )
+      }
+    }
+
+    const needs: Partial<Record<Good, number>> = {}
+    if (recipe.wood > 0) needs.wood = recipe.wood
+    if (recipe.stone > 0) needs.stone = recipe.stone
 
     const siteId = `site-${agentId}-${this.state.tick}`
     const site: Place = {
@@ -3347,9 +3537,10 @@ export class Simulation {
       wage: 7,
       inventory: emptyInventory(),
       construction: {
-        needs: { ...HOME_BILL },
+        needs,
         progress: 0,
         consumeTicks: 0,
+        targetKind: kind,
       },
     }
     // Clear 3×3 pad so the site is walkable
@@ -3375,12 +3566,12 @@ export class Simulation {
       data: {
         agentName: agent.name,
         placeId: siteId,
-        kind: 'home',
-        cost: COMMISSION_COST,
+        kind,
+        cost: kind === 'home' ? COMMISSION_COST : 0,
         x: plot.x,
         y: plot.y,
       },
-      reason: `${agent.name} commissioned a house`,
+      reason: `${agent.name} commissioned a ${kind === 'home' ? 'house' : kind}`,
     })
     return true
   }
@@ -3446,11 +3637,40 @@ export class Simulation {
     return { x: candidates[0]![0], y: candidates[0]![1] }
   }
 
+  /** True when (x,y) can host a construction pad (walkable land, spaced). */
+  private isBuildablePlot(hx: number, hy: number): boolean {
+    if (hx < 1 || hy < 1 || hx >= this.state.width - 1 || hy >= this.state.height - 1) {
+      return false
+    }
+    const t = this.state.tiles[hy * this.state.width + hx]
+    if (!t || !t.walkable || t.kind === 'water' || t.kind === 'rock') return false
+    const chebyshev = (ax: number, ay: number, bx: number, by: number) =>
+      Math.max(Math.abs(ax - bx), Math.abs(ay - by))
+    for (const p of this.state.places) {
+      if (
+        p.kind === 'home' ||
+        p.kind === 'construction-site' ||
+        p.kind === 'farm' ||
+        p.kind === 'stall' ||
+        p.kind === 'storehouse' ||
+        p.kind === 'plaza' ||
+        p.kind === 'well'
+      ) {
+        if (chebyshev(p.x, p.y, hx, hy) < 2) return false
+      }
+    }
+    return true
+  }
+
   /**
-   * Site complete: becomes a private home; jobs dissolve; ownership deed.
+   * Site complete: becomes the commissioned kind; jobs dissolve; ownership deed.
+   * Home stays private to the commissioner; other kinds transfer to commons.
    */
   private completeConstruction(site: Place): void {
     if (site.kind !== 'construction-site') return
+    const finishedKind: BuildableKind = isBuildableKind(site.construction?.targetKind ?? 'home')
+      ? (site.construction!.targetKind ?? 'home')
+      : 'home'
     const commissioner = this.state.owners[site.id] ?? 'commons'
     const commissionerAgent =
       commissioner !== 'commons'
@@ -3460,9 +3680,12 @@ export class Simulation {
     // Vacate all employees at this site
     for (const a of this.state.agents) {
       if (a.employedAt === site.id) {
-        this.vacateJob(a, `${a.name}'s construction job finished — house complete`)
+        this.vacateJob(
+          a,
+          `${a.name}'s construction job finished — ${finishedKind} complete`,
+        )
         if (a.action.kind === 'work' && a.action.targetPlaceId === site.id) {
-          a.action = { kind: 'idle', reason: 'House finished' }
+          a.action = { kind: 'idle', reason: `${finishedKind} finished` }
           a.actionTicks = 0
           a.workPhase = null
           this.clearHaul(a)
@@ -3470,36 +3693,31 @@ export class Simulation {
       }
     }
 
-    site.kind = 'home'
-    site.slots = 1
-    site.jobSlots = 0
-    site.wage = undefined
-    site.construction = undefined
-    site.growth = undefined
-    site.inventory = emptyInventory()
+    this.applyCompletedPlace(site, finishedKind)
 
-    // Deed: ensure ownership event even if already commissioner
-    if (this.state.owners[site.id] !== commissioner) {
-      this.transferOwnership(site.id, commissioner, 'built and paid for it')
-    } else {
-      // Re-emit transfer for the private-property moment (commons → owner if needed)
-      const prev = this.state.owners[site.id]
-      this.events.append({
-        tick: this.state.tick,
-        type: 'ownership:transfer',
-        data: {
-          placeId: site.id,
-          from: prev,
-          to: commissioner,
-          // Additive: marks the first private-property deed for highlight reels
-          firstPrivate: true,
-        },
-        reason: 'built and paid for it',
-      })
-    }
-
-    if (commissionerAgent) {
-      commissionerAgent.homeId = site.id
+    if (finishedKind === 'home') {
+      // Deed: ensure ownership event even if already commissioner
+      if (this.state.owners[site.id] !== commissioner) {
+        this.transferOwnership(site.id, commissioner, 'built and paid for it')
+      } else {
+        const prev = this.state.owners[site.id]
+        this.events.append({
+          tick: this.state.tick,
+          type: 'ownership:transfer',
+          data: {
+            placeId: site.id,
+            from: prev,
+            to: commissioner,
+            firstPrivate: true,
+          },
+          reason: 'built and paid for it',
+        })
+      }
+      if (commissionerAgent) {
+        commissionerAgent.homeId = site.id
+      }
+    } else if (this.state.owners[site.id] !== 'commons') {
+      this.transferOwnership(site.id, 'commons', 'raised for the village')
     }
 
     this.events.append({
@@ -3509,13 +3727,169 @@ export class Simulation {
       data: {
         placeId: site.id,
         agentName: commissionerAgent?.name,
-        kind: 'home',
-        firstPrivate: true,
+        kind: finishedKind,
+        firstPrivate: finishedKind === 'home',
       },
       reason: commissionerAgent
-        ? `${commissionerAgent.name}'s house is finished`
-        : `House ${site.id} is finished`,
+        ? `${commissionerAgent.name}'s ${finishedKind === 'home' ? 'house' : finishedKind} is finished`
+        : `${finishedKind} ${site.id} is finished`,
     })
+  }
+
+  /**
+   * Initialise a finished site so it matches a worldgen-spawned place of that kind.
+   */
+  private applyCompletedPlace(site: Place, kind: BuildableKind): void {
+    site.kind = kind
+    site.construction = undefined
+    site.growth = undefined
+    site.inventory = emptyInventory()
+    site.production = undefined
+    site.price = undefined
+    site.jobSlots = 0
+    site.wage = undefined
+
+    const facts = presetFacts(this.state.preset)
+    switch (kind) {
+      case 'home':
+        site.slots = 1
+        break
+      case 'farm':
+        site.slots = 2
+        site.jobSlots = 2
+        site.wage = 6
+        site.growth = 0
+        site.production = {
+          good: 'food',
+          cycleWorkedTicks: 1440,
+          yield: facts.farmYield,
+        }
+        break
+      case 'forestry':
+        site.slots = 2
+        site.jobSlots = 2
+        site.wage = 6
+        site.growth = 0
+        site.production = { good: 'wood', cycleWorkedTicks: 960, yield: 6 }
+        break
+      case 'quarry':
+        site.slots = 2
+        site.jobSlots = 2
+        site.wage = 6
+        site.growth = 0
+        site.production = { good: 'stone', cycleWorkedTicks: 1200, yield: 6 }
+        break
+      case 'stall':
+        site.slots = 4
+        site.jobSlots = 1
+        site.wage = 5
+        site.price = { food: 11 }
+        break
+      case 'storehouse':
+        site.slots = 2
+        break
+      case 'well':
+        site.slots = 2
+        break
+      case 'notice-board':
+        site.slots = 2
+        break
+    }
+  }
+
+  /** Gather wood (forest) / stone (rock) from the tile the agent is on or beside. */
+  private performGather(agent: AgentState): void {
+    const res = gatherResourceAt(
+      this.state,
+      Math.round(agent.x),
+      Math.round(agent.y),
+    )
+    if (!res) {
+      this.endAction(agent, 'nothing to gather here')
+      agent.action = { kind: 'idle', reason: 'No wood or stone here' }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+    const tile = this.state.tiles[res.y * this.state.width + res.x]!
+    const good: Good = tile.kind === 'forest' ? 'wood' : 'stone'
+    const stock = tile.gatherStock ?? GATHER_STOCK_MAX
+    const carry = agent.inventory[good] ?? 0
+
+    if (
+      agent.actionTicks > 0 &&
+      agent.actionTicks % GATHER_TICKS_PER_UNIT === 0 &&
+      stock > 0 &&
+      carry < GATHER_CARRY_CAP
+    ) {
+      tile.gatherStock = stock - 1
+      agent.inventory[good] = carry + 1
+      this.events.append({
+        tick: this.state.tick,
+        type: 'goods:produced',
+        agentId: agent.id,
+        data: {
+          good,
+          amount: 1,
+          placeId: `terrain:${tile.x},${tile.y}`,
+          placeKind: tile.kind,
+          tileX: tile.x,
+          tileY: tile.y,
+          terrain: tile.kind,
+          source: 'gather',
+        },
+        reason: `${agent.name} gathered 1 ${good}`,
+      })
+    }
+
+    const left = tile.gatherStock ?? GATHER_STOCK_MAX
+    const held = agent.inventory[good] ?? 0
+    if (held >= GATHER_CARRY_CAP || left <= 0) {
+      this.endAction(
+        agent,
+        held >= GATHER_CARRY_CAP
+          ? `gathered a full load (${held} ${good})`
+          : `${tile.kind} depleted, carrying ${held} ${good}`,
+      )
+      agent.action = {
+        kind: 'idle',
+        reason:
+          held >= GATHER_CARRY_CAP
+            ? `Arms full of ${good}`
+            : `${tile.kind} picked clean`,
+      }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+    }
+  }
+
+  /**
+   * World process: forest/rock tiles recover 1 gather unit on the same
+   * interval as berry-bush regrowth, capped at GATHER_STOCK_MAX.
+   */
+  private stepTerrainRegrowth(): void {
+    if (this.state.tick <= 0) return
+    const interval = presetFacts(this.state.preset).bushRegrowInterval
+    if (this.state.tick % interval !== 0) return
+    for (const tile of this.state.tiles) {
+      if (tile.kind !== 'forest' && tile.kind !== 'rock') continue
+      const stock = tile.gatherStock
+      if (stock === undefined || stock >= GATHER_STOCK_MAX) continue
+      tile.gatherStock = stock + 1
+      const good: Good = tile.kind === 'forest' ? 'wood' : 'stone'
+      this.events.append({
+        tick: this.state.tick,
+        type: 'goods:regrow',
+        data: {
+          good,
+          amount: 1,
+          tileX: tile.x,
+          tileY: tile.y,
+          terrain: tile.kind,
+        },
+        reason: `${tile.kind} at ${tile.x},${tile.y} regrew (stock ${tile.gatherStock})`,
+      })
+    }
   }
 
   /** Recompute stall posted price from stock each sim-hour. */

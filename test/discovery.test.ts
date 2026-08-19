@@ -272,7 +272,7 @@ describe('discovery layer — novelty', () => {
 })
 
 describe('discovery layer — ground sleep', () => {
-  it('ground sleep restores at half the bed rate', () => {
+  it('ground sleep restores at 60% of the bed rate', () => {
     const sim = new Simulation(42)
     sim.advanceTicks(80)
     const agent = sim.state.agents.find((a) => a.id === 'agent-0')!

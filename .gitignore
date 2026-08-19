@@ -2,6 +2,7 @@ node_modules/
 dist/
 logs/
 artifacts/
+evidence-videos/
 test-results/
 playwright-report/
 marketing/

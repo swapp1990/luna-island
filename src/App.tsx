@@ -683,6 +683,16 @@ export function App() {
                 setHud(loop.getState())
               }
             },
+            refresh: () => {
+              const loop = loopRef.current
+              if (!loop) return
+              const t = toSimTime(loop.getViewSim().state.tick)
+              const kicker = `LUNA ISLAND — DAY ${t.day}, ${pad2(t.hour)}:${pad2(t.minute)}`
+              setPhotoCard({ caption: '', kicker })
+              document.getElementById('app-root')?.classList.add('photo-mode')
+              loop.setPhotoMode(true)
+              sceneRef.current?.overlays.setPhotoSubject(null)
+            },
           },
           listHighlightMoments: (max = 12) => {
             const live = liveRef.current
@@ -1288,11 +1298,13 @@ export function App() {
               bottom: 0,
               zIndex: 50,
               pointerEvents: 'none',
-              width: '40%',
-              maxHeight: '30%',
+              width: photoCard.caption ? '40%' : '100%',
+              maxHeight: photoCard.caption ? '30%' : '18%',
               overflow: 'hidden',
               boxSizing: 'border-box',
-              padding: '40px 36px 32px 40px',
+              padding: photoCard.caption
+                ? '40px 36px 32px 40px'
+                : '18px 40px 22px 40px',
               background:
                 'linear-gradient(to top, rgba(8,10,18,0.88) 0%, rgba(8,10,18,0.55) 62%, transparent 100%)',
               fontFamily: 'system-ui, -apple-system, Segoe UI, sans-serif',
@@ -1307,12 +1319,13 @@ export function App() {
                 letterSpacing: '0.16em',
                 textTransform: 'uppercase',
                 color: 'rgba(220,228,240,0.78)',
-                marginBottom: 10,
+                marginBottom: photoCard.caption ? 10 : 0,
                 textShadow: '0 1px 6px rgba(0,0,0,0.55)',
               }}
             >
               {photoCard.kicker}
             </div>
+            {photoCard.caption ? (
             <div
               data-testid="photo-headline"
               style={{
@@ -1325,6 +1338,7 @@ export function App() {
             >
               {photoCard.caption}
             </div>
+            ) : null}
             {photoCard.subtitle ? (
               <div
                 data-testid="photo-subtitle"

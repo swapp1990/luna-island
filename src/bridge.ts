@@ -101,6 +101,11 @@ export interface PhotoModeOpts {
 export interface PhotoModeBridge {
   enter: (opts: PhotoModeOpts) => void
   exit: () => void
+  /**
+   * Kicker-only clock from the current tick. Does not pause or reframe.
+   * Empty caption — HUD stays hidden while sim time can keep running.
+   */
+  refresh: () => void
 }
 
 /** One selected highlight moment for the photographer reel. */
