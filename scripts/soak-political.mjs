@@ -6,6 +6,7 @@
  *
  * Usage: node scripts/soak-political.mjs [--minutes 120] [--port 5178] [--seed 42] [--preset lean|wild]
  *   [--min-gap 15] [--budget-hour 900] [--budget-day 3000] [--concurrency 3] [--brain codex]
+ *   [--seed-board]
  */
 import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -27,6 +28,7 @@ const BUDGET_DAY = Number(arg('budget-day', '3000'))
 const CONCURRENCY = Number(arg('concurrency', '3'))
 const BRAIN = String(arg('brain', 'codex'))
 const NO_HIGHLIGHTS = process.argv.includes('--no-highlights')
+const SEED_BOARD = process.argv.includes('--seed-board')
 const JOURNAL = path.resolve('artifacts', `soak-political-${Date.now()}.jsonl`)
 fs.mkdirSync('artifacts', { recursive: true })
 
@@ -142,9 +144,10 @@ try {
   await page.goto(`http://127.0.0.1:${PORT}/?brain=${encodeURIComponent(BRAIN)}&mindMinGapTicks=${MIN_GAP}`)
   await page.waitForFunction(() => window.__simState?.ready, null, { timeout: 30000 })
 
-  await page.evaluate(({ seed, preset }) => window.__simControl.newWorld(seed, preset), {
+  await page.evaluate(({ seed, preset, seedBoard }) => window.__simControl.newWorld(seed, preset, seedBoard), {
     seed: SEED,
     preset: PRESET,
+    seedBoard: SEED_BOARD,
   })
   await page.waitForFunction(
     (seed) =>
@@ -164,7 +167,7 @@ try {
       tick: s.tick,
     }
   })
-  log(`world ${SEED} preset=${PRESET} live at 1x, provider=${boot.provider}, minGapTicks=${boot.minGapTicks}, minds=6, soaking ${MINUTES}min → ${JOURNAL}`)
+  log(`world ${SEED} preset=${PRESET} seedBoard=${SEED_BOARD} live at 1x, provider=${boot.provider}, minGapTicks=${boot.minGapTicks}, minds=6, soaking ${MINUTES}min → ${JOURNAL}`)
   if (boot.provider !== BRAIN) {
     log(`WARNING: provider is ${boot.provider}, expected ${BRAIN} — aborting`)
     await shutdown(2)

@@ -142,6 +142,39 @@ function isWalkableGrass(tiles: Tile[], x: number, y: number): boolean {
   return t.walkable && t.kind === 'grass'
 }
 
+/** Plaza-edge offsets, first-valid wins. Same order as the original inlined search. */
+const NOTICE_BOARD_OFFSETS: Array<[number, number]> = [
+  [2, 1],
+  [2, -1],
+  [-2, 1],
+  [-2, -1],
+  [0, 2],
+  [0, -2],
+  [2, 0],
+  [-2, 0],
+  [1, 2],
+  [-1, 2],
+  [1, -2],
+  [-1, -2],
+]
+
+/** First walkable-grass plaza-edge tile not in `taken`, or null. */
+export function findNoticeBoardSpot(
+  tiles: Tile[],
+  plazaX: number,
+  plazaY: number,
+  taken: Set<string>,
+): { x: number; y: number } | null {
+  for (const [ox, oy] of NOTICE_BOARD_OFFSETS) {
+    const bx = plazaX + ox
+    const by = plazaY + oy
+    if (!isWalkableGrass(tiles, bx, by)) continue
+    if (taken.has(`${bx},${by}`)) continue
+    return { x: bx, y: by }
+  }
+  return null
+}
+
 /** BFS corridor over walkable tiles; marks every tile on the path (incl. ends). */
 function bfsCorridor(
   tiles: Tile[],
@@ -372,49 +405,17 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
 
   // Notice board on the plaza edge (civic thing — discoverable)
   {
-    const boardOffsets: Array<[number, number]> = [
-      [2, 1],
-      [2, -1],
-      [-2, 1],
-      [-2, -1],
-      [0, 2],
-      [0, -2],
-      [2, 0],
-      [-2, 0],
-      [1, 2],
-      [-1, 2],
-      [1, -2],
-      [-1, -2],
-    ]
-    let boardPlaced = false
     const taken = new Set(places.map((p) => `${p.x},${p.y}`))
     taken.add(`${plazaX},${plazaY}`)
-    for (const [ox, oy] of boardOffsets) {
-      const bx = plazaX + ox
-      const by = plazaY + oy
-      if (!isWalkableGrass(tiles, bx, by)) continue
-      if (taken.has(`${bx},${by}`)) continue
-      places.push({
-        id: 'notice-board-0',
-        kind: 'notice-board',
-        x: bx,
-        y: by,
-        slots: 2,
-        inventory: emptyInventory(),
-      })
-      boardPlaced = true
-      break
-    }
-    if (!boardPlaced) {
-      places.push({
-        id: 'notice-board-0',
-        kind: 'notice-board',
-        x: plazaX + 2,
-        y: plazaY + 1,
-        slots: 2,
-        inventory: emptyInventory(),
-      })
-    }
+    const spot = findNoticeBoardSpot(tiles, plazaX, plazaY, taken)
+    places.push({
+      id: 'notice-board-0',
+      kind: 'notice-board',
+      x: spot ? spot.x : plazaX + 2,
+      y: spot ? spot.y : plazaY + 1,
+      slots: 2,
+      inventory: emptyInventory(),
+    })
   }
 
   // 10 homes on a ring radius 4–7 (expand outer radius if needed), Chebyshev spacing ≥ 2

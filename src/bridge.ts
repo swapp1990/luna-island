@@ -134,7 +134,7 @@ export interface SimControlBridge {
   /** Additive: force autosave now. Resolves true on success. */
   saveNow: () => Promise<boolean>
   /** Additive: wipe autosave and start a fresh world with the given seed. */
-  newWorld: (seed: number, preset?: WorldPreset) => void
+  newWorld: (seed: number, preset?: WorldPreset, seedFoundingBoard?: boolean) => void
   /** Exact v5 save-format payload as a JSON string (no download dialog). */
   exportWorldJson: () => string
   /**

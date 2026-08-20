@@ -449,10 +449,10 @@ export function App() {
             apiRef.current?.syncFromLoop()
           },
           saveNow: () => apiRef.current?.performSave() ?? Promise.resolve(false),
-          newWorld: (seed: number, preset?: WorldPreset) => {
+          newWorld: (seed: number, preset?: WorldPreset, seedFoundingBoard?: boolean) => {
             void (async () => {
               await clearAutosave()
-              apiRef.current?.mountWorld(new Simulation(seed, { preset }))
+              apiRef.current?.mountWorld(new Simulation(seed, { preset, seedFoundingBoard }))
             })()
           },
           exportWorldJson: () => {

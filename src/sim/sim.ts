@@ -1,6 +1,6 @@
 import { createRng } from './rng'
 import { EventTrace } from './events'
-import { generateWorld, presetFacts } from './worldgen'
+import { findNoticeBoardSpot, generateWorld, presetFacts } from './worldgen'
 import { dayStartTick, toSimTime } from './time'
 import { fnv1aHex, stableStringify } from './stableStringify'
 import { spawnAgents } from './spawn'
@@ -121,6 +121,11 @@ export const PROPOSAL_WINDOW_TICKS = 1440
 export const MAX_OPEN_PROPOSALS = 2
 /** Passage requires yes > no AND at least this many votes. */
 export const PROPOSAL_QUORUM = 8
+/** Seeded founding proposal — world artifact, not a mind action. */
+const FOUNDING_PROPOSAL_ID = 'prop-founding-0'
+const FOUNDING_PROPOSAL_TEXT =
+  'Share food with anyone you find collapsed, if you can spare it.'
+const FOUNDING_BOARD_ID = 'notice-board-founding'
 /** Sheep vote yes when sympathy toward the proposer is at least this. */
 export const SHEEP_SYMPATHY_YES = 0.25
 /**
@@ -709,6 +714,7 @@ export class Simulation {
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
       preset?: WorldPreset
+      seedFoundingBoard?: boolean
     },
   )
   constructor(
@@ -724,6 +730,7 @@ export class Simulation {
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
       preset?: WorldPreset
+      seedFoundingBoard?: boolean
     },
   ) {
     this.snapshots = opts?.snapshots ?? new SnapshotStore()
@@ -772,6 +779,11 @@ export class Simulation {
       this.snapshots.pin(0)
     }
     this.rebuildNoticedCache()
+    if (opts?.seedFoundingBoard === true && !opts?.state) {
+      this.seedFoundingProposal()
+      // Replace the tick-0 snap so time travel includes the founding artifacts.
+      this.snapshots.add(this.makeSnapshot())
+    }
   }
 
   /**
@@ -1140,6 +1152,76 @@ export class Simulation {
   private openProposals(): Proposal[] {
     ensureMindFields(this.state)
     return this.state.proposals.filter((p) => p.status === 'open')
+  }
+
+  /**
+   * Day-one civic artifact: a notice-board (placed if missing) plus one open
+   * founding proposal. Direct state push — not propose() — so it skips the
+   * 2-coin fee and already-open check. Fresh worlds only.
+   */
+  private seedFoundingProposal(): void {
+    ensureMindFields(this.state)
+    if (this.state.proposals.length > 0) return
+    const plaza = this.state.places.find((p) => p.kind === 'plaza')
+    if (!plaza) return
+
+    let board = this.state.places.find((p) => p.kind === 'notice-board')
+    if (!board) {
+      const taken = new Set(this.state.places.map((p) => `${p.x},${p.y}`))
+      taken.add(`${plaza.x},${plaza.y}`)
+      const spot = findNoticeBoardSpot(this.state.tiles, plaza.x, plaza.y, taken)
+      board = {
+        id: FOUNDING_BOARD_ID,
+        kind: 'notice-board',
+        x: spot ? spot.x : plaza.x + 2,
+        y: spot ? spot.y : plaza.y + 1,
+        slots: 2,
+        inventory: emptyInventory(),
+      }
+      this.state.places.push(board)
+      this.state.owners[board.id] = 'commons'
+    }
+
+    const closesTick = this.state.tick + PROPOSAL_WINDOW_TICKS
+    const proposal: Proposal = {
+      id: FOUNDING_PROPOSAL_ID,
+      proposerId: 'anonymous',
+      text: FOUNDING_PROPOSAL_TEXT,
+      createdTick: this.state.tick,
+      closesTick,
+      votes: {},
+      status: 'open',
+    }
+    this.state.proposals.push(proposal)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'institution:proposed',
+      agentId: undefined,
+      data: {
+        proposalId: FOUNDING_PROPOSAL_ID,
+        text: FOUNDING_PROPOSAL_TEXT,
+        proposerId: 'anonymous',
+        agentName: 'the founders',
+        closesTick,
+        firstProposal: true,
+      },
+      reason: `A founding notice was posted: "${FOUNDING_PROPOSAL_TEXT}"`,
+    })
+    for (const agent of this.state.agents) {
+      if (isSheepAgent(agent.id)) continue
+      this.events.append({
+        tick: this.state.tick,
+        type: 'discovery:examined',
+        agentId: agent.id,
+        data: {
+          target: board.id,
+          placeKind: 'notice-board',
+          knowledge: EXAMINE_BY_KIND['notice-board'],
+          agentName: agent.name,
+        },
+        reason: `${agent.name} already knows the board's uses`,
+      })
+    }
   }
 
   /**

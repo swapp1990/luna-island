@@ -537,6 +537,90 @@ function w6BoardBuilderVerbsFixture(boardKnowledge) {
   }
 }
 
+const FOUNDING_PROPOSAL_TEXT =
+  'Share food with anyone you find collapsed, if you can spare it.'
+
+/**
+ * W7: wild, comfortable Mira, commons notice-board, one open founding
+ * proposal, plus the founder-knowledge examine event. Asks whether the
+ * documented vote shape + a visible open proposal is enough to act.
+ */
+function w7FoundingProposalVoteFixture(boardKnowledge) {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-founding',
+    kind: 'notice-board',
+    x: 14,
+    y: 11,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const mira = baseAgent('agent-0', 'Mira', 13, 10, {
+    wallet: 20,
+    homeId: '',
+    inventory: { food: 2, wood: 0, stone: 0 },
+    needs: emptyNeeds(0.85),
+  })
+  return {
+    agent: mira,
+    world: baseWorld([plaza, board], [mira], {
+      owners: {
+        'plaza-0': 'commons',
+        'notice-board-founding': 'commons',
+      },
+      preset: 'wild',
+      proposals: [
+        {
+          id: 'prop-founding-0',
+          proposerId: 'anonymous',
+          text: FOUNDING_PROPOSAL_TEXT,
+          createdTick: 0,
+          closesTick: 1440,
+          votes: {},
+          status: 'open',
+        },
+      ],
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'plaza-0', 8),
+      {
+        seq: 1,
+        tick: 0,
+        type: 'institution:proposed',
+        data: {
+          proposalId: 'prop-founding-0',
+          text: FOUNDING_PROPOSAL_TEXT,
+          proposerId: 'anonymous',
+          agentName: 'the founders',
+          closesTick: 1440,
+          firstProposal: true,
+        },
+        reason: `A founding notice was posted: "${FOUNDING_PROPOSAL_TEXT}"`,
+      },
+      {
+        seq: 2,
+        tick: 0,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: {
+          target: 'notice-board-founding',
+          placeKind: 'notice-board',
+          knowledge: boardKnowledge,
+          agentName: 'Mira',
+        },
+        reason: 'Mira already knows the board\'s uses',
+      },
+    ],
+  }
+}
+
 function multiTripBuildPlan(row) {
   const blob = `${row.action ?? ''} ${row.target ?? ''} ${row.reasoning ?? ''} ${row.raw ?? ''}`
   const gatherDeliver = /\b(gather|deliver|trip|trips|over time|deliveries|many trips)\b/i.test(
@@ -595,6 +679,7 @@ async function decideOnce(port, system, user, parseMindJson) {
       reasoning: '',
       raw: JSON.stringify(json).slice(0, 400),
       status: res.status,
+      choice: '',
     }
   }
   const text = String(json.text ?? '')
@@ -606,6 +691,7 @@ async function decideOnce(port, system, user, parseMindJson) {
       reasoning: '',
       raw: text.slice(0, 400),
       error: parsed.error,
+      choice: '',
     }
   }
   return {
@@ -613,6 +699,7 @@ async function decideOnce(port, system, user, parseMindJson) {
     action: parsed.intent.kind,
     reasoning: parsed.intent.reason,
     target: parsed.raw?.target ?? '',
+    choice: parsed.raw?.choice ?? '',
     raw: text.slice(0, 400),
   }
 }
@@ -622,7 +709,9 @@ function printScenario(name, result) {
   log(`histogram: ${JSON.stringify(result.histogram)}`)
   log(`expectation: ${result.expectation}`)
   for (const [i, s] of result.samples.entries()) {
-    log(`  sample ${i + 1}: ${s.action} — ${s.reasoning}`)
+    log(
+      `  sample ${i + 1}: ${s.action}${s.target ? ` target=${s.target}` : ''}${s.choice ? ` choice=${s.choice}` : ''} — ${s.reasoning}`,
+    )
   }
 }
 
@@ -681,6 +770,7 @@ async function main() {
     const w5bfix = w5bFamiliarGroundFixture()
     const w5cfix = w5cOdeBuilderFixture()
     const w6fix = w6BoardBuilderVerbsFixture(boardKnowledge)
+    const w7fix = w7FoundingProposalVoteFixture(boardKnowledge)
 
     const sysNew = buildSystemPrompt('agent-0')
     const sysOde = buildSystemPrompt('agent-4')
@@ -697,6 +787,7 @@ async function main() {
     const userW5B = buildUserPrompt(w5bfix.agent, w5bfix.world, w5bfix.events)
     const userW5C = buildUserPrompt(w5cfix.agent, w5cfix.world, w5cfix.events)
     const userW6 = buildUserPrompt(w6fix.agent, w6fix.world, w6fix.events)
+    const userW7 = buildUserPrompt(w7fix.agent, w7fix.world, w7fix.events)
 
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
@@ -706,6 +797,12 @@ async function main() {
     }
     if (!userW6.includes(boardKnowledge)) {
       throw new Error('W6 fixture Known lines missing builder-knowledge examine text')
+    }
+    if (!userW7.includes(boardKnowledge)) {
+      throw new Error('W7 fixture Known lines missing founder-knowledge examine text')
+    }
+    if (!userW7.includes('prop-founding-0') || !userW7.includes(FOUNDING_PROPOSAL_TEXT)) {
+      throw new Error('W7 fixture observation missing the seeded founding proposal')
     }
 
     const fatTokens = {
@@ -719,9 +816,10 @@ async function main() {
       w4: approxTokens(sysNew, userW4),
       w5: approxTokens(sysNew, userW5),
       w6: approxTokens(sysNew, userW6),
+      w7: approxTokens(sysNew, userW7),
     }
     log(
-      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6}`,
+      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6} w7=${fatTokens.w7}`,
     )
     if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
       throw new Error('legacy safe-default sentence still in production prompt')
@@ -744,6 +842,7 @@ async function main() {
       { id: 'W5B', label: 'home-familiar-ground', system: sysNew, user: userW5B },
       { id: 'W5C', label: 'home-ode-builder', system: sysOde, user: userW5C },
       { id: 'W6', label: 'board-builder-verbs', system: sysNew, user: userW6 },
+      { id: 'W7', label: 'founding-proposal-vote', system: sysNew, user: userW7 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -771,6 +870,7 @@ async function main() {
         .map((r) => ({
           action: r.action,
           target: r.target ?? '',
+          choice: r.choice ?? '',
           reasoning: r.reasoning,
         }))
       if (samples.length < 3) {
@@ -780,6 +880,7 @@ async function main() {
             samples.push({
               action: r.action,
               target: r.target ?? '',
+              choice: r.choice ?? '',
               reasoning: r.reasoning || r.raw || r.error || '',
             })
           }
@@ -866,6 +967,32 @@ async function main() {
         expectation = `propose/vote/sanction or rule-talk ${civicN}/${N}; propose ${proposeN} vote ${voteN} sanction ${sanctionN} (measurement — 0 is a finding)`
         pass = true
         resultExtra = { civicN, proposeN, voteN, sanctionN }
+      } else if (sc.id === 'W7') {
+        const yesFoundingN = rows.filter(
+          (r) =>
+            r.action === 'vote' &&
+            r.target === 'prop-founding-0' &&
+            r.choice === 'yes',
+        ).length
+        const voteN = actions.filter((a) => a === 'vote').length
+        const otherN = N - yesFoundingN
+        const otherHist = histogram(
+          rows
+            .filter(
+              (r) =>
+                !(
+                  r.action === 'vote' &&
+                  r.target === 'prop-founding-0' &&
+                  r.choice === 'yes'
+                ),
+            )
+            .map((r) =>
+              r.action === 'vote' ? `vote:${r.target || '?'}:${r.choice || '?'}` : r.action,
+            ),
+        )
+        expectation = `vote yes on prop-founding-0 ${yesFoundingN}/${N}; any vote ${voteN}/${N}; other ${otherN}/${N} ${JSON.stringify(otherHist)} (measurement)`
+        pass = true
+        resultExtra = { yesFoundingN, voteN, otherN, otherHist }
       }
 
       const result = {
@@ -879,6 +1006,7 @@ async function main() {
         rows: rows.map((r) => ({
           action: r.action,
           target: r.target ?? '',
+          choice: r.choice ?? '',
           reasoning: r.reasoning,
           ok: r.ok,
         })),
