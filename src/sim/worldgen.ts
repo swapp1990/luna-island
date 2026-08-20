@@ -824,7 +824,7 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
       }
     }
   }
-  } // end developed-preset structures (wild: plaza + bushes only)
+  } // end developed-preset structures (wild: plaza + bushes + spring)
 
   // Berry-bushes on grass/forest, 4–12 tiles from plaza (10 default / 6 lean)
   const bushCandidates: Array<[number, number]> = []
@@ -868,6 +868,43 @@ export function generateWorld(seed: number, preset?: WorldPreset): WorldState {
     })
     occupied.add(`${bx},${by}`)
     bushCount++
+  }
+
+  // Wild only: one spring, 4–8 tiles from the plaza. After bushes so their
+  // positions (and the worldgen rng stream) stay exactly as they were.
+  if (resolved === 'wild') {
+    const springCandidates: Array<[number, number]> = []
+    for (let y = 0; y < HEIGHT; y++) {
+      for (let x = 0; x < WIDTH; x++) {
+        const t = tiles[idx(x, y)]!
+        if (!t.walkable || t.kind === 'water') continue
+        const dist = Math.sqrt((x - plazaX) ** 2 + (y - plazaY) ** 2)
+        if (dist < 4 || dist > 8) continue
+        if (occupied.has(`${x},${y}`)) continue
+        springCandidates.push([x, y])
+      }
+    }
+    springCandidates.sort((a, b) => {
+      const da = (a[0] - plazaX) ** 2 + (a[1] - plazaY) ** 2
+      const db = (b[0] - plazaX) ** 2 + (b[1] - plazaY) ** 2
+      if (da !== db) return da - db
+      if (a[0] !== b[0]) return a[0] - b[0]
+      return a[1] - b[1]
+    })
+    const grassFirst = springCandidates.filter(([x, y]) => tiles[idx(x, y)]!.kind === 'grass')
+    const pick = (grassFirst.length > 0 ? grassFirst : springCandidates)[0]
+    if (pick) {
+      const [sx, sy] = pick
+      places.push({
+        id: 'spring-0',
+        kind: 'spring',
+        x: sx,
+        y: sy,
+        slots: 1,
+        inventory: { ...emptyInventory(), food: 8 },
+      })
+      occupied.add(`${sx},${sy}`)
+    }
   }
 
   const owners: Record<string, 'commons'> = {}

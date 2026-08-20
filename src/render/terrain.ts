@@ -12,6 +12,7 @@ const SELECTABLE_PLACE_KINDS = new Set([
   'home',
   'construction-site',
   'notice-board',
+  'spring',
 ])
 
 export interface TerrainHandle {
@@ -652,10 +653,11 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
 
   const updateBushStock = (places: Place[]) => {
     for (const place of places) {
-      if (place.kind !== 'berry-bush') continue
+      if (place.kind !== 'berry-bush' && place.kind !== 'spring') continue
       const berries = bushBerries.get(place.id)
       if (!berries) continue
-      const stock = Math.max(0, Math.min(6, Math.floor(place.inventory?.food ?? 0)))
+      const cap = place.kind === 'spring' ? 8 : 6
+      const stock = Math.max(0, Math.min(cap, Math.floor(place.inventory?.food ?? 0)))
       for (let i = 0; i < berries.length; i++) {
         berries[i]!.visible = i < stock
       }
@@ -1460,5 +1462,59 @@ function addPlace(
     const vis = buildSiteVisual(place, track, plaza)
     root.add(vis.group)
     siteVisuals.set(place.id, vis)
+  } else if (place.kind === 'spring') {
+    const group = new THREE.Group()
+    group.position.set(place.x, 0, place.y)
+    const poolY = HEIGHTS.grass + 0.02
+    const waterGeo = track(new THREE.CylinderGeometry(0.38, 0.42, 0.06, 16))
+    const waterMat = track(
+      new THREE.MeshStandardMaterial({
+        color: 0x3a8ea5,
+        roughness: 0.35,
+        metalness: 0.1,
+      }),
+    )
+    const water = new THREE.Mesh(waterGeo, waterMat)
+    water.position.y = poolY
+    water.receiveShadow = true
+    group.add(water)
+    const rimGeo = track(new THREE.CylinderGeometry(0.48, 0.5, 0.05, 12))
+    const rimMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x7a7468, roughness: 0.92 }),
+    )
+    const rim = new THREE.Mesh(rimGeo, rimMat)
+    rim.position.y = poolY - 0.03
+    rim.receiveShadow = true
+    group.add(rim)
+    const plantMat = track(
+      new THREE.MeshStandardMaterial({ color: 0x3d7a45, roughness: 0.78 }),
+    )
+    const plantGeo = track(new THREE.SphereGeometry(0.16, 8, 6))
+    const plantOff: Array<[number, number]> = [
+      [0.32, 0.18],
+      [-0.28, 0.22],
+      [0.12, -0.34],
+    ]
+    for (const [ox, oz] of plantOff) {
+      const plant = new THREE.Mesh(plantGeo, plantMat)
+      plant.position.set(ox, baseY + 0.14, oz)
+      plant.scale.set(1, 0.7, 1)
+      plant.castShadow = true
+      group.add(plant)
+    }
+    const fruitGeo = track(new THREE.SphereGeometry(0.045, 6, 5))
+    const fruitMat = track(
+      new THREE.MeshStandardMaterial({ color: 0xe8c547, roughness: 0.5 }),
+    )
+    const fruits: THREE.Mesh[] = []
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2
+      const fruit = new THREE.Mesh(fruitGeo, fruitMat)
+      fruit.position.set(Math.cos(a) * 0.28, baseY + 0.18, Math.sin(a) * 0.28)
+      group.add(fruit)
+      fruits.push(fruit)
+    }
+    bushBerries.set(place.id, fruits)
+    root.add(group)
   }
 }

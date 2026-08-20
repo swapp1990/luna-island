@@ -70,6 +70,8 @@ function placeHeroHeight(kind: string | undefined): number {
       return 1.08
     case 'berry-bush':
       return 0.78
+    case 'spring':
+      return 0.55
     case 'farm':
       return 0.9
     case 'well':
@@ -91,6 +93,7 @@ function placeHeroSpan(kind: string | undefined): number {
   if (kind === 'farm') return 2.6
   if (kind === 'plaza') return 3.0
   if (kind === 'berry-bush') return 0.85
+  if (kind === 'spring') return 0.7
   return 0
 }
 

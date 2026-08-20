@@ -26,9 +26,11 @@ describe('P4-6 founding notice', () => {
     expect(flagged.getEventCount()).toBe(bare.getEventCount())
     expect(flagged.state.proposals).toHaveLength(0)
     expect(boardsOf(flagged)).toHaveLength(0)
-    expect(bare.state.places.every((p) => p.kind === 'plaza' || p.kind === 'berry-bush')).toBe(
-      true,
-    )
+    expect(
+      bare.state.places.every(
+        (p) => p.kind === 'plaza' || p.kind === 'berry-bush' || p.kind === 'spring',
+      ),
+    ).toBe(true)
   })
 
   it('findNoticeBoardSpot extraction keeps default/lean board placement', () => {

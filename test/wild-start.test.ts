@@ -94,19 +94,22 @@ describe('wild preset', () => {
     })
   })
 
-  it('spawns plaza + bushes only — zero of the 8 buildable kinds', () => {
+  it('spawns plaza + bushes + one spring — zero of the 8 buildable kinds', () => {
     const sim = new Simulation(42, { preset: 'wild' })
     expect(sim.state.preset).toBe('wild')
     expect(sim.state.agents).toHaveLength(24)
     const counts = placesByKind(sim)
     expect(counts.plaza).toBe(1)
     expect(counts['berry-bush']).toBe(10)
+    expect(counts.spring).toBe(1)
     for (const k of BUILDABLE) {
       expect(counts[k] ?? 0, k).toBe(0)
     }
-    expect(sim.state.places.every((p) => p.kind === 'plaza' || p.kind === 'berry-bush')).toBe(
-      true,
-    )
+    expect(
+      sim.state.places.every(
+        (p) => p.kind === 'plaza' || p.kind === 'berry-bush' || p.kind === 'spring',
+      ),
+    ).toBe(true)
   })
 
   it('starting kit is identical across agents', () => {
@@ -351,5 +354,6 @@ describe('wild survivability (10 sim-days, utility brain)', () => {
     expect(wild.collapses).toBeLessThanOrEqual(8)
     expect(wild.placesByKind.plaza).toBe(1)
     expect(wild.placesByKind['berry-bush']).toBe(10)
+    expect(wild.placesByKind.spring).toBe(1)
   }, 180_000)
 })

@@ -14,6 +14,8 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   storehouse: 1.5,
   'construction-site': 1.0,
   'notice-board': 1.0,
+  /** Tight enough that slotTiles yields only the centre tile. */
+  spring: 0.4,
 }
 
 /**
@@ -201,6 +203,49 @@ export function countPlaceUsers(
     if (a.action.targetPlaceId === placeId) n++
   }
   return n
+}
+
+/**
+ * Agents physically in the way of a place: slot-action users targeting it,
+ * standers on its slot tiles, or anyone whose reserved destination is a slot.
+ * World-agent order, unique.
+ */
+export function occupantsOfPlace(
+  world: WorldState,
+  place: Place,
+  excludeAgentId?: string,
+): AgentState[] {
+  const slots = slotTiles(world, place)
+  const slotSet = new Set(slots.map(([x, y]) => key(x, y)))
+  const out: AgentState[] = []
+  const seen = new Set<string>()
+  const consider = (a: AgentState) => {
+    if (excludeAgentId && a.id === excludeAgentId) return
+    if (seen.has(a.id)) return
+    seen.add(a.id)
+    out.push(a)
+  }
+  for (const a of world.agents) {
+    if (PLACE_SLOT_KINDS.has(a.action.kind) && a.action.targetPlaceId === place.id) {
+      consider(a)
+      continue
+    }
+    if (isStanding(a) && slotSet.has(key(Math.round(a.x), Math.round(a.y)))) {
+      consider(a)
+      continue
+    }
+    const tx = a.action.targetX
+    const ty = a.action.targetY
+    if (
+      a.action.kind !== 'idle' &&
+      tx !== undefined &&
+      ty !== undefined &&
+      slotSet.has(key(Math.round(tx), Math.round(ty)))
+    ) {
+      consider(a)
+    }
+  }
+  return out
 }
 
 /** Free (unblocked) slot tiles within the place footprint. */

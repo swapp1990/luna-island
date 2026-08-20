@@ -22,6 +22,8 @@ export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, st
   quarry: 'Stone comes loose here when someone works it.',
   forestry: 'Wood is cut here when someone works it.',
   plaza: 'People gather here; standing near others felt less lonely.',
+  spring:
+    'Sweet fruit grows thick here — more than a bush holds, and it comes back faster. One person fits.',
 }
 
 export interface ExamineContext {
@@ -87,4 +89,30 @@ export function placeKindLabel(kind: PlaceKind | string): string {
     default:
       return kind
   }
+}
+
+/** Honest felt line for a failed place-use. Names the owner (if exclusive) or occupant. */
+export function blockedFeltLine(opts: {
+  label: string
+  occupantNames: string[]
+  ownerName?: string
+  onlySpot: boolean
+}): string {
+  if (opts.ownerName) {
+    return `could not use the ${opts.label} — it is ${opts.ownerName}'s now`
+  }
+  const names = opts.occupantNames
+  if (names.length === 1) {
+    return opts.onlySpot
+      ? `could not use the ${opts.label} — ${names[0]} was in the only spot`
+      : `could not use the ${opts.label} — ${names[0]} was using it`
+  }
+  if (names.length === 2) {
+    return `could not use the ${opts.label} — ${names[0]} and ${names[1]} were using it`
+  }
+  if (names.length > 2) {
+    const head = names.slice(0, -1).join(', ')
+    return `could not use the ${opts.label} — ${head}, and ${names[names.length - 1]} were using it`
+  }
+  return `could not use the ${opts.label} — every spot was taken`
 }

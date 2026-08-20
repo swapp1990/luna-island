@@ -134,6 +134,7 @@ function formatStatusBubbleBody(
   if (walking) {
     switch (a.kind) {
       case 'forage':
+        if (placeKind === 'spring') return '🚶 → the spring'
         return '🚶 → berry bushes'
       case 'buy':
         return '🛒 → market stall'
@@ -165,6 +166,7 @@ function formatStatusBubbleBody(
         return '🚶 Wandering'
       case 'walk':
         if (placeKind === 'berry-bush') return '🚶 → berry bushes'
+        if (placeKind === 'spring') return '🚶 → the spring'
         if (placeKind === 'well') return '🚶 → the well'
         if (placeKind === 'home') return '🏠 Heading home'
         if (placeKind === 'plaza') return '🚶 → plaza'
@@ -262,6 +264,7 @@ const PLACE_LABEL: Record<string, string> = {
   'construction-site': 'Build site',
   'notice-board': 'Notice board',
   plaza: 'Plaza',
+  spring: 'Spring',
 }
 
 const GOOD_ICON: Record<string, string> = {

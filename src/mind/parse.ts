@@ -301,6 +301,7 @@ const PLACE_KINDS = new Set([
   'storehouse',
   'construction-site',
   'notice-board',
+  'spring',
 ])
 
 const BUILDABLE_KINDS = new Set<PlaceKind>([

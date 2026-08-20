@@ -65,7 +65,7 @@ function worldRulesText(): string {
 const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object, no markdown:
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
-target examples: home, berry-bush, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
+target examples: home, berry-bush, spring, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
 propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
 When nothing is urgent, act on who you are.`
 

@@ -34,6 +34,7 @@ export type PlaceKind =
   | 'storehouse'
   | 'construction-site'
   | 'notice-board'
+  | 'spring'
 
 /** Place kinds the engine can raise from a construction site. */
 export type BuildableKind =
@@ -361,6 +362,12 @@ export interface WorldState {
    * arms only on a second consecutive identical reason. Missing → none.
    */
   commissionLastRefusal?: Record<string, string>
+  /**
+   * Last place:blocked collapse key per agent (v5 additive). Consecutive
+   * identical blocks (same place + owner + occupant set) do not re-emit.
+   * Missing → none.
+   */
+  placeBlockLast?: Record<string, string>
 }
 
 export interface SimEvent {

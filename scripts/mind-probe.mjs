@@ -623,6 +623,186 @@ function w7FoundingProposalVoteFixture(boardKnowledge) {
   }
 }
 
+function boardExamineEvent(agentId, agentName, boardId, knowledge, tick) {
+  return {
+    seq: tick,
+    tick,
+    type: 'discovery:examined',
+    agentId,
+    data: {
+      target: boardId,
+      placeKind: 'notice-board',
+      knowledge,
+      agentName,
+    },
+    reason: `${agentName} already knows the board's uses`,
+  }
+}
+
+function springBlockedEvent(opts) {
+  const {
+    tick,
+    occupantName = 'Wren',
+    occupantId = 'agent-11',
+    ownerId = 'commons',
+    ownerName,
+    felt,
+  } = opts
+  const exclusive = ownerId !== 'commons' && ownerName
+  const line =
+    felt ??
+    (exclusive
+      ? `could not use the spring — it is ${ownerName}'s now`
+      : `could not use the spring — ${occupantName} was in the only spot`)
+  return {
+    seq: tick,
+    tick,
+    type: 'place:blocked',
+    agentId: 'agent-0',
+    data: {
+      placeId: 'spring-0',
+      placeKind: 'spring',
+      occupantIds: [occupantId],
+      occupantNames: [occupantName],
+      ownerId,
+      ownerName: ownerName ?? (ownerId === 'commons' ? undefined : occupantName),
+      onlySpot: true,
+      felt: line,
+    },
+    reason: exclusive
+      ? `Mira could not use the spring — it is ${ownerName}'s now`
+      : `Mira could not use the spring — ${occupantName} occupying it`,
+  }
+}
+
+/**
+ * W8: comfortable Mira, mild hunger, stocked spring nearby, one named block.
+ * Notice-board verbs in Known. Occupant Wren is standing on the spring.
+ */
+function w8SpringBlockedOnceFixture(boardKnowledge, springKnowledge) {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-0',
+    kind: 'notice-board',
+    x: 13,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const spring = {
+    id: 'spring-0',
+    kind: 'spring',
+    x: 16,
+    y: 10,
+    slots: 1,
+    inventory: { food: 8, wood: 0, stone: 0 },
+  }
+  const bush = {
+    id: 'bush-0',
+    kind: 'berry-bush',
+    x: 11,
+    y: 10,
+    slots: 2,
+    inventory: { food: 6, wood: 0, stone: 0 },
+  }
+  const mira = baseAgent('agent-0', 'Mira', 14, 10, {
+    wallet: 20,
+    homeId: '',
+    inventory: { food: 0, wood: 0, stone: 0 },
+    needs: { hunger: 0.55, energy: 0.85, social: 0.8 },
+  })
+  const wren = baseAgent('agent-11', 'Wren', 16, 10, {
+    wallet: 12,
+    homeId: '',
+    inventory: emptyInv(),
+    needs: emptyNeeds(0.85),
+    action: {
+      kind: 'forage',
+      targetPlaceId: 'spring-0',
+      targetX: 16,
+      targetY: 10,
+      reason: 'picking spring fruit',
+    },
+  })
+  return {
+    agent: mira,
+    world: baseWorld([plaza, board, spring, bush], [mira, wren], {
+      owners: {
+        'plaza-0': 'commons',
+        'notice-board-0': 'commons',
+        'spring-0': 'commons',
+        'bush-0': 'commons',
+      },
+      preset: 'wild',
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'plaza-0', 8),
+      usedPlaceEvent('agent-0', 'spring-0', 40),
+      usedPlaceEvent('agent-0', 'bush-0', 50),
+      boardExamineEvent('agent-0', 'Mira', 'notice-board-0', boardKnowledge, 60),
+      {
+        seq: 70,
+        tick: 70,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: {
+          target: 'spring-0',
+          placeKind: 'spring',
+          knowledge: springKnowledge,
+          agentName: 'Mira',
+        },
+        reason: 'Mira has looked at the spring',
+      },
+      springBlockedEvent({ tick: 220 }),
+    ],
+  }
+}
+
+/**
+ * W9: same, but Wren owns the spring; two earlier occupancy blocks plus
+ * a formal-exclusion felt line. Mira has coins enough to propose.
+ */
+function w9SpringClaimedByAnotherFixture(boardKnowledge, springKnowledge) {
+  const base = w8SpringBlockedOnceFixture(boardKnowledge, springKnowledge)
+  base.world.owners['spring-0'] = 'agent-11'
+  base.agent.wallet = 20
+  base.world.agents[0].wallet = 20
+  base.events = [
+    usedPlaceEvent('agent-0', 'plaza-0', 8),
+    usedPlaceEvent('agent-0', 'spring-0', 40),
+    usedPlaceEvent('agent-0', 'bush-0', 50),
+    boardExamineEvent('agent-0', 'Mira', 'notice-board-0', boardKnowledge, 60),
+    {
+      seq: 70,
+      tick: 70,
+      type: 'discovery:examined',
+      agentId: 'agent-0',
+      data: {
+        target: 'spring-0',
+        placeKind: 'spring',
+        knowledge: springKnowledge,
+        agentName: 'Mira',
+      },
+      reason: 'Mira has looked at the spring',
+    },
+    springBlockedEvent({ tick: 160 }),
+    springBlockedEvent({ tick: 190 }),
+    springBlockedEvent({
+      tick: 220,
+      ownerId: 'agent-11',
+      ownerName: 'Wren',
+    }),
+  ]
+  return base
+}
+
 function multiTripBuildPlan(row) {
   const blob = `${row.action ?? ''} ${row.target ?? ''} ${row.reasoning ?? ''} ${row.raw ?? ''}`
   const gatherDeliver = /\b(gather|deliver|trip|trips|over time|deliveries|many trips)\b/i.test(
@@ -759,6 +939,7 @@ async function main() {
     const { buildSystemPrompt, buildUserPrompt, approxTokens } = promptMod
     const { parseMindJson } = parseMod
     const boardKnowledge = examineMod.EXAMINE_BY_KIND['notice-board']
+    const springKnowledge = examineMod.EXAMINE_BY_KIND.spring
 
     const s1fix = slackDiscoveryFixture()
     const s2fix = affordableHouseFixture()
@@ -773,6 +954,8 @@ async function main() {
     const w5cfix = w5cOdeBuilderFixture()
     const w6fix = w6BoardBuilderVerbsFixture(boardKnowledge)
     const w7fix = w7FoundingProposalVoteFixture(boardKnowledge)
+    const w8fix = w8SpringBlockedOnceFixture(boardKnowledge, springKnowledge)
+    const w9fix = w9SpringClaimedByAnotherFixture(boardKnowledge, springKnowledge)
 
     const sysNew = buildSystemPrompt('agent-0')
     const sysOde = buildSystemPrompt('agent-4')
@@ -790,6 +973,8 @@ async function main() {
     const userW5C = buildUserPrompt(w5cfix.agent, w5cfix.world, w5cfix.events)
     const userW6 = buildUserPrompt(w6fix.agent, w6fix.world, w6fix.events)
     const userW7 = buildUserPrompt(w7fix.agent, w7fix.world, w7fix.events)
+    const userW8 = buildUserPrompt(w8fix.agent, w8fix.world, w8fix.events)
+    const userW9 = buildUserPrompt(w9fix.agent, w9fix.world, w9fix.events)
 
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
@@ -806,6 +991,21 @@ async function main() {
     if (!userW7.includes('prop-founding-0') || !userW7.includes(FOUNDING_PROPOSAL_TEXT)) {
       throw new Error('W7 fixture observation missing the seeded founding proposal')
     }
+    if (!userW8.includes('could not use the spring — Wren was in the only spot')) {
+      throw new Error('W8 fixture Recently-felt missing occupancy block line')
+    }
+    if (!userW8.includes(boardKnowledge)) {
+      throw new Error('W8 fixture Known lines missing notice-board verbs')
+    }
+    if (!userW9.includes("could not use the spring — it is Wren's now")) {
+      throw new Error('W9 fixture Recently-felt missing owner-exclusion line')
+    }
+    if (!userW9.includes('could not use the spring — Wren was in the only spot')) {
+      throw new Error('W9 fixture Recently-felt missing earlier occupancy blocks')
+    }
+    if (!userW9.includes(boardKnowledge)) {
+      throw new Error('W9 fixture Known lines missing notice-board verbs')
+    }
 
     const fatTokens = {
       s1: approxTokens(sysNew, userS1),
@@ -819,9 +1019,11 @@ async function main() {
       w5: approxTokens(sysNew, userW5),
       w6: approxTokens(sysNew, userW6),
       w7: approxTokens(sysNew, userW7),
+      w8: approxTokens(sysNew, userW8),
+      w9: approxTokens(sysNew, userW9),
     }
     log(
-      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6} w7=${fatTokens.w7}`,
+      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6} w7=${fatTokens.w7} w8=${fatTokens.w8} w9=${fatTokens.w9}`,
     )
     if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
       throw new Error('legacy safe-default sentence still in production prompt')
@@ -845,6 +1047,8 @@ async function main() {
       { id: 'W5C', label: 'home-ode-builder', system: sysOde, user: userW5C },
       { id: 'W6', label: 'board-builder-verbs', system: sysNew, user: userW6 },
       { id: 'W7', label: 'founding-proposal-vote', system: sysNew, user: userW7 },
+      { id: 'W8', label: 'spring-blocked-once', system: sysNew, user: userW8 },
+      { id: 'W9', label: 'spring-claimed-by-another', system: sysNew, user: userW9 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -995,6 +1199,46 @@ async function main() {
         expectation = `vote yes on prop-founding-0 ${yesFoundingN}/${N}; any vote ${voteN}/${N}; other ${otherN}/${N} ${JSON.stringify(otherHist)} (measurement)`
         pass = true
         resultExtra = { yesFoundingN, voteN, otherN, otherHist }
+      } else if (sc.id === 'W8') {
+        const forageN = actions.filter((a) => a === 'forage').length
+        const forageSpringN = rows.filter((r) => {
+          if (r.action !== 'forage') return false
+          return /\bspring\b/i.test(`${r.target ?? ''} ${r.reasoning} ${r.raw ?? ''}`)
+        }).length
+        const forageElseN = forageN - forageSpringN
+        const waitN = actions.filter((a) => a === 'idle' || a === 'wander').length
+        const socialWrenN = rows.filter((r) => {
+          if (r.action !== 'socialize') return false
+          return /\bwren\b/i.test(`${r.target ?? ''} ${r.reasoning} ${r.raw ?? ''}`)
+        }).length
+        const examineN = actions.filter((a) => a === 'examine').length
+        const proposeN = actions.filter((a) => a === 'propose').length
+        const sanctionN = actions.filter((a) => a === 'sanction').length
+        expectation = `forage-else ${forageElseN}/${N}; wait ${waitN}/${N}; socialize-Wren ${socialWrenN}/${N}; examine ${examineN}/${N}; propose ${proposeN}/${N}; sanction ${sanctionN}/${N} (measurement)`
+        pass = true
+        resultExtra = {
+          forageN,
+          forageSpringN,
+          forageElseN,
+          waitN,
+          socialWrenN,
+          examineN,
+          proposeN,
+          sanctionN,
+        }
+      } else if (sc.id === 'W9') {
+        const proposeN = actions.filter((a) => a === 'propose').length
+        const sanctionN = actions.filter((a) => a === 'sanction').length
+        const claimN = actions.filter((a) => a === 'claim').length
+        const civicN = rows.filter((r) => civicIntentOrRuleTalk(r)).length
+        const ruleTalkN = rows.filter((r) =>
+          /\b(propose|proposal|vote|voting|sanction|censure|posted rule|\brules?\b)\b/i.test(
+            r.reasoning ?? '',
+          ),
+        ).length
+        expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; civic/rule-talk ${civicN}/${N} (HEADLINE measurement — 0 is a finding)`
+        pass = true
+        resultExtra = { proposeN, sanctionN, claimN, civicN, ruleTalkN }
       }
 
       const result = {

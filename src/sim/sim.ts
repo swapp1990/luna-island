@@ -18,6 +18,7 @@ import {
   pickGatherStand,
   pickShoreStand,
   reserveSpot,
+  occupantsOfPlace,
   SOCIAL_PROXIMITY_SQ,
   workplaceHasOpenJob,
 } from './spots'
@@ -57,6 +58,7 @@ import type {
 } from './types'
 import { emptyInventory } from './types'
 import {
+  blockedFeltLine,
   EXAMINE_BY_KIND,
   examineKnowledgeFor,
   PLACE_VIEW_RADIUS,
@@ -75,7 +77,14 @@ const EAT_MAX_UNITS = 2
 /** Ticks per food unit foraged from a bush. */
 const FORAGE_TICKS_PER_UNIT = 5
 const FORAGE_CARRY_CAP = 3
-const BUSH_STOCK_MAX = 6
+export const BUSH_STOCK_MAX = 6
+/** Spring food cap — higher than a bush, still finite. */
+export const SPRING_STOCK_MAX = 8
+
+/** Spring regrows on a quarter of the bush interval (min 1 tick). */
+export function springRegrowInterval(preset?: WorldPreset | string): number {
+  return Math.max(1, Math.floor(presetFacts(preset).bushRegrowInterval / 4))
+}
 const DRINK_DURATION = 5
 const MOVE_SPEED = 1.0 // tiles per tick
 const COLLAPSE_MOVE_FACTOR = 0.4
@@ -456,6 +465,7 @@ function deepCloneWorld(state: WorldState): WorldState {
     ...(state.commissionLastRefusal
       ? { commissionLastRefusal: { ...state.commissionLastRefusal } }
       : {}),
+    ...(state.placeBlockLast ? { placeBlockLast: { ...state.placeBlockLast } } : {}),
   }
 }
 
@@ -2528,6 +2538,11 @@ export class Simulation {
     reason: string,
   ): void {
     const spot = reserveSpot(this.state, place, agent, this.rng)
+    if (spot) {
+      this.clearPlaceBlockStreak(agent.id)
+    } else {
+      this.notePlaceBlocked(agent, place)
+    }
     const tx = spot?.x ?? place.x
     const ty = spot?.y ?? place.y
     agent.action.targetPlaceId = place.id
@@ -2536,6 +2551,68 @@ export class Simulation {
     agent.action.reason = reason
     agent.action.path = findPath(this.state, agent.x, agent.y, tx, ty) ?? []
     agent.pathIndex = 0
+  }
+
+  private clearPlaceBlockStreak(agentId: string): void {
+    if (this.state.placeBlockLast) delete this.state.placeBlockLast[agentId]
+  }
+
+  private placeBlockKey(
+    place: Place,
+    occupants: AgentState[],
+    ownerId: string,
+  ): string {
+    const occ = occupants
+      .map((a) => a.id)
+      .sort()
+      .join(',')
+    return `${place.id}|${ownerId}|${occ}`
+  }
+
+  private notePlaceBlocked(agent: AgentState, place: Place): void {
+    const occupants = occupantsOfPlace(this.state, place, agent.id)
+    const ownerId = this.state.owners[place.id] ?? 'commons'
+    const ownerAgent =
+      ownerId !== 'commons'
+        ? this.state.agents.find((a) => a.id === ownerId)
+        : undefined
+    const privateExclusion =
+      ownerId !== 'commons' && ownerId !== agent.id && !!ownerAgent
+    const key = this.placeBlockKey(place, occupants, ownerId)
+    if (this.state.placeBlockLast?.[agent.id] === key) return
+    if (!this.state.placeBlockLast) this.state.placeBlockLast = {}
+    this.state.placeBlockLast[agent.id] = key
+
+    const label = placeKindLabel(place.kind)
+    const occupantNames = occupants.map((a) => a.name)
+    const felt = blockedFeltLine({
+      label,
+      occupantNames,
+      ownerName: privateExclusion ? ownerAgent!.name : undefined,
+      onlySpot: place.slots === 1,
+    })
+    const reason = privateExclusion
+      ? `${agent.name} could not use the ${label} — it is ${ownerAgent!.name}'s now`
+      : occupantNames.length > 0
+        ? `${agent.name} could not use the ${label} — ${occupantNames.join(', ')} occupying it`
+        : `${agent.name} could not use the ${label} — every slot was taken`
+
+    this.events.append({
+      tick: this.state.tick,
+      type: 'place:blocked',
+      agentId: agent.id,
+      data: {
+        placeId: place.id,
+        placeKind: place.kind,
+        occupantIds: occupants.map((a) => a.id),
+        occupantNames,
+        ownerId,
+        ownerName: ownerAgent?.name,
+        onlySpot: place.slots === 1,
+        felt,
+      },
+      reason,
+    })
   }
 
   private hireAgent(agent: AgentState, place: Place): boolean {
@@ -3096,8 +3173,10 @@ export class Simulation {
       if (spot) {
         tx = spot.x
         ty = spot.y
+        this.clearPlaceBlockStreak(agent.id)
       } else {
-        // Place full — fall through to a short wander (no waiting state)
+        // Place full — name who is in the way, then a short wander (no waiting state)
+        this.notePlaceBlocked(agent, place)
         kind = 'wander'
         targetPlaceId = undefined
         reason = 'Place was full — wandering nearby'
@@ -3550,22 +3629,32 @@ export class Simulation {
     })
   }
 
-  /** World process: +1 food per bush every N ticks (preset fact), capped at 6. */
+  /** World process: +1 food per bush/spring on each kind's interval, capped. */
   private stepBushRegrowth(): void {
     if (this.state.tick <= 0) return
     const interval = presetFacts(this.state.preset).bushRegrowInterval
-    if (this.state.tick % interval !== 0) return
+    const springInterval = springRegrowInterval(this.state.preset)
+    const bushDue = this.state.tick % interval === 0
+    const springDue = this.state.tick % springInterval === 0
+    if (!bushDue && !springDue) return
     for (const place of this.state.places) {
-      if (place.kind !== 'berry-bush') continue
-      const stock = place.inventory.food ?? 0
-      if (stock >= BUSH_STOCK_MAX) continue
-      this.regrowGoods(
-        place.id,
-        'food',
-        1,
-        `Berry bush ${place.id} regrew (stock ${stock + 1})`,
-      )
+      if (place.kind === 'berry-bush' && bushDue) {
+        this.regrowPlaceFood(place, BUSH_STOCK_MAX, `Berry bush ${place.id} regrew`)
+      } else if (place.kind === 'spring' && springDue) {
+        this.regrowPlaceFood(place, SPRING_STOCK_MAX, `Spring ${place.id} regrew`)
+      }
     }
+  }
+
+  private regrowPlaceFood(place: Place, cap: number, reasonPrefix: string): void {
+    const stock = place.inventory.food ?? 0
+    if (stock >= cap) return
+    this.regrowGoods(
+      place.id,
+      'food',
+      1,
+      `${reasonPrefix} (stock ${stock + 1})`,
+    )
   }
 
   /**

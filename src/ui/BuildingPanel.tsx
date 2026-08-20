@@ -26,6 +26,7 @@ const PLACE_ICON: Record<string, string> = {
   plaza: '🏛️',
   'berry-bush': '🫐',
   'notice-board': '📋',
+  spring: '⛲',
 }
 
 const PLACE_NAME: Record<string, string> = {
@@ -40,6 +41,7 @@ const PLACE_NAME: Record<string, string> = {
   plaza: 'Plaza',
   'berry-bush': 'Berry bush',
   'notice-board': 'Notice board',
+  spring: 'Spring',
 }
 
 function ownerLabel(

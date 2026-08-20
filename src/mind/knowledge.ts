@@ -1,6 +1,6 @@
 /** Per-agent world-model — derived only from felt history, examines, and heard says. */
 
-import { PLACE_VIEW_RADIUS, placeKindLabel } from '../sim/examine'
+import { blockedFeltLine, PLACE_VIEW_RADIUS, placeKindLabel } from '../sim/examine'
 import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
 
 /** Last ~12 sim-hours. */
@@ -89,6 +89,27 @@ export function feltLineFromEvent(e: SimEvent, agentId: string): string | null {
     if (e.data?.kind !== 'wage') return null
     const placeKind = String(e.data?.placeKind ?? 'workplace')
     return `worked the ${placeKind}: +${amount} coins at day's end`
+  }
+
+  if (e.type === 'place:blocked') {
+    const label = placeKindLabel(String(e.data?.placeKind ?? 'place'))
+    const ownerId = e.data?.ownerId
+    const ownerName = typeof e.data?.ownerName === 'string' ? e.data.ownerName : ''
+    const exclusive =
+      !!ownerName &&
+      typeof ownerId === 'string' &&
+      ownerId !== 'commons' &&
+      ownerId !== agentId
+    const rawNames = e.data?.occupantNames
+    const occupantNames = Array.isArray(rawNames)
+      ? rawNames.filter((n): n is string => typeof n === 'string' && n.length > 0)
+      : []
+    return blockedFeltLine({
+      label,
+      occupantNames,
+      ownerName: exclusive ? ownerName : undefined,
+      onlySpot: e.data?.onlySpot === true || e.data?.placeKind === 'spring',
+    })
   }
 
   return null
@@ -236,6 +257,8 @@ export interface NearbyPlaceLine {
   place: Place
   unfamiliar: boolean
   dist2: number
+  /** Private owner's display name when the place is not commons. */
+  ownerName?: string | null
 }
 
 /** Places within view, tagged unfamiliar when never examined or used. */
@@ -253,10 +276,16 @@ export function nearbyPlacesForObservation(
     const dy = p.y - agent.y
     const d = dx * dx + dy * dy
     if (d > r2) continue
+    const ownerId = world.owners?.[p.id]
+    const ownerName =
+      ownerId && ownerId !== 'commons'
+        ? (world.agents.find((a) => a.id === ownerId)?.name ?? null)
+        : null
     out.push({
       place: p,
       unfamiliar: !known.has(p.id),
       dist2: d,
+      ownerName,
     })
   }
   out.sort((a, b) => {
@@ -268,7 +297,8 @@ export function nearbyPlacesForObservation(
 
 export function formatNearbyPlaceLine(row: NearbyPlaceLine): string {
   const label = placeKindLabel(row.place.kind)
-  return row.unfamiliar ? `${label} (unfamiliar)` : label
+  const whose = row.ownerName ? ` (${row.ownerName}'s)` : ''
+  return row.unfamiliar ? `${label}${whose} (unfamiliar)` : `${label}${whose}`
 }
 
 /** 8-way compass from agent to a point. Tile y increases south. */
