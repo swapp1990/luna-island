@@ -185,8 +185,16 @@ try {
   let throttleBudget = false
   let lastFallbacks = 0
   let lastStale = 0
+  let wedgedMins = 0
   while (Date.now() - t0 < MINUTES * 60_000) {
     await new Promise((r) => setTimeout(r, 60_000))
+    // rAF keepalive: an occluded/asleep-display window stops firing frames, which
+    // freezes the tick loop (seen wedged at tick 9 for 28 min). Refront each minute.
+    try {
+      await page.bringToFront()
+    } catch {
+      /* window gone — the snapshot below will surface it */
+    }
     const snap = await page.evaluate((civic) => {
       const s = window.__simState
       const counts = window.__simControl.countEventTypes(civic)
@@ -217,6 +225,13 @@ try {
       : 0
     snap.decisionsThisMin = (snap.mind.decisions || 0) - lastDecisions
     snap.examinedThisMin = (snap.counts['discovery:examined'] || 0) - lastExamined
+    // Sim clock frozen = rAF stopped. Loud, because breathePct alone reads as slow, not dead.
+    if (snap.ticksThisMin <= 0) {
+      wedgedMins++
+      log(`WEDGE: sim clock frozen at tick ${snap.tick} for ${wedgedMins} min (rAF not firing)`)
+    } else {
+      wedgedMins = 0
+    }
     lastTick = snap.tick
     lastDecisions = snap.mind.decisions || 0
     lastExamined = snap.counts['discovery:examined'] || 0
