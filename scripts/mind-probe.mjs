@@ -33,6 +33,8 @@ const LEGACY_SAFE_DEFAULT =
 
 const NEED_SERVING = new Set(['eat', 'sleep', 'forage', 'work'])
 const SURVIVAL = new Set(['eat', 'forage', 'buy'])
+/** Survival hard gate: 90% of N, so small smoke runs are gradeable too. */
+const SURVIVAL_FLOOR = Math.max(1, Math.ceil(0.9 * N))
 
 const log = (msg) => console.log(`[mind-probe] ${msg}`)
 
@@ -911,8 +913,8 @@ async function main() {
         expectation = `commission OR house-saving reasoning ${hits}/${N} (≥1)`
       } else if (sc.id === 'S3') {
         const hits = actions.filter((a) => SURVIVAL.has(a)).length
-        pass = hits >= 9
-        expectation = `eat/forage/buy ${hits}/${N} (≥9)`
+        pass = hits >= SURVIVAL_FLOOR
+        expectation = `eat/forage/buy ${hits}/${N} (≥${SURVIVAL_FLOOR})`
       } else if (sc.id === 'S4') {
         expectation = `read-only founding reachability (gather/commission/drink/wander) — not a pass/fail gate`
         pass = true
@@ -946,8 +948,8 @@ async function main() {
         pass = true
       } else if (sc.id === 'W4') {
         const hits = actions.filter((a) => SURVIVAL.has(a)).length
-        pass = hits >= 9
-        expectation = `eat/forage/buy ${hits}/${N} (≥9) HARD GATE`
+        pass = hits >= SURVIVAL_FLOOR
+        expectation = `eat/forage/buy ${hits}/${N} (≥${SURVIVAL_FLOOR}) HARD GATE`
       } else if (sc.id.startsWith('W5')) {
         const commissionN = actions.filter((a) => a === 'commission').length
         const commissionHomeN = rows.filter((r) => {
