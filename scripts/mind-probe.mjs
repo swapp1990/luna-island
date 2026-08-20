@@ -404,6 +404,157 @@ function w4SurvivalFixture() {
   return survivalFixture()
 }
 
+/**
+ * W5: homeless Mira, a carry of wood, forest+rock near plaza, no sites.
+ * Asks whether the stream-bill wording makes commissioning a home thinkable.
+ */
+function w5HomeFromEmptyHandsFixture() {
+  const base = foundingWildFixture()
+  base.agent.homeId = ''
+  base.agent.inventory = { food: 2, wood: 3, stone: 0 }
+  base.agent.wallet = 20
+  base.agent.needs = emptyNeeds(0.85)
+  base.agent.actionStartNeeds = { ...base.agent.needs }
+  return base
+}
+
+/** W5B: W5 with plaza and bush already familiar — removes the examine sink. */
+function w5bFamiliarGroundFixture() {
+  const base = w5HomeFromEmptyHandsFixture()
+  base.events = [
+    usedPlaceEvent('agent-0', 'plaza-0', 8),
+    usedPlaceEvent('agent-0', 'bush-0', 12),
+  ]
+  return base
+}
+
+/** W5C: W5B with Ode (agent-4, restless-builder persona) instead of Mira. */
+function w5cOdeBuilderFixture() {
+  const base = w5bFamiliarGroundFixture()
+  base.agent.id = 'agent-4'
+  base.agent.name = 'Ode'
+  base.world.agents = [base.agent]
+  base.events = [
+    usedPlaceEvent('agent-4', 'plaza-0', 8),
+    usedPlaceEvent('agent-4', 'bush-0', 12),
+  ]
+  return base
+}
+
+/**
+ * W6: Mira owns a finished notice-board and already knows its workings
+ * via the builder-knowledge discovery:examined event.
+ */
+function w6BoardBuilderVerbsFixture(boardKnowledge) {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-0',
+    kind: 'notice-board',
+    x: 13,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const mira = baseAgent('agent-0', 'Mira', 10, 10, {
+    wallet: 20,
+    homeId: 'home-mira',
+    inventory: { food: 2, wood: 0, stone: 0 },
+    needs: emptyNeeds(0.85),
+  })
+  const ren = baseAgent('agent-3', 'Ren', 11, 10, {
+    wallet: 12,
+    homeId: 'home-mira',
+    needs: emptyNeeds(0.85),
+  })
+  const home = {
+    id: 'home-mira',
+    kind: 'home',
+    x: 8,
+    y: 10,
+    slots: 1,
+    inventory: emptyInv(),
+  }
+  return {
+    agent: mira,
+    world: baseWorld([plaza, board, home], [mira, ren], {
+      owners: {
+        'plaza-0': 'commons',
+        'notice-board-0': 'agent-0',
+        'home-mira': 'agent-0',
+      },
+      preset: 'wild',
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'plaza-0', 8),
+      usedPlaceEvent('agent-0', 'home-mira', 10),
+      {
+        seq: 20,
+        tick: 20,
+        type: 'ownership:transfer',
+        agentId: 'agent-0',
+        data: {
+          placeId: 'notice-board-0',
+          from: 'commons',
+          to: 'agent-0',
+          firstPrivate: true,
+        },
+        reason: 'built and paid for it',
+      },
+      {
+        seq: 21,
+        tick: 21,
+        type: 'construction:completed',
+        agentId: 'agent-0',
+        data: {
+          placeId: 'notice-board-0',
+          agentName: 'Mira',
+          kind: 'notice-board',
+          firstPrivate: true,
+        },
+        reason: "Mira's notice-board is finished",
+      },
+      {
+        seq: 22,
+        tick: 22,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: {
+          target: 'notice-board-0',
+          placeKind: 'notice-board',
+          knowledge: boardKnowledge,
+          agentName: 'Mira',
+        },
+        reason: 'Mira built this notice board and knows its workings',
+      },
+    ],
+  }
+}
+
+function multiTripBuildPlan(row) {
+  const blob = `${row.action ?? ''} ${row.target ?? ''} ${row.reasoning ?? ''} ${row.raw ?? ''}`
+  const gatherDeliver = /\b(gather|deliver|trip|trips|over time|deliveries|many trips)\b/i.test(
+    blob,
+  )
+  const homeOrBuild = /\b(home|house|build|commission|site bill)\b/i.test(blob)
+  return gatherDeliver && homeOrBuild
+}
+
+function civicIntentOrRuleTalk(row) {
+  if (row.action === 'propose' || row.action === 'vote' || row.action === 'sanction') {
+    return true
+  }
+  return /\b(propose|proposal|vote|voting|sanction|censure|posted rule|\brules?\b)\b/i.test(
+    row.reasoning ?? '',
+  )
+}
+
 async function poolMap(items, limit, fn) {
   const out = new Array(items.length)
   let next = 0
@@ -513,8 +664,10 @@ async function main() {
 
     const promptMod = await server.ssrLoadModule('/src/mind/prompt.ts')
     const parseMod = await server.ssrLoadModule('/src/mind/parse.ts')
+    const examineMod = await server.ssrLoadModule('/src/sim/examine.ts')
     const { buildSystemPrompt, buildUserPrompt, approxTokens } = promptMod
     const { parseMindJson } = parseMod
+    const boardKnowledge = examineMod.EXAMINE_BY_KIND['notice-board']
 
     const s1fix = slackDiscoveryFixture()
     const s2fix = affordableHouseFixture()
@@ -524,8 +677,13 @@ async function main() {
     const w2fix = w2CollapseInViewFixture()
     const w3fix = w3BoardReachabilityFixture()
     const w4fix = w4SurvivalFixture()
+    const w5fix = w5HomeFromEmptyHandsFixture()
+    const w5bfix = w5bFamiliarGroundFixture()
+    const w5cfix = w5cOdeBuilderFixture()
+    const w6fix = w6BoardBuilderVerbsFixture(boardKnowledge)
 
     const sysNew = buildSystemPrompt('agent-0')
+    const sysOde = buildSystemPrompt('agent-4')
     const sysLegacy = `${sysNew}\n${LEGACY_SAFE_DEFAULT}`
     const userS1 = buildUserPrompt(s1fix.agent, s1fix.world, s1fix.events)
     const userS2 = buildUserPrompt(s2fix.agent, s2fix.world, s2fix.events)
@@ -535,12 +693,19 @@ async function main() {
     const userW2 = buildUserPrompt(w2fix.agent, w2fix.world, w2fix.events)
     const userW3 = buildUserPrompt(w3fix.agent, w3fix.world, w3fix.events)
     const userW4 = buildUserPrompt(w4fix.agent, w4fix.world, w4fix.events)
+    const userW5 = buildUserPrompt(w5fix.agent, w5fix.world, w5fix.events)
+    const userW5B = buildUserPrompt(w5bfix.agent, w5bfix.world, w5bfix.events)
+    const userW5C = buildUserPrompt(w5cfix.agent, w5cfix.world, w5cfix.events)
+    const userW6 = buildUserPrompt(w6fix.agent, w6fix.world, w6fix.events)
 
-    if (!sysNew.includes('Buildable (wood/stone):')) {
-      throw new Error('WORLD_RULES missing generated Buildable menu')
+    if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
+      throw new Error('WORLD_RULES missing generated site-bill menu')
     }
     if (!userW2.includes('COLLAPSED')) {
       throw new Error('W2 fixture observation missing COLLAPSED nearby line')
+    }
+    if (!userW6.includes(boardKnowledge)) {
+      throw new Error('W6 fixture Known lines missing builder-knowledge examine text')
     }
 
     const fatTokens = {
@@ -552,9 +717,11 @@ async function main() {
       w2: approxTokens(sysNew, userW2),
       w3: approxTokens(sysNew, userW3),
       w4: approxTokens(sysNew, userW4),
+      w5: approxTokens(sysNew, userW5),
+      w6: approxTokens(sysNew, userW6),
     }
     log(
-      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4}`,
+      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6}`,
     )
     if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
       throw new Error('legacy safe-default sentence still in production prompt')
@@ -573,6 +740,10 @@ async function main() {
       { id: 'W2', label: 'collapse-in-view', system: sysNew, user: userW2 },
       { id: 'W3', label: 'board-reachability', system: sysNew, user: userW3 },
       { id: 'W4', label: 'survival-regression-wild', system: sysNew, user: userW4 },
+      { id: 'W5', label: 'home-from-empty-hands', system: sysNew, user: userW5 },
+      { id: 'W5B', label: 'home-familiar-ground', system: sysNew, user: userW5B },
+      { id: 'W5C', label: 'home-ode-builder', system: sysOde, user: userW5C },
+      { id: 'W6', label: 'board-builder-verbs', system: sysNew, user: userW6 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -617,6 +788,7 @@ async function main() {
 
       let expectation = ''
       let pass = true
+      let resultExtra = {}
       if (sc.id === 'S1' || sc.id === 'S1L') {
         const needN = actions.filter((a) => NEED_SERVING.has(a)).length
         const examN = actions.filter((a) => a === 'examine').length
@@ -675,6 +847,25 @@ async function main() {
         const hits = actions.filter((a) => SURVIVAL.has(a)).length
         pass = hits >= 9
         expectation = `eat/forage/buy ${hits}/${N} (≥9) HARD GATE`
+      } else if (sc.id.startsWith('W5')) {
+        const commissionN = actions.filter((a) => a === 'commission').length
+        const commissionHomeN = rows.filter((r) => {
+          if (r.action !== 'commission') return false
+          const t = String(r.target ?? '').toLowerCase()
+          return t === 'home' || t === 'house'
+        }).length
+        const multiTripN = rows.filter((r) => multiTripBuildPlan(r)).length
+        expectation = `commission ${commissionN}/${N}; commission home ${commissionHomeN}/${N}; multi-trip/build plan ${multiTripN}/${N} (REVIEW GATE — measurement)`
+        pass = true
+        resultExtra = { commissionN, commissionHomeN, multiTripN }
+      } else if (sc.id === 'W6') {
+        const civicN = rows.filter((r) => civicIntentOrRuleTalk(r)).length
+        const proposeN = actions.filter((a) => a === 'propose').length
+        const voteN = actions.filter((a) => a === 'vote').length
+        const sanctionN = actions.filter((a) => a === 'sanction').length
+        expectation = `propose/vote/sanction or rule-talk ${civicN}/${N}; propose ${proposeN} vote ${voteN} sanction ${sanctionN} (measurement — 0 is a finding)`
+        pass = true
+        resultExtra = { civicN, proposeN, voteN, sanctionN }
       }
 
       const result = {
@@ -684,6 +875,7 @@ async function main() {
         samples,
         expectation,
         verdict: pass ? 'PASS' : 'FAIL',
+        ...resultExtra,
         rows: rows.map((r) => ({
           action: r.action,
           target: r.target ?? '',

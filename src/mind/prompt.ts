@@ -3,6 +3,7 @@ import { toSimTime } from '../sim/time'
 import {
   buildableMenuLine,
   COLLAPSE_VIEW_RADIUS,
+  GATHER_CARRY,
   proposalTally,
 } from '../sim/sim'
 import { personaFor } from './personas'
@@ -50,10 +51,10 @@ function worldRulesText(): string {
 - Time: 1 tick = 1 sim minute; day 06:00 start; night 21:00–06:00.
 - Needs 0..1: hunger, energy, social decay over time; critical near 0.
 - One standing agent per tile; using a place = stand on a free slot tile.
-- Structures can be commissioned on buildable ground for wood, stone, and labour.
+- Commissioning marks a construction site on buildable ground; no materials in hand are needed to commission.
 - ${buildableMenuLine()}
+- A site accepts deliveries over many trips, from anyone; you can carry at most ${GATHER_CARRY.cap} of a good per trip; working at the site builds while it holds materials.
 - Wood comes from forest tiles; stone from rock tiles (gather).
-- Carried wood or stone can be delivered to a construction site that still needs it.
 - Water can be drunk at the shore; a well restores more.
 - Sleeping without a roof rests you less.
 - An adjacent villager may give food to someone who has collapsed.

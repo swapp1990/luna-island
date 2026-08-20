@@ -57,6 +57,7 @@ import type {
 } from './types'
 import { emptyInventory } from './types'
 import {
+  EXAMINE_BY_KIND,
   examineKnowledgeFor,
   PLACE_VIEW_RADIUS,
   placeKindLabel,
@@ -96,6 +97,11 @@ export const MAX_ACTIVE_SITES = 3
 export const GATHER_TICKS_PER_UNIT = 12
 /** Max carried units of one gathered good. */
 export const GATHER_CARRY_CAP = 3
+/**
+ * Live cap interpolated into WORLD_RULES. Initialized from GATHER_CARRY_CAP;
+ * tests mutate `.cap` to prove the prompt is generated, not handwritten.
+ */
+export const GATHER_CARRY = { cap: GATHER_CARRY_CAP }
 /** Bounded yield per forest/rock tile (same cap as a berry bush). */
 export const GATHER_STOCK_MAX = 6
 /** Energy restored per drink tick at a well (improvement). */
@@ -179,7 +185,7 @@ export function buildableMenuLine(): string {
     const r = BUILD_RECIPES[k]
     return `${k} ${r.wood}/${r.stone}`
   })
-  return `Buildable (wood/stone): ${parts.join(', ')}.`
+  return `Site bills, total wood/stone delivered over time: ${parts.join(', ')}.`
 }
 
 export function buildableKindList(): string {
@@ -3568,19 +3574,17 @@ export class Simulation {
                 : why === 'tile-not-buildable'
                   ? 'no buildable ground'
                   : why
-    if (why === 'unknown-kind') {
+    const skipBill =
+      !recipe ||
+      why === 'unknown-kind' ||
+      why === 'already-owns' ||
+      why === 'already-commissioning' ||
+      why === 'site-cap' ||
+      why === 'cannot-afford'
+    if (skipBill) {
       return `could not commission a ${kind} — ${whyText}`
     }
-    if (!recipe) {
-      return `could not commission a ${kind} — ${whyText}`
-    }
-    if (why === 'already-owns') {
-      return `could not commission a ${kind} — ${whyText}`
-    }
-    const wood = agent.inventory.wood ?? 0
-    const stone = agent.inventory.stone ?? 0
-    const carry = wood === 0 && stone === 0 ? '0' : `${wood} wood ${stone} stone`
-    return `could not commission a ${kind} — ${whyText}; ${recipe.wood} wood ${recipe.stone} stone needed, you carry ${carry}`
+    return `could not commission a ${kind} — ${whyText}; the site's bill is ${recipe.wood} wood / ${recipe.stone} stone, filled by deliveries over time`
   }
 
   private refuseCommission(
@@ -3917,6 +3921,24 @@ export class Simulation {
         ? `${commissionerAgent.name}'s ${finishedKind === 'home' ? 'house' : finishedKind} is finished`
         : `${finishedKind} ${site.id} is finished`,
     })
+
+    if (commissioner !== 'commons') {
+      const label = placeKindLabel(finishedKind)
+      this.events.append({
+        tick: this.state.tick,
+        type: 'discovery:examined',
+        agentId: commissioner,
+        data: {
+          target: site.id,
+          placeKind: finishedKind,
+          knowledge: EXAMINE_BY_KIND[finishedKind],
+          agentName: commissionerAgent?.name,
+        },
+        reason: commissionerAgent
+          ? `${commissionerAgent.name} built this ${label} and knows its workings`
+          : `built this ${label} and knows its workings`,
+      })
+    }
   }
 
   /**

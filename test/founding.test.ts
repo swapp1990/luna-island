@@ -763,12 +763,12 @@ describe('founding trap — fee, cooldown, observation', () => {
     expect(sim.commission('agent-0', 'home')).toBe(false)
     const felt = feltConsequenceLines('agent-0', sim.getEvents(), sim.state.tick)
     expect(felt.some((l) => l.includes('could not commission a home'))).toBe(true)
-    expect(felt.some((l) => l.includes('12 wood 6 stone needed, you carry 0'))).toBe(
-      true,
-    )
+    expect(felt.some((l) => /30-coin fee, you have 0/.test(l))).toBe(true)
+    expect(felt.some((l) => l.includes('you carry'))).toBe(false)
     const user = buildUserPrompt(agent, sim.state, sim.getEvents(), sim.state.mindNoteLog)
     expect(user).toContain('could not commission a home')
-    expect(user).toContain('12 wood 6 stone needed, you carry 0')
+    expect(user).toContain('30-coin fee, you have 0')
+    expect(user).not.toContain('you carry')
     expect(user).toMatch(/Recently felt:[\s\S]*could not commission a home/)
   })
 })

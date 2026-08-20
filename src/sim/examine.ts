@@ -10,7 +10,7 @@ export const SLEEP_GROUND_ENERGY = 1 / 700
 /** How far an agent can notice / tag places in an observation. */
 export const PLACE_VIEW_RADIUS = 6
 
-const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, string> = {
+export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, string> = {
   'notice-board':
     'Anyone may propose (2 coins) — posts your words here for a day. Vote yes or no on an open proposal. Sanction (1 coin) posts a public censure. Claim (15 coins) takes a commons place as yours. Posted rules may be followed or broken.',
   'berry-bush': 'Berries grow here, sparser in lean times.',
