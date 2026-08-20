@@ -5,8 +5,11 @@
 import { combinePrompt, stripFences } from './luna-mcp-worker'
 
 // Measured: realistic ~1200-token decides run 20-27s (2 of 3 healthy calls
-// died at the original 30s ceiling). Same deadline as the codex path.
-export const GROK_KILL_MS = 60_000
+// died at the original 30s ceiling). Under soak concurrency the grok-4.6
+// tail crosses 60s (2 kill-timeouts + 5 fallbacks in the first 9 min of the
+// P4-5 soak); 90s covers the observed tail, the stale guard handles late
+// arrivals.
+export const GROK_KILL_MS = 90_000
 export const DEFAULT_GROK_MODEL = 'grok-4.6'
 
 let grokPromptSeq = 0
