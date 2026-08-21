@@ -1148,8 +1148,29 @@ async function main() {
     const promptMod = await server.ssrLoadModule('/src/mind/prompt.ts')
     const parseMod = await server.ssrLoadModule('/src/mind/parse.ts')
     const examineMod = await server.ssrLoadModule('/src/sim/examine.ts')
-    const { buildSystemPrompt, buildUserPrompt, approxTokens } = promptMod
-    const { parseMindJson } = parseMod
+    const {
+      buildSystemPrompt,
+      buildUserPrompt,
+      approxTokens,
+      buildReflectionSystemPrompt,
+      buildReflectionUserPrompt,
+    } = promptMod
+    const { parseMindJson, parseReflectionJson } = parseMod
+    /**
+     * Adapter so a reflection scenario flows through the same histogram machinery:
+     * notes/learned collapse into a pseudo-intent whose reason is the note text,
+     * which the civic/rule-talk regexes can then read.
+     */
+    const parseReflectAsIntent = (text) => {
+      const r = parseReflectionJson(text)
+      if (!r.ok) return r
+      const notes = [...(r.notes ?? []), ...(r.learned ?? [])]
+      return {
+        ok: true,
+        intent: { kind: 'reflect-notes', reason: notes.join(' | ') },
+        raw: { target: '' },
+      }
+    }
     const boardKnowledge = examineMod.EXAMINE_BY_KIND['notice-board']
     const springKnowledge = examineMod.EXAMINE_BY_KIND.spring
 
@@ -1238,6 +1259,22 @@ async function main() {
     const userG7 = withInjectedObservation(userG4, [
       'Standing problem: Wren has kept you from the spring 3 times; the spring is Wren’s and holds 8 food.',
     ])
+    // R1: THE REFLECTION FRAME, unmodified contract. Day-scale retrospective over
+    // the grievance day. Output is notes/learned (propose is not even legal here) —
+    // the question is whether day-scale thinking surfaces institutional intent at all.
+    const sysR1 = buildReflectionSystemPrompt('agent-0')
+    const userR1 = buildReflectionUserPrompt('agent-0', g4fix.events, 1)
+    // R2: decide contract (propose IS legal), but every rival urge removed —
+    // sated, no collapsed neighbour to rescue, night, grievance intact.
+    const r2fix = pressureLadderFixture(boardKnowledge, springKnowledge, {
+      occupied: true,
+      owned: true,
+      blocks: 'pattern',
+      told: true,
+      sated: true,
+    })
+    r2fix.world.tick = 1320 // 22:00 — night, nothing pressing
+    const userR2 = buildUserPrompt(r2fix.agent, r2fix.world, r2fix.events)
     // G8: G7 plus the absence of any rule covering it, stated as civic state.
     const userG8 = withInjectedObservation(userG4, [
       'Standing problem: Wren has kept you from the spring 3 times; the spring is Wren’s and holds 8 food. Sela lies collapsed nearby.',
@@ -1361,6 +1398,14 @@ async function main() {
       { id: 'G6', label: 'someone-elses-proposal', system: sysNew, user: userG6 },
       { id: 'G7', label: 'grievance-as-object', system: sysNew, user: userG7 },
       { id: 'G8', label: 'grievance-plus-no-rule', system: sysNew, user: userG8 },
+      {
+        id: 'R1',
+        label: 'reflection-frame',
+        system: sysR1,
+        user: userR1,
+        parser: parseReflectAsIntent,
+      },
+      { id: 'R2', label: 'night-sated-grievance', system: sysNew, user: userR2 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1397,7 +1442,7 @@ async function main() {
       log(`running ${sc.id} ${sc.label} (n=${N})`)
       const idxs = Array.from({ length: N }, (_, i) => i)
       const rows = await poolMap(idxs, CONCURRENCY, () =>
-        decideOnce(PORT, sc.system, sc.user, parseMindJson),
+        decideOnce(PORT, sc.system, sc.user, sc.parser ?? parseMindJson),
       )
       const actions = rows.map((r) => r.action)
       const hist = histogram(actions)
