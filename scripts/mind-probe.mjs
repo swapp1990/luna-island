@@ -105,6 +105,19 @@ function baseWorld(places, agents, extra = {}) {
   }
 }
 
+/**
+ * PROBE-ONLY prompt surgery. Inserts lines just above `Recently felt:` so a
+ * standing grievance appears as a present-tense OBJECT in the observation,
+ * the way an open proposal does. Deliberately NOT in src/mind/prompt.ts —
+ * this tests whether authorship is object-bound before anything ships.
+ */
+function withInjectedObservation(user, lines) {
+  const anchor = 'Recently felt:'
+  const i = user.indexOf(anchor)
+  if (i < 0) throw new Error('withInjectedObservation: anchor "Recently felt:" not found')
+  return `${user.slice(0, i)}${lines.join('\n')}\n${user.slice(i)}`
+}
+
 function usedPlaceEvent(agentId, placeId, tick = 10) {
   return {
     seq: tick,
@@ -1220,6 +1233,16 @@ async function main() {
     const userG4 = buildUserPrompt(g4fix.agent, g4fix.world, g4fix.events)
     const userG5 = buildUserPrompt(g5fix.agent, g5fix.world, g5fix.events)
     const userG6 = buildUserPrompt(g6fix.agent, g6fix.world, g6fix.events)
+    // G7: G4 with the grievance aggregated into a standing object (counts, names,
+    // present tense) — facts already in Recently-felt, restated as one object.
+    const userG7 = withInjectedObservation(userG4, [
+      'Standing problem: Wren has kept you from the spring 3 times; the spring is Wren’s and holds 8 food.',
+    ])
+    // G8: G7 plus the absence of any rule covering it, stated as civic state.
+    const userG8 = withInjectedObservation(userG4, [
+      'Standing problem: Wren has kept you from the spring 3 times; the spring is Wren’s and holds 8 food. Sela lies collapsed nearby.',
+      'No posted rule covers the spring.',
+    ])
 
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
@@ -1336,6 +1359,8 @@ async function main() {
       { id: 'G4', label: 'corroborated', system: sysNew, user: userG4 },
       { id: 'G5', label: 'sated-bystander', system: sysNew, user: userG5 },
       { id: 'G6', label: 'someone-elses-proposal', system: sysNew, user: userG6 },
+      { id: 'G7', label: 'grievance-as-object', system: sysNew, user: userG7 },
+      { id: 'G8', label: 'grievance-plus-no-rule', system: sysNew, user: userG8 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1614,7 +1639,7 @@ async function main() {
       )
     }
 
-    const ladderIds = ['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6']
+    const ladderIds = ['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8']
     let threshold = 'none'
     for (const id of ladderIds) {
       const scn = report.scenarios[id]
