@@ -23,6 +23,8 @@ const arg = (name, dflt) => {
 const PORT = Number(arg('port', '5188'))
 const N = Number(arg('n', '10'))
 const CONCURRENCY = Number(arg('concurrency', '3'))
+/** Print the built prompts for the selected scenarios and exit (no model calls). */
+const DUMP = process.argv.includes('--dump')
 const ONLY = String(arg('only', ''))
   .split(',')
   .map((s) => s.trim())
@@ -1338,6 +1340,20 @@ async function main() {
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
     if (scenarios.length === 0) throw new Error(`--only matched nothing: ${ONLY.join(',')}`)
+
+    // --dump: print the exact prompts a scenario sends, make zero model calls.
+    // Twice now a fixture was uninterpretable because a fact never reached the
+    // prompt; inspect before theorising.
+    if (DUMP) {
+      for (const sc of scenarios) {
+        console.log(`\n${'='.repeat(70)}\n${sc.id} ${sc.label} — SYSTEM\n${'='.repeat(70)}`)
+        console.log(sc.system)
+        console.log(`\n${'-'.repeat(70)}\n${sc.id} ${sc.label} — USER\n${'-'.repeat(70)}`)
+        console.log(sc.user)
+      }
+      await shutdown()
+      return
+    }
 
     const report = {
       ts: Date.now(),

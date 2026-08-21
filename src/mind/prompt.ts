@@ -4,6 +4,7 @@ import {
   buildableMenuLine,
   COLLAPSE_VIEW_RADIUS,
   GATHER_CARRY,
+  PROPOSE_COST,
   proposalTally,
 } from '../sim/sim'
 import { personaFor } from './personas'
@@ -185,6 +186,7 @@ function civicObservationLines(
 ): string[] {
   const lines: string[] = []
   const open = (world.proposals ?? []).filter((p) => p.status === 'open')
+  const board = world.places.find((p) => p.kind === 'notice-board')
   if (open.length > 0) {
     lines.push('Open proposals:')
     for (const p of open) {
@@ -195,6 +197,11 @@ function civicObservationLines(
         `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" yes ${tally.yes} / no ${tally.no} · ${left} min left`,
       )
     }
+  } else if (board) {
+    // Present-tense civic state. The same fact sits in the board's examine text,
+    // but there it reads as documentation and never moved a mind; an open
+    // proposal in THIS block is what produced votes (probe G6).
+    lines.push(`Open proposals: none posted (posting one costs ${PROPOSE_COST} coins)`)
   }
   const active = (world.rules ?? []).filter((r) => r.active).slice(0, 5)
   if (active.length > 0) {
