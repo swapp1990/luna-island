@@ -814,6 +814,10 @@ function pressureLadderFixture(boardKnowledge, springKnowledge, opts = {}) {
   const blocks = opts.blocks ?? 'none'
   const collapsed = opts.collapsed === true
   const told = opts.told === true
+  /** G5: well-fed bystander — witnesses everything, is not personally starving. */
+  const sated = opts.sated === true
+  /** G6: someone else already authored a rule about the spring — voting vs authoring. */
+  const openProposal = opts.openProposal === true
 
   const plaza = {
     id: 'plaza-0',
@@ -850,8 +854,10 @@ function pressureLadderFixture(boardKnowledge, springKnowledge, opts = {}) {
   const mira = baseAgent('agent-0', 'Mira', 14, 10, {
     wallet: 20,
     homeId: '',
-    inventory: emptyInv(),
-    needs: { hunger: 0.18, energy: 0.6, social: 0.7 },
+    inventory: sated ? { food: 3, wood: 0, stone: 0 } : emptyInv(),
+    needs: sated
+      ? { hunger: 0.85, energy: 0.85, social: 0.8 }
+      : { hunger: 0.18, energy: 0.6, social: 0.7 },
   })
   const agents = [mira]
   if (occupied || owned) {
@@ -940,6 +946,36 @@ function pressureLadderFixture(boardKnowledge, springKnowledge, opts = {}) {
     })
   }
 
+  const proposals = openProposal
+    ? [
+        {
+          id: 'prop-agent-3-200',
+          proposerId: 'agent-3',
+          text: 'The spring belongs to all of us — no one may keep others from it.',
+          createdTick: 200,
+          closesTick: 1640,
+          votes: {},
+          status: 'open',
+        },
+      ]
+    : []
+  if (openProposal) {
+    events.push({
+      seq: 235,
+      tick: 235,
+      type: 'institution:proposed',
+      agentId: 'agent-3',
+      data: {
+        proposalId: 'prop-agent-3-200',
+        text: 'The spring belongs to all of us — no one may keep others from it.',
+        proposerId: 'agent-3',
+        agentName: 'Ren',
+        closesTick: 1640,
+      },
+      reason: 'Ren proposed: "The spring belongs to all of us — no one may keep others from it."',
+    })
+  }
+
   return {
     agent: mira,
     world: baseWorld([plaza, board, spring, bush], agents, {
@@ -950,6 +986,7 @@ function pressureLadderFixture(boardKnowledge, springKnowledge, opts = {}) {
         'bush-0': 'commons',
       },
       preset: 'wild',
+      proposals,
     }),
     events,
   }
@@ -1136,6 +1173,24 @@ async function main() {
       collapsed: true,
       told: true,
     })
+    // G5: G4 pressure on a well-fed bystander — tests whether hunger crowds out politics.
+    const g5fix = pressureLadderFixture(boardKnowledge, springKnowledge, {
+      occupied: true,
+      owned: true,
+      blocks: 'pattern',
+      collapsed: true,
+      told: true,
+      sated: true,
+    })
+    // G6: G4 plus Ren's open proposal about the spring — tests authorship vs politics.
+    const g6fix = pressureLadderFixture(boardKnowledge, springKnowledge, {
+      occupied: true,
+      owned: true,
+      blocks: 'pattern',
+      collapsed: true,
+      told: true,
+      openProposal: true,
+    })
 
     const sysNew = buildSystemPrompt('agent-0')
     const sysOde = buildSystemPrompt('agent-4')
@@ -1161,6 +1216,8 @@ async function main() {
     const userG2 = userW9B
     const userG3 = buildUserPrompt(g3fix.agent, g3fix.world, g3fix.events)
     const userG4 = buildUserPrompt(g4fix.agent, g4fix.world, g4fix.events)
+    const userG5 = buildUserPrompt(g5fix.agent, g5fix.world, g5fix.events)
+    const userG6 = buildUserPrompt(g6fix.agent, g6fix.world, g6fix.events)
 
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
@@ -1275,6 +1332,8 @@ async function main() {
       { id: 'G2', label: 'claimed-and-costly', system: sysNew, user: userG2 },
       { id: 'G3', label: 'public-harm', system: sysNew, user: userG3 },
       { id: 'G4', label: 'corroborated', system: sysNew, user: userG4 },
+      { id: 'G5', label: 'sated-bystander', system: sysNew, user: userG5 },
+      { id: 'G6', label: 'someone-elses-proposal', system: sysNew, user: userG6 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1290,7 +1349,7 @@ async function main() {
 
     let g0Failed = false
     for (const sc of scenarios) {
-      if (g0Failed && /^G[1-4]$/.test(sc.id)) {
+      if (g0Failed && /^G[1-9]$/.test(sc.id)) {
         log(`skipping ${sc.id} ${sc.label} — G0 perception-control failed`)
         continue
       }
@@ -1457,7 +1516,7 @@ async function main() {
           proposeN,
           sanctionN,
         }
-      } else if (sc.id.startsWith('W9') || /^G[0-4]$/.test(sc.id)) {
+      } else if (sc.id.startsWith('W9') || /^G[0-9]$/.test(sc.id)) {
         const proposeN = actions.filter((a) => a === 'propose').length
         const sanctionN = actions.filter((a) => a === 'sanction').length
         const claimN = actions.filter((a) => a === 'claim').length
@@ -1539,7 +1598,7 @@ async function main() {
       )
     }
 
-    const ladderIds = ['G0', 'G1', 'G2', 'G3', 'G4']
+    const ladderIds = ['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6']
     let threshold = 'none'
     for (const id of ladderIds) {
       const scn = report.scenarios[id]
