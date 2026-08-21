@@ -127,7 +127,15 @@ export const SHEEP_TEMPLATES: readonly SheepTemplate[] = [
       const bush = nearestBush(ctx.sheep, ctx.world)
       return bush != null && bush.stock === 0
     },
-    text: () => clip(`The bushes by the forest are picked clean.`),
+    text: (ctx) => {
+      const bush = nearestBush(ctx.sheep, ctx.world)
+      const stock = bush?.stock ?? 0
+      return clip(
+        stock === 0
+          ? `The nearest berry bush is picked clean.`
+          : `The nearest berry bush has ${stock} food left.`,
+      )
+    },
   },
   {
     id: 'food-dear',

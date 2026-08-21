@@ -42,7 +42,9 @@ describe('prompt reframe (P3-14 A1)', () => {
     agent.y = board.y
     const user = buildUserPrompt(agent, sim.state, sim.getEvents(), sim.state.mindNoteLog)
     expect(user).toMatch(/Never examined:/)
-    expect(user).toMatch(/notice-board \(\d+ tiles [NSEW]{1,2}(?:, on the plaza)?\)/)
+    expect(user).toMatch(
+      /notice-board \(\d+ tiles [NSEW]{1,2}(?:, on the plaza)?; [^)]+\)/,
+    )
     expect(user).not.toMatch(/mysterious/i)
     expect(user).not.toMatch(/you're curious/i)
   })

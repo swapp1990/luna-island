@@ -270,9 +270,10 @@ describe('P4-7 contested commons', () => {
     const springRow = rows.find((r) => r.place.id === spring.id)
     expect(springRow?.ownerName).toBe('Wren')
     expect(formatNearbyPlaceLine(springRow!)).toContain("Wren's")
+    expect(formatNearbyPlaceLine(springRow!)).toMatch(/spring \(8 food, Wren's\)/)
 
     const prompt = buildUserPrompt(mira, sim.state, [])
-    expect(prompt).toMatch(/spring \(Wren's\)/)
+    expect(prompt).toMatch(/spring \(8 food, Wren's\)/)
   })
 
   it('feltLineFromEvent reconstructs occupancy and owner-exclusion lines', () => {

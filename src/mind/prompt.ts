@@ -226,8 +226,6 @@ export function buildUserPrompt(
   mindNoteLog?: readonly MindNoteRecord[],
 ): string {
   const t = toSimTime(world.tick)
-  const stall = world.places.find((p) => p.kind === 'stall')
-  const stock = stall?.inventory?.food ?? 0
   const job = agent.employedAt
     ? world.places.find((p) => p.id === agent.employedAt)
     : null
@@ -260,7 +258,6 @@ export function buildUserPrompt(
     `Wallet: ${agent.wallet} coins | Inventory: food ${inv.food} wood ${inv.wood} stone ${inv.stone}`,
     `Job: ${job ? `${placeKindLabel(job)} (${job.wage ?? 0}/day)` : 'unemployed'}`,
     `Current action: ${agent.action.kind}${agent.action.targetPlaceId ? ` @${agent.action.targetPlaceId}` : ''} — ${agent.action.reason}`,
-    `Stall stock: ${stock}`,
     `Nearby: ${near.length ? near.join('; ') : 'none'}`,
     ...(news ? [news] : []),
     `Nearby places: ${

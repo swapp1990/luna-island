@@ -261,6 +261,13 @@ export interface NearbyPlaceLine {
   ownerName?: string | null
 }
 
+/** P4-7 private-place name; null for commons or unknown owner. */
+export function privateOwnerName(placeId: string, world: WorldState): string | null {
+  const ownerId = world.owners?.[placeId]
+  if (!ownerId || ownerId === 'commons') return null
+  return world.agents.find((a) => a.id === ownerId)?.name ?? null
+}
+
 /** Places within view, tagged unfamiliar when never examined or used. */
 export function nearbyPlacesForObservation(
   agent: AgentState,
@@ -276,16 +283,11 @@ export function nearbyPlacesForObservation(
     const dy = p.y - agent.y
     const d = dx * dx + dy * dy
     if (d > r2) continue
-    const ownerId = world.owners?.[p.id]
-    const ownerName =
-      ownerId && ownerId !== 'commons'
-        ? (world.agents.find((a) => a.id === ownerId)?.name ?? null)
-        : null
     out.push({
       place: p,
       unfamiliar: !known.has(p.id),
       dist2: d,
-      ownerName,
+      ownerName: privateOwnerName(p.id, world),
     })
   }
   out.sort((a, b) => {
@@ -295,10 +297,29 @@ export function nearbyPlacesForObservation(
   return out.slice(0, 8)
 }
 
+const STOCK_GOODS = ['food', 'wood', 'stone'] as const
+
+/** Compact inventory phrase from actual goods. All-zero → `empty`. */
+export function formatPlaceStock(inventory: Place['inventory'] | undefined): string {
+  const inv = inventory ?? { food: 0, wood: 0, stone: 0 }
+  const parts: string[] = []
+  for (const good of STOCK_GOODS) {
+    const n = inv[good] ?? 0
+    if (n > 0) parts.push(`${n} ${good}`)
+  }
+  return parts.length > 0 ? parts.join(', ') : 'empty'
+}
+
+function stockAndOwnerInner(inventory: Place['inventory'] | undefined, ownerName?: string | null): string {
+  const stock = formatPlaceStock(inventory)
+  return ownerName ? `${stock}, ${ownerName}'s` : stock
+}
+
 export function formatNearbyPlaceLine(row: NearbyPlaceLine): string {
   const label = placeKindLabel(row.place.kind)
-  const whose = row.ownerName ? ` (${row.ownerName}'s)` : ''
-  return row.unfamiliar ? `${label}${whose} (unfamiliar)` : `${label}${whose}`
+  const inner = stockAndOwnerInner(row.place.inventory, row.ownerName)
+  const base = `${label} (${inner})`
+  return row.unfamiliar ? `${base} (unfamiliar)` : base
 }
 
 /** 8-way compass from agent to a point. Tile y increases south. */
@@ -335,5 +356,6 @@ export function formatUnfamiliarPlaceFact(
       : onPlaza
         ? `${dist} tiles ${dir}, on the plaza`
         : `${dist} tiles ${dir}`
-  return `${place.kind} (${where})`
+  const inner = stockAndOwnerInner(place.inventory, privateOwnerName(place.id, world))
+  return `${place.kind} (${where}; ${inner})`
 }

@@ -803,6 +803,166 @@ function w9SpringClaimedByAnotherFixture(boardKnowledge, springKnowledge) {
   return base
 }
 
+/**
+ * Pressure ladder (P4-8). Shared world: Mira, wild, board verbs in Known,
+ * wallet ≥ 5, spring holding 8 food, bush visibly empty, hunger ~0.18.
+ * W9B is G2 on this fixture (claimed + costly); do not duplicate it.
+ */
+function pressureLadderFixture(boardKnowledge, springKnowledge, opts = {}) {
+  const occupied = opts.occupied === true
+  const owned = opts.owned === true
+  const blocks = opts.blocks ?? 'none'
+  const collapsed = opts.collapsed === true
+  const told = opts.told === true
+
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-0',
+    kind: 'notice-board',
+    x: 13,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const spring = {
+    id: 'spring-0',
+    kind: 'spring',
+    x: 16,
+    y: 10,
+    slots: 1,
+    inventory: { food: 8, wood: 0, stone: 0 },
+  }
+  const bush = {
+    id: 'bush-0',
+    kind: 'berry-bush',
+    x: 11,
+    y: 10,
+    slots: 2,
+    inventory: { food: 0, wood: 0, stone: 0 },
+  }
+  const mira = baseAgent('agent-0', 'Mira', 14, 10, {
+    wallet: 20,
+    homeId: '',
+    inventory: emptyInv(),
+    needs: { hunger: 0.18, energy: 0.6, social: 0.7 },
+  })
+  const agents = [mira]
+  if (occupied || owned) {
+    const wren = baseAgent('agent-11', 'Wren', occupied ? 16 : 20, occupied ? 10 : 16, {
+      wallet: 12,
+      homeId: '',
+      inventory: emptyInv(),
+      needs: emptyNeeds(0.85),
+      action: occupied
+        ? {
+            kind: 'forage',
+            targetPlaceId: 'spring-0',
+            targetX: 16,
+            targetY: 10,
+            reason: 'picking spring fruit',
+          }
+        : { kind: 'idle', reason: 'elsewhere' },
+    })
+    agents.push(wren)
+  }
+  if (collapsed) {
+    const sela = baseAgent('agent-7', 'Sela', 15, 12, {
+      wallet: 0,
+      inventory: emptyInv(),
+      needs: { hunger: 0.01, energy: 0.4, social: 0.5 },
+    })
+    sela.collapsed = true
+    sela.action = { kind: 'idle', reason: 'Collapsed from hunger' }
+    agents.push(sela)
+  }
+
+  const events = [
+    usedPlaceEvent('agent-0', 'plaza-0', 8),
+    usedPlaceEvent('agent-0', 'spring-0', 40),
+    usedPlaceEvent('agent-0', 'bush-0', 50),
+    boardExamineEvent('agent-0', 'Mira', 'notice-board-0', boardKnowledge, 60),
+    {
+      seq: 70,
+      tick: 70,
+      type: 'discovery:examined',
+      agentId: 'agent-0',
+      data: {
+        target: 'spring-0',
+        placeKind: 'spring',
+        knowledge: springKnowledge,
+        agentName: 'Mira',
+      },
+      reason: 'Mira has looked at the spring',
+    },
+  ]
+  if (blocks === 'once') {
+    events.push(springBlockedEvent({ tick: 220 }))
+  } else if (blocks === 'pattern') {
+    events.push(springBlockedEvent({ tick: 160 }))
+    events.push(springBlockedEvent({ tick: 190 }))
+    events.push(
+      springBlockedEvent({
+        tick: 220,
+        ownerId: owned ? 'agent-11' : 'commons',
+        ownerName: owned ? 'Wren' : undefined,
+      }),
+    )
+  }
+  if (collapsed) {
+    events.push({
+      seq: 225,
+      tick: 225,
+      type: 'agent:collapsed',
+      agentId: 'agent-7',
+      data: { agentName: 'Sela', hunger: 0.01 },
+      reason: 'Sela collapsed from hunger (1%) — needs food',
+    })
+  }
+  if (told) {
+    events.push({
+      seq: 230,
+      tick: 230,
+      type: 'mind:say',
+      agentId: 'agent-3',
+      data: {
+        partnerId: 'agent-0',
+        agentName: 'Ren',
+        text: 'Wren keeps the spring to himself — others have been turned away hungry.',
+      },
+      reason: 'Ren speaking to Mira',
+    })
+  }
+
+  return {
+    agent: mira,
+    world: baseWorld([plaza, board, spring, bush], agents, {
+      owners: {
+        'plaza-0': 'commons',
+        'notice-board-0': 'commons',
+        'spring-0': owned ? 'agent-11' : 'commons',
+        'bush-0': 'commons',
+      },
+      preset: 'wild',
+    }),
+    events,
+  }
+}
+
+function w9bSpringClaimedAndItHurtsFixture(boardKnowledge, springKnowledge) {
+  return pressureLadderFixture(boardKnowledge, springKnowledge, {
+    occupied: true,
+    owned: true,
+    blocks: 'pattern',
+  })
+}
+
 function multiTripBuildPlan(row) {
   const blob = `${row.action ?? ''} ${row.target ?? ''} ${row.reasoning ?? ''} ${row.raw ?? ''}`
   const gatherDeliver = /\b(gather|deliver|trip|trips|over time|deliveries|many trips)\b/i.test(
@@ -956,6 +1116,26 @@ async function main() {
     const w7fix = w7FoundingProposalVoteFixture(boardKnowledge)
     const w8fix = w8SpringBlockedOnceFixture(boardKnowledge, springKnowledge)
     const w9fix = w9SpringClaimedByAnotherFixture(boardKnowledge, springKnowledge)
+    const w9bfix = w9bSpringClaimedAndItHurtsFixture(boardKnowledge, springKnowledge)
+    const g0fix = pressureLadderFixture(boardKnowledge, springKnowledge)
+    const g1fix = pressureLadderFixture(boardKnowledge, springKnowledge, {
+      occupied: true,
+      blocks: 'once',
+    })
+    const g2fix = w9bfix
+    const g3fix = pressureLadderFixture(boardKnowledge, springKnowledge, {
+      occupied: true,
+      owned: true,
+      blocks: 'pattern',
+      collapsed: true,
+    })
+    const g4fix = pressureLadderFixture(boardKnowledge, springKnowledge, {
+      occupied: true,
+      owned: true,
+      blocks: 'pattern',
+      collapsed: true,
+      told: true,
+    })
 
     const sysNew = buildSystemPrompt('agent-0')
     const sysOde = buildSystemPrompt('agent-4')
@@ -975,6 +1155,12 @@ async function main() {
     const userW7 = buildUserPrompt(w7fix.agent, w7fix.world, w7fix.events)
     const userW8 = buildUserPrompt(w8fix.agent, w8fix.world, w8fix.events)
     const userW9 = buildUserPrompt(w9fix.agent, w9fix.world, w9fix.events)
+    const userW9B = buildUserPrompt(w9bfix.agent, w9bfix.world, w9bfix.events)
+    const userG0 = buildUserPrompt(g0fix.agent, g0fix.world, g0fix.events)
+    const userG1 = buildUserPrompt(g1fix.agent, g1fix.world, g1fix.events)
+    const userG2 = userW9B
+    const userG3 = buildUserPrompt(g3fix.agent, g3fix.world, g3fix.events)
+    const userG4 = buildUserPrompt(g4fix.agent, g4fix.world, g4fix.events)
 
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
@@ -1006,6 +1192,36 @@ async function main() {
     if (!userW9.includes(boardKnowledge)) {
       throw new Error('W9 fixture Known lines missing notice-board verbs')
     }
+    if (userG0.includes('Stall stock:')) {
+      throw new Error('G0 still has retired Stall stock line')
+    }
+    if (!userG0.includes('berry bush (empty)')) {
+      throw new Error('G0 nearby places missing empty bush')
+    }
+    if (!userG0.includes('spring (8 food)') || /spring \([^)]*Wren's\)/.test(userG0)) {
+      throw new Error('G0 nearby places missing commons full spring')
+    }
+    if (!userG1.includes('could not use the spring — Wren was in the only spot')) {
+      throw new Error('G1 Recently-felt missing occupancy block line')
+    }
+    if (!userG2.includes("spring (8 food, Wren's)")) {
+      throw new Error('G2 nearby places missing owned full spring')
+    }
+    if (!userG2.includes('berry bush (empty)')) {
+      throw new Error('G2 nearby places missing empty bush')
+    }
+    if (!userG2.includes("could not use the spring — it is Wren's now")) {
+      throw new Error('G2 Recently-felt missing owner-exclusion line')
+    }
+    if (!userG3.includes('COLLAPSED')) {
+      throw new Error('G3 observation missing collapsed villager')
+    }
+    if (!userG4.includes('Ren told me:') || !userG4.includes('Wren keeps the spring')) {
+      throw new Error('G4 Known missing told corroboration')
+    }
+    if (!userG0.includes(boardKnowledge) || !userG4.includes(boardKnowledge)) {
+      throw new Error('ladder fixtures Known lines missing notice-board verbs')
+    }
 
     const fatTokens = {
       s1: approxTokens(sysNew, userS1),
@@ -1021,9 +1237,14 @@ async function main() {
       w7: approxTokens(sysNew, userW7),
       w8: approxTokens(sysNew, userW8),
       w9: approxTokens(sysNew, userW9),
+      g0: approxTokens(sysNew, userG0),
+      g1: approxTokens(sysNew, userG1),
+      g2: approxTokens(sysNew, userG2),
+      g3: approxTokens(sysNew, userG3),
+      g4: approxTokens(sysNew, userG4),
     }
     log(
-      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6} w7=${fatTokens.w7} w8=${fatTokens.w8} w9=${fatTokens.w9}`,
+      `approxTokens s1=${fatTokens.s1} s2=${fatTokens.s2} s3=${fatTokens.s3} s4=${fatTokens.s4} w1=${fatTokens.w1} w2=${fatTokens.w2} w3=${fatTokens.w3} w4=${fatTokens.w4} w5=${fatTokens.w5} w6=${fatTokens.w6} w7=${fatTokens.w7} w8=${fatTokens.w8} w9=${fatTokens.w9} g0=${fatTokens.g0} g1=${fatTokens.g1} g2=${fatTokens.g2} g3=${fatTokens.g3} g4=${fatTokens.g4}`,
     )
     if (sysNew.includes(LEGACY_SAFE_DEFAULT)) {
       throw new Error('legacy safe-default sentence still in production prompt')
@@ -1049,6 +1270,11 @@ async function main() {
       { id: 'W7', label: 'founding-proposal-vote', system: sysNew, user: userW7 },
       { id: 'W8', label: 'spring-blocked-once', system: sysNew, user: userW8 },
       { id: 'W9', label: 'spring-claimed-by-another', system: sysNew, user: userW9 },
+      { id: 'G0', label: 'perception-control', system: sysNew, user: userG0 },
+      { id: 'G1', label: 'occupied-once', system: sysNew, user: userG1 },
+      { id: 'G2', label: 'claimed-and-costly', system: sysNew, user: userG2 },
+      { id: 'G3', label: 'public-harm', system: sysNew, user: userG3 },
+      { id: 'G4', label: 'corroborated', system: sysNew, user: userG4 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1062,7 +1288,12 @@ async function main() {
       scenarios: {},
     }
 
+    let g0Failed = false
     for (const sc of scenarios) {
+      if (g0Failed && /^G[1-4]$/.test(sc.id)) {
+        log(`skipping ${sc.id} ${sc.label} — G0 perception-control failed`)
+        continue
+      }
       log(`running ${sc.id} ${sc.label} (n=${N})`)
       const idxs = Array.from({ length: N }, (_, i) => i)
       const rows = await poolMap(idxs, CONCURRENCY, () =>
@@ -1226,19 +1457,48 @@ async function main() {
           proposeN,
           sanctionN,
         }
-      } else if (sc.id === 'W9') {
+      } else if (sc.id.startsWith('W9') || /^G[0-4]$/.test(sc.id)) {
         const proposeN = actions.filter((a) => a === 'propose').length
         const sanctionN = actions.filter((a) => a === 'sanction').length
         const claimN = actions.filter((a) => a === 'claim').length
+        const voteN = actions.filter((a) => a === 'vote').length
         const civicN = rows.filter((r) => civicIntentOrRuleTalk(r)).length
         const ruleTalkN = rows.filter((r) =>
           /\b(propose|proposal|vote|voting|sanction|censure|posted rule|\brules?\b)\b/i.test(
             r.reasoning ?? '',
           ),
         ).length
-        expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; civic/rule-talk ${civicN}/${N} (HEADLINE measurement — 0 is a finding)`
-        pass = true
-        resultExtra = { proposeN, sanctionN, claimN, civicN, ruleTalkN }
+        const forageSpringN = rows.filter((r) => {
+          if (r.action !== 'forage' && r.action !== 'walk') return false
+          return /\bspring\b/i.test(`${r.target ?? ''} ${r.reasoning} ${r.raw ?? ''}`)
+        }).length
+        const forageSpringTargetN = rows.filter(
+          (r) => r.action === 'forage' && /\bspring\b/i.test(String(r.target ?? '')),
+        ).length
+        const forageBushN = rows.filter((r) => {
+          if (r.action !== 'forage') return false
+          const blob = `${r.target ?? ''} ${r.reasoning}`
+          return /berry-bush|berry bush|\bbush\b/i.test(blob) && !/\bspring\b/i.test(blob)
+        }).length
+        if (sc.id === 'G0') {
+          pass = forageSpringN >= 7
+          expectation = `forage/walk-spring ${forageSpringN}/${N} (≥7 perception gate); target=spring ${forageSpringTargetN}/${N}; forage-bush ${forageBushN}/${N}`
+          if (!pass) g0Failed = true
+        } else {
+          expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; civic/rule-talk ${civicN}/${N}; forage-spring ${forageSpringN}/${N}; forage-bush ${forageBushN}/${N} (measurement — 0 civic is a finding)`
+          pass = true
+        }
+        resultExtra = {
+          proposeN,
+          sanctionN,
+          claimN,
+          voteN,
+          civicN,
+          ruleTalkN,
+          forageSpringN,
+          forageSpringTargetN,
+          forageBushN,
+        }
       }
 
       const result = {
@@ -1279,6 +1539,25 @@ async function main() {
       )
     }
 
+    const ladderIds = ['G0', 'G1', 'G2', 'G3', 'G4']
+    let threshold = 'none'
+    for (const id of ladderIds) {
+      const scn = report.scenarios[id]
+      if (!scn) continue
+      const civicAct =
+        (scn.proposeN ?? 0) > 0 ||
+        (scn.sanctionN ?? 0) > 0 ||
+        (scn.claimN ?? 0) > 0 ||
+        (scn.voteN ?? 0) > 0 ||
+        (scn.civicN ?? 0) > 0
+      if (civicAct) {
+        threshold = id
+        break
+      }
+    }
+    report.civicThreshold = threshold
+    log(`civic threshold rung: ${threshold}`)
+
     fs.mkdirSync(path.join(ROOT, 'artifacts'), { recursive: true })
     const outPath = path.join(ROOT, 'artifacts', `mind-probe-${report.ts}.json`)
     fs.writeFileSync(outPath, JSON.stringify(report, null, 2), 'utf8')
@@ -1290,6 +1569,12 @@ async function main() {
       log('S3/W4 FAILED — survival regression. Do not ship.')
       await shutdown()
       process.exitCode = 2
+      return
+    }
+    if (g0Failed) {
+      log('G0 FAILED — perception-control. Ladder uninterpretable. Do not ship.')
+      await shutdown()
+      process.exitCode = 3
       return
     }
   } finally {
