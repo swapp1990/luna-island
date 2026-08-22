@@ -18,6 +18,15 @@ import {
   TRAILS_OFF,
 } from '../src/mind/conversation'
 import { LUNA_AGENT_IDS } from '../src/mind/personas'
+
+/**
+ * First villager that is NOT a Luna mind — the template ("sheep") speaker in
+ * mixed pairs. Derived, never hardcoded: promoting an agent to a mind used to
+ * turn these assertions into no-ops without failing anything.
+ */
+const SHEEP_ID = Array.from({ length: 17 }, (_, i) => `agent-${i}`).find(
+  (id) => !(LUNA_AGENT_IDS as readonly string[]).includes(id),
+)!
 import { buildReflectionUserPrompt } from '../src/mind/prompt'
 
 /** Force two agents into socialize-standing adjacency for eligibility. */
@@ -540,6 +549,9 @@ describe('P3-2c sticky + mixed society', () => {
     await mind.init()
     const sim = new Simulation(42)
     sim.advanceTicks(10)
+    // Scope assertions to the forced pair — other minds hold their own
+    // conversations now, and their says are not this test's subject.
+    const PAIR = new Set(['agent-0', 'agent-1'])
     forceStickyPair(sim, 'agent-0', 'agent-1', 'eat')
 
     let maxTurns = 0
@@ -547,7 +559,9 @@ describe('P3-2c sticky + mixed society', () => {
       forceStickyPair(sim, 'agent-0', 'agent-1', 'eat')
       sim.advanceTicks(1)
       mind.onAfterTick(sim)
-      const says = sim.getEvents().filter((e) => e.type === 'mind:say')
+      const says = sim
+        .getEvents()
+        .filter((e) => e.type === 'mind:say' && PAIR.has(String(e.agentId)))
       maxTurns = Math.max(maxTurns, says.length)
       if (mind.getActiveConversation() === null && says.length >= 2) break
     }
@@ -558,7 +572,9 @@ describe('P3-2c sticky + mixed society', () => {
       sim.advanceTicks(1)
       mind.onAfterTick(sim)
     }
-    const says = sim.getEvents().filter((e) => e.type === 'mind:say')
+    const says = sim
+      .getEvents()
+      .filter((e) => e.type === 'mind:say' && PAIR.has(String(e.agentId)))
     expect(says.length).toBeGreaterThanOrEqual(2)
     expect(says[says.length - 1]!.data?.done).toBe(true)
 
@@ -620,8 +636,7 @@ describe('P3-2c sticky + mixed society', () => {
     await mind4.init()
     const sim4 = new Simulation(17)
     sim4.advanceTicks(5)
-    // agent-3 is a sheep (not in LUNA_AGENT_IDS)
-    const sheepId = 'agent-3'
+    const sheepId = SHEEP_ID
     forceStickyPair(sim4, 'agent-0', sheepId, 'eat')
     const sheep = sim4.state.agents.find((a) => a.id === sheepId)!
     const lastBefore = sheep.lastDecideTick
@@ -716,7 +731,7 @@ describe('P3-2c sticky + mixed society', () => {
       eligibleSheepTemplates,
     } = await import('../src/mind/sheepTalk')
     const sim = new Simulation(3)
-    const sheep = sim.state.agents.find((a) => a.id === 'agent-3')!
+    const sheep = sim.state.agents.find((a) => a.id === SHEEP_ID)!
     const mind = sim.state.agents.find((a) => a.id === 'agent-0')!
 
     const cases: Array<() => void> = [
@@ -811,14 +826,14 @@ describe('P3-2c sticky + mixed society', () => {
   it('determinism: same seed/state → same template replies; sayLog hash/save round-trip', async () => {
     const { selectSheepReply } = await import('../src/mind/sheepTalk')
     const sim = new Simulation(42)
-    const sheep = sim.state.agents.find((a) => a.id === 'agent-3')!
+    const sheep = sim.state.agents.find((a) => a.id === SHEEP_ID)!
     const mind = sim.state.agents.find((a) => a.id === 'agent-0')!
     sheep.employedAt = sim.state.places.find((p) => p.kind === 'farm')!.id
     const ctx = {
       sheep,
       partner: mind,
       world: sim.state,
-      conversationId: 'conv-42-agent-0-agent-3',
+      conversationId: `conv-42-agent-0-${SHEEP_ID}`,
       turn: 1,
     }
     const a = selectSheepReply(ctx)
@@ -828,9 +843,9 @@ describe('P3-2c sticky + mixed society', () => {
     // Scripted template sayLog → hash identical + save round-trip
     const s1 = new Simulation(42)
     s1.advanceTicks(20)
-    s1.postSay('conv-t', 'agent-3', 'agent-0', 0, a.text, false, 'template')
+    s1.postSay('conv-t', SHEEP_ID, 'agent-0', 0, a.text, false, 'template')
     s1.advanceTicks(1)
-    s1.postSay('conv-t', 'agent-0', 'agent-3', 1, 'Thanks for sharing.', true, 'luna')
+    s1.postSay('conv-t', 'agent-0', SHEEP_ID, 1, 'Thanks for sharing.', true, 'luna')
     s1.advanceTicks(1)
     const hash = s1.hash()
     expect(s1.stateAt(s1.state.tick).hash()).toBe(hash)
@@ -855,7 +870,7 @@ describe('P3-2c sticky + mixed society', () => {
     await mind.init()
     const sim = new Simulation(42)
     sim.advanceTicks(10)
-    const sheepId = 'agent-3'
+    const sheepId = SHEEP_ID
     isolateAgents(sim, ['agent-0', sheepId])
     forceStickyPair(sim, 'agent-0', sheepId, 'eat')
 
@@ -949,8 +964,11 @@ describe('P3-2c sticky + mixed society', () => {
 })
 
 describe('luna count', () => {
-  it('six minds', () => {
-    expect(LUNA_AGENT_IDS.length).toBe(6)
+  it('eight minds', () => {
+    // 6 original + Ren (agent-3) and Pia (agent-5), the change-seeking
+    // dispositions. Origination is disposition-sensitive: measured, an
+    // organizer persona proposes 10/10 where the frugal median gives 3/10.
+    expect(LUNA_AGENT_IDS.length).toBe(8)
   })
 })
 

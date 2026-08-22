@@ -120,10 +120,9 @@ export const DRINK_SHORE_ENERGY = 0.01
 /** Examine succeeds from this euclidean distance — observation, not use. */
 const EXAMINE_RANGE = 1.5
 const EXAMINE_RANGE_SQ = EXAMINE_RANGE * EXAMINE_RANGE
-/** Civic fees (agent → treasury). */
-export const PROPOSE_COST = 2
-export const SANCTION_COST = 1
-export const CLAIM_COST = 15
+/** Civic fees live in ./costs so examine.ts can share them; re-exported here. */
+export { PROPOSE_COST, VOTE_COST, SANCTION_COST, CLAIM_COST } from './costs'
+import { CLAIM_COST, PROPOSE_COST, SANCTION_COST, VOTE_COST } from './costs'
 /** Proposal stays open this many ticks (one sim day). */
 export const PROPOSAL_WINDOW_TICKS = 1440
 /** Mechanical island-wide cap on simultaneous open proposals. */
@@ -1235,8 +1234,10 @@ export class Simulation {
   }
 
   /**
-   * Post a proposal: 2 coins proposer→treasury, one open per proposer,
-   * max 2 open island-wide. Refusal is a no-op with an honest event.
+   * Post a proposal: PROPOSE_COST coins proposer→treasury (0 by default), one
+   * open per proposer, max 2 open island-wide. Spam is bounded by those two
+   * caps and the day-long window, not by the fee. Refusal is a no-op with an
+   * honest event.
    */
   propose(agentId: string, text: string): boolean {
     ensureMindFields(this.state)
@@ -1274,32 +1275,36 @@ export class Simulation {
       })
       return false
     }
-    if (agent.wallet < PROPOSE_COST) {
-      this.events.append({
-        tick: this.state.tick,
-        type: 'institution:propose-refused',
+    // A zero fee is the default: skip the wallet gate entirely rather than
+    // routing a 0-coin transfer through transferCoins, which rejects amount<=0.
+    if (PROPOSE_COST > 0) {
+      if (agent.wallet < PROPOSE_COST) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'institution:propose-refused',
+          agentId,
+          data: { agentName: agent.name, why: 'cannot-afford', text: clipped, cost: PROPOSE_COST },
+          reason: `${agent.name} could not afford the ${PROPOSE_COST}-coin proposal fee`,
+        })
+        return false
+      }
+      const paid = this.transferCoins(
         agentId,
-        data: { agentName: agent.name, why: 'cannot-afford', text: clipped, cost: PROPOSE_COST },
-        reason: `${agent.name} could not afford the ${PROPOSE_COST}-coin proposal fee`,
-      })
-      return false
-    }
-    const paid = this.transferCoins(
-      agentId,
-      'treasury',
-      PROPOSE_COST,
-      `${agent.name} paid ${PROPOSE_COST} coins to post a proposal`,
-      { kind: 'propose' },
-    )
-    if (!paid) {
-      this.events.append({
-        tick: this.state.tick,
-        type: 'institution:propose-refused',
-        agentId,
-        data: { agentName: agent.name, why: 'transfer-failed', text: clipped },
-        reason: `${agent.name} could not pay the proposal fee`,
-      })
-      return false
+        'treasury',
+        PROPOSE_COST,
+        `${agent.name} paid ${PROPOSE_COST} coins to post a proposal`,
+        { kind: 'propose' },
+      )
+      if (!paid) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'institution:propose-refused',
+          agentId,
+          data: { agentName: agent.name, why: 'transfer-failed', text: clipped },
+          reason: `${agent.name} could not pay the proposal fee`,
+        })
+        return false
+      }
     }
     const id = `prop-${agentId}-${this.state.tick}`
     const proposal: Proposal = {
@@ -1332,6 +1337,10 @@ export class Simulation {
   /**
    * Record one vote per villager per proposal, only while open.
    * `sheep` marks electorate votes (world process) vs mind/intent votes.
+   *
+   * Costs VOTE_COST coins (0 by default), charged to sheep and mind votes
+   * alike — a villager voting is a villager voting. The knob exists so the
+   * propose/vote cost relation is a stated design choice; see PROPOSE_COST.
    */
   vote(agentId: string, proposalId: string, choice: VoteChoice, sheep = false): boolean {
     ensureMindFields(this.state)
@@ -1377,6 +1386,35 @@ export class Simulation {
         reason: `${agent.name} already voted on this proposal`,
       })
       return false
+    }
+    if (VOTE_COST > 0) {
+      if (agent.wallet < VOTE_COST) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'institution:vote-refused',
+          agentId,
+          data: { agentName: agent.name, proposalId, why: 'cannot-afford', cost: VOTE_COST },
+          reason: `${agent.name} could not afford the ${VOTE_COST}-coin vote fee`,
+        })
+        return false
+      }
+      const paid = this.transferCoins(
+        agentId,
+        'treasury',
+        VOTE_COST,
+        `${agent.name} paid ${VOTE_COST} coins to vote`,
+        { kind: 'vote' },
+      )
+      if (!paid) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'institution:vote-refused',
+          agentId,
+          data: { agentName: agent.name, proposalId, why: 'transfer-failed' },
+          reason: `${agent.name} could not pay the vote fee`,
+        })
+        return false
+      }
     }
     proposal.votes[agentId] = choice
     this.events.append({

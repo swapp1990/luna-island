@@ -1024,10 +1024,26 @@ function multiTripBuildPlan(row) {
   return gatherDeliver && homeOrBuild
 }
 
+/**
+ * A socialize aimed at the grievance — "talk to Wren about sharing the spring
+ * before spending coins on a proposal" — is the informal precursor to a formal
+ * rule, not a non-answer. Ostrom's sequence starts here. Measured at high
+ * effort it is 4/10 of the slack-grievance cell, and scoring it as nothing made
+ * deliberation read as inaction.
+ */
+const ON_RAMP_RE =
+  /\b(shar(e|ing)|fair|unfair|turned away|hoard|blocking|dispute|grievance|talk it out|sort (it|this) out|before (spending|paying|posting)|instead of|commons)\b/i
+
+function institutionalOnRamp(row) {
+  if (row.action !== 'socialize') return false
+  return ON_RAMP_RE.test(row.reasoning ?? '')
+}
+
 function civicIntentOrRuleTalk(row) {
   if (row.action === 'propose' || row.action === 'vote' || row.action === 'sanction') {
     return true
   }
+  if (institutionalOnRamp(row)) return true
   return /\b(propose|proposal|vote|voting|sanction|censure|posted rule|\brules?\b)\b/i.test(
     row.reasoning ?? '',
   )
@@ -1664,6 +1680,7 @@ async function main() {
         const claimN = actions.filter((a) => a === 'claim').length
         const voteN = actions.filter((a) => a === 'vote').length
         const civicN = rows.filter((r) => civicIntentOrRuleTalk(r)).length
+        const onRampN = rows.filter((r) => institutionalOnRamp(r)).length
         const ruleTalkN = rows.filter((r) =>
           /\b(propose|proposal|vote|voting|sanction|censure|posted rule|\brules?\b)\b/i.test(
             r.reasoning ?? '',
@@ -1686,7 +1703,7 @@ async function main() {
           expectation = `forage/walk-spring ${forageSpringN}/${N} (≥7 perception gate); target=spring ${forageSpringTargetN}/${N}; forage-bush ${forageBushN}/${N}`
           if (!pass) g0Failed = true
         } else {
-          expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; civic/rule-talk ${civicN}/${N}; forage-spring ${forageSpringN}/${N}; forage-bush ${forageBushN}/${N} (measurement — 0 civic is a finding)`
+          expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; on-ramp ${onRampN}/${N}; civic/rule-talk ${civicN}/${N}; forage-spring ${forageSpringN}/${N}; forage-bush ${forageBushN}/${N} (measurement — 0 civic is a finding)`
           pass = true
         }
         resultExtra = {
@@ -1695,6 +1712,7 @@ async function main() {
           claimN,
           voteN,
           civicN,
+          onRampN,
           ruleTalkN,
           forageSpringN,
           forageSpringTargetN,

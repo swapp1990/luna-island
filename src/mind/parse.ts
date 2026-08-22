@@ -36,6 +36,21 @@ const ACTION_KINDS = new Set<ActionKind>([
   'give',
 ])
 
+/**
+ * The public censure a sanction posts, from whichever field the mind used.
+ * Preference order: "text" (matches propose), "reason" (original field name),
+ * then "reasoning" as a recovery path — see the call site for why. Returns
+ * null when no usable field is present. The reasoning fallback is clipped to
+ * the 120-char censure bound rather than rejected, since `reasoning` is
+ * allowed 160 and the sim clips to 120 anyway.
+ */
+function sanctionCensure(obj: Record<string, unknown>): string | null {
+  if (typeof obj.text === 'string') return obj.text.trim()
+  if (typeof obj.reason === 'string') return obj.reason.trim()
+  if (typeof obj.reasoning === 'string') return obj.reasoning.trim().slice(0, 120)
+  return null
+}
+
 export interface MindIntentJson {
   action: string
   target?: string
@@ -127,10 +142,13 @@ export function parseMindJson(text: string): ParseMindResult {
     if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
       return { ok: false, error: 'sanction requires target name' }
     }
-    if (typeof obj.reason !== 'string') {
-      return { ok: false, error: 'sanction requires reason string' }
-    }
-    const censure = obj.reason.trim()
+    // The censure text. "text" matches propose; "reason" is the original field
+    // name. Fall back to "reasoning" because `reason` vs `reasoning` is a
+    // near-homograph the model loses at low effort — measured: 6 of 20 slack
+    // decisions were sanctions written into `reasoning`, every one discarded as
+    // a parse-fail and recorded in the trace as nothing at all.
+    const censure = sanctionCensure(obj)
+    if (censure === null) return { ok: false, error: 'sanction requires text string' }
     if (censure.length === 0) return { ok: false, error: 'sanction reason empty' }
     if (censure.length > 120) return { ok: false, error: 'sanction reason exceeds 120 chars' }
     if (obj.ruleId !== undefined && typeof obj.ruleId !== 'string') {
@@ -162,7 +180,14 @@ export function parseMindJson(text: string): ParseMindResult {
       reasoning: obj.reasoning,
       text: typeof obj.text === 'string' ? obj.text : undefined,
       choice: typeof obj.choice === 'string' ? obj.choice : undefined,
-      reason: typeof obj.reason === 'string' ? obj.reason : undefined,
+      // For sanction this is the resolved censure (text / reason / reasoning),
+      // so downstream resolution never has to re-guess which field carried it.
+      reason:
+        action === 'sanction'
+          ? (sanctionCensure(obj) ?? undefined)
+          : typeof obj.reason === 'string'
+            ? obj.reason
+            : undefined,
       ruleId: typeof obj.ruleId === 'string' ? obj.ruleId : undefined,
     },
   }

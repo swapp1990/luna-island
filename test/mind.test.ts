@@ -1020,13 +1020,17 @@ describe('mind pool + breathe whole line (P3-2b)', () => {
       t += MIND_WALL_FLOOR_MS + 1
       m2.onAfterTick(s2)
       expect(m2.getDecideCallCount()).toBeGreaterThan(3)
+      // Open a fresh rate window each iteration so this loop actually drains.
+      // The floor-wait behaviour is asserted above; sitting under the floor here
+      // only starved the drain — at 100ms/iter the window reopens every ~150
+      // iterations, so the bound of 40 was already marginal at 6 minds.
       for (let g = 0; g < 40 && m2.getMeter().thinking > 0; g++) {
         p2.advanceWallFrame()
         await Promise.resolve()
         await Promise.resolve()
         s2.advanceTicks(1)
         m2.onAfterTick(s2)
-        t += 100
+        t += MIND_WALL_FLOOR_MS + 1
       }
       expect(m2.getMeter().thinking).toBe(0)
       expect(m2.getMeter().stales).toBe(0)
@@ -1214,13 +1218,16 @@ describe('mind pool + breathe whole line (P3-2b)', () => {
 })
 
 describe('personas grounding (P3-1 / P3-2)', () => {
-  it('personas contain no ownership/job/wealth assertions; 6 luna minds', () => {
+  it('personas contain no ownership/job/wealth assertions; 8 luna minds', () => {
     const forbidden =
       /homeowner|I own|my house|my home(?!land)|proud first-time|employed at|I work as|I am rich|my wallet/i
-    expect(LUNA_AGENT_IDS.length).toBe(6)
+    expect(LUNA_AGENT_IDS.length).toBe(8)
     expect(LUNA_AGENT_IDS).toContain('agent-2')
     expect(LUNA_AGENT_IDS).toContain('agent-4')
     expect(LUNA_AGENT_IDS).toContain('agent-8')
+    // The change-seeking pair.
+    expect(LUNA_AGENT_IDS).toContain('agent-3')
+    expect(LUNA_AGENT_IDS).toContain('agent-5')
     for (const id of LUNA_AGENT_IDS) {
       const p = personaFor(id) ?? ''
       expect(p.length).toBeGreaterThan(20)

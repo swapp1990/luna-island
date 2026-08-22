@@ -7,8 +7,11 @@ import {
   PROPOSE_COST,
   proposalTally,
 } from '../sim/sim'
+import { coinPhrase } from '../sim/costs'
+import { REFLECT_MARKER, SLACK_MARKER } from './promptMarkers'
 import { personaFor } from './personas'
 import {
+  declaredIntentions,
   memoryLinesForPrompt,
   standingFacts,
   standingGoals,
@@ -67,7 +70,7 @@ const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
 target examples: home, berry-bush, spring, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
-propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
+propose needs "text" (the rule you want posted); vote needs target and "choice"; sanction needs target and "text" (the censure to post publicly — separate from your own "reasoning"); claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
 When nothing is urgent, act on who you are.`
 
 export function buildSystemPrompt(agentId: string): string {
@@ -173,6 +176,19 @@ function placeKindLabel(p: Place): string {
   return p.kind
 }
 
+/** Order-preserving, case-insensitive dedupe. */
+function dedupeLines(lines: readonly string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of lines) {
+    const key = line.trim().toLowerCase()
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(line)
+  }
+  return out
+}
+
 function clipObs(s: string, max: number): string {
   if (s.length <= max) return s
   return `${s.slice(0, max - 1)}…`
@@ -201,7 +217,15 @@ function civicObservationLines(
     // Present-tense civic state. The same fact sits in the board's examine text,
     // but there it reads as documentation and never moved a mind; an open
     // proposal in THIS block is what produced votes (probe G6).
-    lines.push(`Open proposals: none posted (posting one costs ${PROPOSE_COST} coins)`)
+    // Was cost-framed ("posting one costs 2 coins") — the only board mention a
+    // mind ever saw, which read as a price tag rather than an affordance and
+    // measurably suppressed origination. State the affordance; name a price
+    // only when there is one.
+    lines.push(
+      PROPOSE_COST > 0
+        ? `Open proposals: none posted (anyone may post one, ${coinPhrase(PROPOSE_COST)})`
+        : 'Open proposals: none posted (anyone may post one, free)',
+    )
   }
   const active = (world.rules ?? []).filter((r) => r.active).slice(0, 5)
   if (active.length > 0) {
@@ -255,12 +279,17 @@ export function buildUserPrompt(
   const nearbyPlaces = nearbyPlacesForObservation(agent, world, recentEvents)
   const civic = civicObservationLines(agent, world, recentEvents)
   const unfamiliar = nearbyPlaces.filter((p) => p.unfamiliar)
-  const goals = standingGoals(agent.id, noteLog)
+  // Nightly reflection goals, plus any plan declared during the day. Without
+  // the second source a talk→escalate arc dies at the next tick boundary.
+  const goals = dedupeLines([
+    ...standingGoals(agent.id, noteLog),
+    ...declaredIntentions(agent.id, recentEvents, world.tick),
+  ]).slice(0, 4)
   const slack = needsAreComfortable(agent.needs)
 
   const lines = [
     `Time: Day ${t.day} ${String(t.hour).padStart(2, '0')}:${String(t.minute).padStart(2, '0')} (tick ${world.tick})`,
-    ...(slack ? ['Your needs are comfortable; nothing is urgent.'] : []),
+    ...(slack ? [SLACK_MARKER] : []),
     `Needs: hunger ${pct(agent.needs.hunger)}% energy ${pct(agent.needs.energy)}% social ${pct(agent.needs.social)}%${agent.collapsed ? ' COLLAPSED' : ''}`,
     `Wallet: ${agent.wallet} coins | Inventory: food ${inv.food} wood ${inv.wood} stone ${inv.stone}`,
     `Job: ${job ? `${placeKindLabel(job)} (${job.wage ?? 0}/day)` : 'unemployed'}`,
@@ -303,7 +332,7 @@ export function buildReflectionSystemPrompt(agentId: string): string {
 
 ${GROUNDING}
 
-You are reflecting on your day before sleep. Reply ONLY with one JSON object, no markdown:
+${REFLECT_MARKER}. Reply ONLY with one JSON object, no markdown:
 {"notes":["…","…"],"learned":["…up to 2 short world-facts you now believe…"]}
 Rules: 1–3 notes; each ≤120 characters; first person ("I"); concrete facts from today's events and intentions for tomorrow. No invented possessions or numbers.
 learned: 0–2 short world-facts distilled from what you felt, examined, or were told — not laws, beliefs.`

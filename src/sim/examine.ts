@@ -1,6 +1,7 @@
 /** World-authored examine results — what a place yields when looked at closely. */
 
 import type { Good, Place, PlaceKind, WorldState } from './types'
+import { CLAIM_COST, coinPhrase, PROPOSE_COST, SANCTION_COST, VOTE_COST } from './costs'
 
 /** Full-rate bed restore vs ground sleep (per tick, before jitter). */
 export const SLEEP_BED_ENERGY = 1 / 420
@@ -11,8 +12,10 @@ export const SLEEP_GROUND_ENERGY = 1 / 700
 export const PLACE_VIEW_RADIUS = 6
 
 export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, string> = {
-  'notice-board':
-    'Anyone may propose (2 coins) — posts your words here for a day. Vote yes or no on an open proposal. Sanction (1 coin) posts a public censure. Claim (15 coins) takes a commons place as yours. Posted rules may be followed or broken.',
+  // Generated from the fee constants so the menu can never drift from what the
+  // sim actually charges — the drift that produced the accidental propose/vote
+  // asymmetry in the first place.
+  'notice-board': `Anyone may propose (${coinPhrase(PROPOSE_COST)}) — posts your words here for a day. Vote yes or no on an open proposal (${coinPhrase(VOTE_COST)}). Sanction (${coinPhrase(SANCTION_COST)}) posts a public censure. Claim (${coinPhrase(CLAIM_COST)}) takes a commons place as yours. Posted rules may be followed or broken.`,
   'berry-bush': 'Berries grow here, sparser in lean times.',
   well: 'Cool water here — drinking left me a little more awake.',
   farm: 'People tend the soil here and food grows if they stay with it.',

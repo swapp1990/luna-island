@@ -16,7 +16,12 @@ import {
   NEED_WARNING_THRESHOLD,
   needsAreComfortable,
 } from '../src/mind/prompt'
-import { standingGoals } from '../src/mind/memory'
+import {
+  declaredIntentions,
+  INTENTION_TTL_TICKS,
+  standingGoals,
+} from '../src/mind/memory'
+import type { SimEvent } from '../src/sim/types'
 
 const meta = (reasoning: string): ExternalIntentMeta => ({
   reasoning,
@@ -328,5 +333,55 @@ describe('strategic-verb gating (P3-14 A2)', () => {
           e.tick > tickBefore,
       )
     expect(lunaStarts).toHaveLength(0)
+  })
+})
+
+/**
+ * Standing goals used to come only from the nightly reflection, so a plan
+ * formed during the day was gone by the next tick. Measured: at higher
+ * deliberation the median mind walks over to negotiate "before spending coins
+ * on any proposal" — an escalation arc the harness then forgot, so the second
+ * half never happened.
+ */
+describe('declared intentions survive the tick (origination fix)', () => {
+  const start = (tick: number, agentId: string, reason: string): SimEvent =>
+    ({ seq: tick, tick, type: 'action:start', agentId, data: {}, reason }) as SimEvent
+
+  it('harvests a plan that names a next step, and ignores a bare justification', () => {
+    const events = [
+      start(100, 'agent-0', 'I want to gather wood while my needs are comfortable.'),
+      start(110, 'agent-0', 'I will talk to Wren about the spring before spending coins on a proposal.'),
+    ]
+    const goals = declaredIntentions('agent-0', events, 120)
+    expect(goals).toHaveLength(1)
+    expect(goals[0]).toContain('before spending coins')
+  })
+
+  it('is scoped to the agent and ages out', () => {
+    const events = [
+      start(100, 'agent-1', 'I will speak to Wren first, then propose a rule.'),
+      start(100, 'agent-0', 'I will sort this out with Wren first, then post a proposal.'),
+    ]
+    expect(declaredIntentions('agent-1', events, 120)).toHaveLength(1)
+    expect(declaredIntentions('agent-2', events, 120)).toHaveLength(0)
+    // Stale intentions expire rather than haunting the prompt forever.
+    expect(declaredIntentions('agent-0', events, 100 + INTENTION_TTL_TICKS + 1)).toHaveLength(0)
+  })
+
+  it('surfaces the plan in the next decision prompt', () => {
+    const sim = new Simulation(42)
+    sim.advanceTicks(30)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
+    const events = [
+      ...sim.getEvents(),
+      start(
+        sim.state.tick,
+        'agent-0',
+        'I will talk it out with Wren before spending coins on any proposal.',
+      ),
+    ]
+    const user = buildUserPrompt(agent, sim.state, events)
+    expect(user).toContain('Goals:')
+    expect(user).toContain('before spending coins')
   })
 })

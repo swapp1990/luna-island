@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BudgetTracker, healthPayload } from '../scripts/luna-budget'
+import { REFLECT_MARKER, SLACK_MARKER } from '../src/mind/promptMarkers'
 import {
   DECIDE_EFFORT,
   DEFAULT_CODEX_MODEL,
@@ -10,6 +11,8 @@ import {
   ensureMindHome,
   execArgs,
   isUnauthorizedError,
+  maxEffort,
+  SLACK_EFFORT,
   isUnauthorizedText,
   mcpCallConfig,
   mcpServerArgs,
@@ -377,3 +380,27 @@ function fakeExecChild(opts: { stdout?: string; stderr?: string; exitCode?: numb
   }
 }
 
+describe('slack deliberation floor', () => {
+  it('classifies a comfortable-needs decide separately and raises its effort', () => {
+    expect(classifyMindRequest({ user: `Time: Day 1 14:00\n${SLACK_MARKER}` })).toBe(
+      'decide-slack',
+    )
+    expect(classifyMindRequest({ user: 'Time: Day 1 14:00\nNeeds: hunger 18%' })).toBe('decide')
+    // Civic reasoning does not surface at low; pay for it only when nothing is urgent.
+    expect(effortForClass('decide-slack', 'low')).toBe(SLACK_EFFORT)
+    expect(effortOverrideFor('decide-slack', 'low', 'low')).toBe(SLACK_EFFORT)
+  })
+
+  it('raises but never lowers — an explicit high setting survives', () => {
+    expect(effortForClass('decide-slack', 'high')).toBe('high')
+    expect(effortOverrideFor('decide-slack', 'high', 'high')).toBeUndefined()
+    expect(maxEffort('high', 'medium')).toBe('high')
+    expect(maxEffort('low', 'medium')).toBe('medium')
+  })
+
+  it('reflection still wins over slack', () => {
+    expect(
+      classifyMindRequest({ system: REFLECT_MARKER, user: SLACK_MARKER }),
+    ).toBe('reflect')
+  })
+})

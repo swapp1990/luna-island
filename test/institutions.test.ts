@@ -8,6 +8,7 @@ import {
   SANCTION_COST,
   SHEEP_SYMPATHY_YES,
   Simulation,
+  VOTE_COST,
   isSheepAgent,
   proposalTally,
 } from '../src/sim/sim'
@@ -25,6 +26,8 @@ import type {
   WorldState,
 } from '../src/sim/types'
 import { parseMindJson, resolveMindIntent } from '../src/mind/parse'
+import { coinPhrase } from '../src/sim/costs'
+import { EXAMINE_BY_KIND } from '../src/sim/examine'
 import { buildSystemPrompt, buildUserPrompt } from '../src/mind/prompt'
 import { fnv1aHex, stableStringify } from '../src/sim/stableStringify'
 
@@ -569,5 +572,100 @@ describe('proposal tally helper', () => {
       status: 'open',
     }
     expect(proposalTally(p)).toEqual({ yes: 2, no: 1, total: 3 })
+  })
+})
+
+/**
+ * Regressions for the origination investigation (plans Addendum 3). Each of
+ * these was measured as a silent behaviour loss, not a crash — the trace showed
+ * nothing wrong while civic actions vanished.
+ */
+describe('civic affordances (origination fixes)', () => {
+  it('a free propose still posts — the zero-fee path must not fall through the transfer gate', () => {
+    const sim = new Simulation(42)
+    const before = sim.state.agents.find((a) => a.id === 'agent-0')!.wallet
+    expect(PROPOSE_COST).toBe(0)
+    expect(sim.propose('agent-0', 'The spring is a commons — no one may block others.')).toBe(true)
+    expect(sim.state.proposals.filter((pr) => pr.status === 'open').length).toBe(1)
+    // transferCoins rejects amount<=0, so a 0 fee must skip payment entirely
+    // rather than be read as "could not pay".
+    expect(sim.state.agents.find((a) => a.id === 'agent-0')!.wallet).toBe(before)
+    expect(
+      sim.getEvents().some((e) => e.type === 'institution:propose-refused'),
+    ).toBe(false)
+  })
+
+  it('a broke villager can originate — the fee was the whole gate', () => {
+    const sim = new Simulation(7)
+    const agent = sim.state.agents.find((a) => a.id === 'agent-1')!
+    if (agent.wallet > 0) {
+      sim.transferCoins('agent-1', 'treasury', agent.wallet, 'test drain')
+    }
+    expect(agent.wallet).toBe(0)
+    expect(sim.propose('agent-1', 'Everyone gets a fair turn at the spring.')).toBe(true)
+  })
+
+  it('voting is free and stays symmetric with proposing', () => {
+    expect(VOTE_COST).toBe(PROPOSE_COST)
+    const sim = new Simulation(42)
+    expect(sim.propose('agent-0', 'Share the spring.')).toBe(true)
+    const id = sim.state.proposals.filter((pr) => pr.status === 'open')[0]!.id
+    const before = sim.state.agents.find((a) => a.id === 'agent-1')!.wallet
+    expect(sim.vote('agent-1', id, 'yes')).toBe(true)
+    expect(sim.state.agents.find((a) => a.id === 'agent-1')!.wallet).toBe(before)
+  })
+
+  it('the board menu is generated from the fee constants, never a stale literal', () => {
+    const text = EXAMINE_BY_KIND['notice-board']
+    expect(text).toContain(coinPhrase(PROPOSE_COST))
+    expect(text).toContain(coinPhrase(SANCTION_COST))
+    expect(text).toContain(coinPhrase(CLAIM_COST))
+    // The old copy hardcoded "2 coins" for propose; if the constant is 0 the
+    // menu must say so rather than quoting a price the sim never charges.
+    if (PROPOSE_COST === 0) expect(text).not.toMatch(/propose \(\d+ coins?\)/)
+  })
+
+  it('sanction accepts "text", and recovers a censure written into "reasoning"', () => {
+    const sim = new Simulation(42)
+    const world = sim.state
+    const wren = world.agents.find((a) => a.name === 'Wren')!
+
+    // Preferred field, matching propose.
+    const viaText = parseMindJson(
+      JSON.stringify({
+        action: 'sanction',
+        target: wren.name,
+        text: 'Wren has kept others from the spring.',
+        reasoning: 'I will not let this stand.',
+      }),
+    )
+    expect(viaText.ok).toBe(true)
+
+    // The measured failure: censure written into "reasoning", "reason" absent.
+    // This used to be a parse-fail — the sanction was recorded as nothing.
+    const viaReasoning = parseMindJson(
+      JSON.stringify({
+        action: 'sanction',
+        target: wren.name,
+        reasoning: 'I will post a censure: Wren has kept others from the spring.',
+      }),
+    )
+    expect(viaReasoning.ok).toBe(true)
+    if (!viaReasoning.ok) return
+    const intent = resolveMindIntent(
+      world,
+      world.agents.find((a) => a.id === 'agent-0')!,
+      viaReasoning.raw,
+    )
+    expect(intent.kind).toBe('sanction')
+    if (intent.kind !== 'sanction') return
+    expect(intent.targetAgentId).toBe(wren.id)
+    expect(intent.text ?? '').not.toHaveLength(0)
+    expect((intent.text ?? '').length).toBeLessThanOrEqual(120)
+  })
+
+  it('a sanction with no censure text anywhere is still refused', () => {
+    const r = parseMindJson(JSON.stringify({ action: 'sanction', target: 'Wren' }))
+    expect(r.ok).toBe(false)
   })
 })

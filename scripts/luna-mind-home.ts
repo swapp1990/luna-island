@@ -3,13 +3,37 @@
  * Real ~/.codex is read-only (auth.json only). Never write there.
  */
 
+import { REFLECT_MARKER, SLACK_MARKER } from '../src/mind/promptMarkers'
+
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-luna'
 export const DECIDE_EFFORT = 'low'
 export const REFLECT_EFFORT = 'medium'
+/**
+ * Deliberation floor when no need is pressing. Civic reasoning does not
+ * surface at `low`: measured on the slack-grievance fixture, `low` gives
+ * propose 3-6/10 with 3/10 of the calls lost to malformed payloads, while the
+ * same prompt at a higher effort gives propose 5/10, a negotiate-first
+ * socialize 4/10, and zero malformed payloads. Paid only when needs are
+ * comfortable, which is exactly when there is nothing cheaper to think about.
+ */
+export const SLACK_EFFORT = 'medium'
 export const MIND_HOME_NAME = 'luna-mind-home'
 export const REFLECT_HOME_NAME = 'luna-mind-home-reflect'
 
-export type MindRequestClass = 'decide' | 'reflect'
+export type MindRequestClass = 'decide' | 'decide-slack' | 'reflect'
+
+/** Ascending deliberation. Unknown values sort last so a custom effort wins. */
+const EFFORT_RANK = ['minimal', 'low', 'medium', 'high'] as const
+
+function effortRank(effort: string): number {
+  const i = EFFORT_RANK.indexOf(effort as (typeof EFFORT_RANK)[number])
+  return i === -1 ? EFFORT_RANK.length : i
+}
+
+/** The more deliberate of two efforts — never downgrades an explicit setting. */
+export function maxEffort(a: string, b: string): string {
+  return effortRank(b) > effortRank(a) ? b : a
+}
 
 export interface MindHomeFs {
   mkdir: (dirPath: string) => void
@@ -63,7 +87,8 @@ export function classifyMindRequest(body: {
 }): MindRequestClass {
   if (body.kind === 'reflection' || body.kind === 'reflect') return 'reflect'
   const blob = `${body.system ?? ''}\n${body.user ?? ''}`
-  if (blob.includes('You are reflecting on your day before sleep')) return 'reflect'
+  if (blob.includes(REFLECT_MARKER)) return 'reflect'
+  if (blob.includes(SLACK_MARKER)) return 'decide-slack'
   return 'decide'
 }
 
@@ -71,7 +96,10 @@ export function effortForClass(
   kind: MindRequestClass,
   decideEffort: string = DECIDE_EFFORT,
 ): string {
-  return kind === 'reflect' ? REFLECT_EFFORT : decideEffort
+  if (kind === 'reflect') return REFLECT_EFFORT
+  // Raise, never lower: an explicit LUNA_MIND_EFFORT=high stays high.
+  if (kind === 'decide-slack') return maxEffort(decideEffort, SLACK_EFFORT)
+  return decideEffort
 }
 
 /** Per-request -c / MCP config override. Undefined when home config already matches. */

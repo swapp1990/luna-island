@@ -326,6 +326,53 @@ export function standingGoals(
 }
 
 /**
+ * A declared intention points BEYOND the action being taken — "talk to Wren
+ * before spending coins on a proposal" names a second step. Deliberately
+ * narrower than INTENTION_RE: every action reason is first person and would
+ * match "i want", which would drown the goal list in trivia. Sequencing words
+ * are what distinguish a plan from a justification.
+ */
+const SEQUENCING_RE =
+  /\b(before|after that|then i|first|instead of|later|next time|tomorrow|tonight|if (he|she|they|that|it) (refuses|refuse|fails|fail|says no|say no|will not|won't)|once (he|she|they|it|that))\b/i
+
+/** How long a declared intention stays visible as a standing goal (4 sim hours). */
+export const INTENTION_TTL_TICKS = 240
+
+/**
+ * Intentions the agent declared in its own recent action reasons.
+ *
+ * Reflection notes were the only source of standing goals, so a plan formed
+ * during the day — the talk-first-then-escalate arc minds reach for when needs
+ * are comfortable — was forgotten on the very next tick and never completed.
+ * These age out after INTENTION_TTL_TICKS rather than being explicitly
+ * discharged: the engine cannot tell "I did the thing" from "I gave up" without
+ * scripting what each intention means, and that is the Brain's business.
+ */
+export function declaredIntentions(
+  agentId: string,
+  events: readonly SimEvent[],
+  now: number,
+  max = 2,
+): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!
+    if (e.agentId !== agentId) continue
+    if (e.type !== 'action:start') continue
+    if (now - e.tick > INTENTION_TTL_TICKS) break
+    const text = (e.reason ?? '').trim()
+    if (!text || !SEQUENCING_RE.test(text)) continue
+    const key = text.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(text)
+    if (out.length >= max) break
+  }
+  return out
+}
+
+/**
  * Compact lines for the decision prompt: reflections then episodics, ≤ maxLines.
  */
 export function memoryLinesForPrompt(
