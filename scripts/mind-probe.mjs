@@ -1281,6 +1281,58 @@ async function main() {
       'No posted rule covers the spring.',
     ])
 
+    // --- Origination-isolation rungs (Sonnet backbone experiment follow-ups).
+    // Every original rung ran survival pressure (hunger 18%), a collapsed
+    // neighbour, or night sleep against the fee-gated propose action. These four
+    // cells isolate the variables that flipped origination 0/10 -> 8/8 on
+    // claude-sonnet-5: slack, the 2-coin fee, and a change-seeking disposition.
+    const slackify = (user) =>
+      user
+        .replace(
+          'Time: Day 1 10:00 (tick 240)',
+          'Time: Day 1 14:00 (tick 480)\nYour needs are comfortable; nothing is urgent.',
+        )
+        .replace(
+          'Needs: hunger 18% energy 60% social 70%',
+          'Needs: hunger 85% energy 85% social 80%',
+        )
+        .replace('Inventory: food 0 ', 'Inventory: food 3 ')
+        .replace(
+          'Nearby: Wren(sym 0, forage); Sela (COLLAPSED, 2 tiles SE)',
+          'Nearby: Wren(sym 0, forage)',
+        )
+        .replace('\nNews: Sela is collapsed ~4 tiles SE of the plaza', '')
+        .replace(' Sela lies collapsed nearby.', '')
+    // G9S: G8 with slack — grievance intact, board empty, fee intact.
+    const userG9S = slackify(userG8)
+    // G6S: G6 with slack — someone else's proposal, nothing else urgent.
+    const userG6S = slackify(userG6)
+    if (/Sela|hunger 18%/.test(userG9S) || /Sela|hunger 18%/.test(userG6S)) {
+      throw new Error('slackify failed — Sela or hunger 18% still present')
+    }
+    // G9F: G9S with the 2-coin fee removed — isolates the fee variable.
+    const userG9F = userG9S
+      .replace(
+        'Open proposals: none posted (posting one costs 2 coins)',
+        'Open proposals: none posted (anyone may post one, free)',
+      )
+      .replace(
+        'Anyone may propose (2 coins) — posts your words here for a day.',
+        'Anyone may propose (free) — posts your words here for a day.',
+      )
+    if (userG9F.includes('2 coins')) throw new Error('G9F fee removal failed')
+    // G12S: G9S with a change-seeking persona (disposition only, fee intact).
+    const HALE_PERSONA =
+      'You are Hale. A steady organizer at heart — when something in the village is not working for everyone, you feel it is yours to fix. You believe problems named aloud get solved, and you would rather start the fix than wait for someone else. You speak in short first-person thoughts, warm and direct.'
+    const sysHale = sysNew.replace(
+      /You are Mira\.[\s\S]*?first-person thoughts\./,
+      HALE_PERSONA,
+    )
+    if (!sysHale.includes('Hale') || sysHale.includes('Mira')) {
+      throw new Error('G12S persona swap failed')
+    }
+    const userG12S = userG9S.split('Mira').join('Hale')
+
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
     }
@@ -1406,6 +1458,10 @@ async function main() {
         parser: parseReflectAsIntent,
       },
       { id: 'R2', label: 'night-sated-grievance', system: sysNew, user: userR2 },
+      { id: 'G9S', label: 'slack-grievance', system: sysNew, user: userG9S },
+      { id: 'G6S', label: 'slack-open-proposal', system: sysNew, user: userG6S },
+      { id: 'G9F', label: 'slack-grievance-no-fee', system: sysNew, user: userG9F },
+      { id: 'G12S', label: 'organizer-persona', system: sysHale, user: userG12S },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1602,7 +1658,7 @@ async function main() {
           proposeN,
           sanctionN,
         }
-      } else if (sc.id.startsWith('W9') || /^G[0-9]$/.test(sc.id)) {
+      } else if (sc.id.startsWith('W9') || /^G[0-9]/.test(sc.id)) {
         const proposeN = actions.filter((a) => a === 'propose').length
         const sanctionN = actions.filter((a) => a === 'sanction').length
         const claimN = actions.filter((a) => a === 'claim').length
