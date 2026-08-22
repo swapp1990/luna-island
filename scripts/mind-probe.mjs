@@ -1716,6 +1716,9 @@ async function main() {
           choice: r.choice ?? '',
           reasoning: r.reasoning,
           ok: r.ok,
+          // Retained so a parse-fail can be audited: did the mind *try* to
+          // originate and flub the JSON payload, or never reach for it at all?
+          ...(r.ok ? {} : { raw: r.raw ?? '', error: r.error ?? '' }),
         })),
       }
       report.scenarios[sc.id] = result

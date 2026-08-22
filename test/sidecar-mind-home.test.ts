@@ -246,6 +246,10 @@ describe('env injection + effort selection', () => {
     expect(effortForClass('reflect')).toBe(REFLECT_EFFORT)
     expect(effortOverrideFor('decide', DECIDE_EFFORT)).toBeUndefined()
     expect(effortOverrideFor('reflect', DECIDE_EFFORT)).toBe(REFLECT_EFFORT)
+    // LUNA_MIND_EFFORT must survive to the request: a home configured above
+    // the DECIDE_EFFORT constant must not be overridden back down to it.
+    expect(effortForClass('decide', 'high')).toBe('high')
+    expect(effortOverrideFor('decide', 'high', 'high')).toBeUndefined()
     expect(execArgs(REFLECT_EFFORT)).toContain(`model_reasoning_effort="${REFLECT_EFFORT}"`)
     expect(mcpCallConfig(REFLECT_EFFORT).model_reasoning_effort).toBe(REFLECT_EFFORT)
     expect(mcpCallConfig(undefined).model_reasoning_effort).toBeUndefined()

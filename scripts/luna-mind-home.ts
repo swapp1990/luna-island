@@ -67,13 +67,20 @@ export function classifyMindRequest(body: {
   return 'decide'
 }
 
-export function effortForClass(kind: MindRequestClass): string {
-  return kind === 'reflect' ? REFLECT_EFFORT : DECIDE_EFFORT
+export function effortForClass(
+  kind: MindRequestClass,
+  decideEffort: string = DECIDE_EFFORT,
+): string {
+  return kind === 'reflect' ? REFLECT_EFFORT : decideEffort
 }
 
 /** Per-request -c / MCP config override. Undefined when home config already matches. */
-export function effortOverrideFor(kind: MindRequestClass, homeEffort: string): string | undefined {
-  const want = effortForClass(kind)
+export function effortOverrideFor(
+  kind: MindRequestClass,
+  homeEffort: string,
+  decideEffort: string = DECIDE_EFFORT,
+): string | undefined {
+  const want = effortForClass(kind, decideEffort)
   return want === homeEffort ? undefined : want
 }
 

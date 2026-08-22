@@ -379,7 +379,9 @@ export function lunaSidecarPlugin(): Plugin {
           env: reflectEnv,
         }).then((r) => ({ ...r, worker: 'exec' as const }))
       }
-      const effort = effortOverrideFor(kind, homeEffort)
+      // decide runs at the mind home's configured effort (LUNA_MIND_EFFORT);
+      // passing it as the wanted effort keeps the override off so the env var wins.
+      const effort = effortOverrideFor(kind, homeEffort, homeEffort)
       return pool.decide(system, user, effort)
     },
     grokRunner: (system, user) => runGrok(system, user),
