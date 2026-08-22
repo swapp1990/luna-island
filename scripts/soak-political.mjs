@@ -164,10 +164,11 @@ try {
     return {
       provider: s.mind?.provider,
       minGapTicks: s.mind?.minGapTicks,
+      lunaAgents: s.mind?.lunaAgents,
       tick: s.tick,
     }
   })
-  log(`world ${SEED} preset=${PRESET} seedBoard=${SEED_BOARD} live at 1x, provider=${boot.provider}, minGapTicks=${boot.minGapTicks}, minds=6, soaking ${MINUTES}min → ${JOURNAL}`)
+  log(`world ${SEED} preset=${PRESET} seedBoard=${SEED_BOARD} live at 1x, provider=${boot.provider}, minGapTicks=${boot.minGapTicks}, minds=${boot.lunaAgents ?? '?'}, soaking ${MINUTES}min → ${JOURNAL}`)
   if (boot.provider !== BRAIN) {
     log(`WARNING: provider is ${boot.provider}, expected ${BRAIN} — aborting`)
     await shutdown(2)

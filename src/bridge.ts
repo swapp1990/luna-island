@@ -20,6 +20,8 @@ export interface MindBridgeState {
   approxChars: number
   /** codex | mock | off */
   provider: string
+  /** Luna-backed agents in this world (measured, not assumed). */
+  lunaAgents?: number
   /** Actual dispatched decide requests (scrub must not increase; 429 retries don't count). */
   decideCalls: number
   /** Sidecar budget (defaults 0/60h · 0/300d when unknown). */

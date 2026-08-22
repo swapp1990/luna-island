@@ -196,7 +196,7 @@ function clipObs(s: string, max: number): string {
 
 /** Compact civic facts — display only; no verdict about whether rules are kept. */
 function civicObservationLines(
-  _agent: AgentState,
+  agent: AgentState,
   world: WorldState,
   recentEvents: readonly SimEvent[],
 ): string[] {
@@ -209,8 +209,14 @@ function civicObservationLines(
       const tally = proposalTally(p)
       const left = Math.max(0, p.closesTick - world.tick)
       const proposer = world.agents.find((a) => a.id === p.proposerId)?.name ?? p.proposerId
+      // Without this a mind cannot tell it already voted — the 18:00
+      // electorate sweep casts a vote on its behalf — so it spends decisions
+      // re-voting and gets refused. Measured: 30 already-voted refusals in a
+      // 5-day soak, ~3% of every decision the island made.
+      const mine = p.votes?.[agent.id]
+      const yours = mine ? ` · you voted ${mine}` : ''
       lines.push(
-        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" yes ${tally.yes} / no ${tally.no} · ${left} min left`,
+        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" yes ${tally.yes} / no ${tally.no} · ${left} min left${yours}`,
       )
     }
   } else if (board) {

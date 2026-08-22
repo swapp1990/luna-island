@@ -102,6 +102,9 @@ export interface MindMeter {
   meanLatencyMs: number
   approxChars: number
   provider: string
+  /** Luna-backed agents in this world. Reported, never assumed — the soak
+   *  harness used to print a hardcoded "minds=6" that no longer matched. */
+  lunaAgents: number
   /** Actual dispatched decide requests (not cadence skips / 429 re-checks). */
   decideCalls: number
   /** Sidecar-authoritative budget (health probe + decide responses). */
@@ -523,6 +526,7 @@ export class LunaBrainService {
           : 0,
       approxChars: this.totalApproxChars,
       provider: this.provider?.name ?? 'off',
+      lunaAgents: LUNA_AGENT_IDS.length,
       decideCalls: this.decideCallCount,
       budgetUsedHour: this.budgetUsedHour,
       budgetMaxHour: this.budgetMaxHour,
