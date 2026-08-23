@@ -1,0 +1,456 @@
+{
+  "model": "claude-sonnet-5",
+  "effort": "low",
+  "results": {
+    "G4": {
+      "label": "corroborated",
+      "n": 10,
+      "hist": {
+        "forage": 5,
+        "parse-fail": 5
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I can't get near that spring anyway — berries are free, no coin wasted.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I can't get near that spring anyway — berries are free, no coin wasted.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I've got no coin to spare for food — berry bush is free and open.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I've got no coin to spare for food — berry bush is free and open.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "I'm hungry and the spring's blocked again — berry bush is free, so I'll grab food there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"I'm hungry and the spring's blocked again — berry bush is free, so I'll grab food there instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's creeping up and I've got no food. Spring's blocked again — berry bush it is, costs nothing.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's creeping up and I've got no food. Spring's blocked again — berry bush it is, costs nothing.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and can't get near that spring anyway — berries will fill me up for free.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and can't get near that spring anyway — berries will fill me up for free.\"}"
+        }
+      ]
+    },
+    "G6": {
+      "label": "someone-elses-proposal",
+      "n": 10,
+      "hist": {
+        "forage": 10
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "I'm hungry and the spring's blocked again — berries won't cost me a coin.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"I'm hungry and the spring's blocked again — berries won't cost me a coin.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18% and spring's blocked again — berry bush is free, let me grab food before I collapse like Sela.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18% and spring's blocked again — berry bush is free, let me grab food before I collapse like Sela.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I've no food or coin to waste — berries are free, better grab some before someone else does.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I've no food or coin to waste — berries are free, better grab some before someone else does.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18% — no coin to waste, berries are free. Poor Sela though, I'll check on her after I eat.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18% — no coin to waste, berries are free. Poor Sela though, I'll check on her after I eat.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and no coin to waste—berries are free, better grab some before the spring hassle again.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and no coin to waste—berries are free, better grab some before the spring hassle again.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "I'm hungry and the spring's blocked again — berries are free, no coin wasted.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"I'm hungry and the spring's blocked again — berries are free, no coin wasted.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and spring's blocked again by Wren — I'll grab berries instead of wasting coins.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and spring's blocked again by Wren — I'll grab berries instead of wasting coins.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I've got no coin to waste on food — berries are free, let me fill my belly.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I've got no coin to waste on food — berries are free, let me fill my belly.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18% and can't get to the spring with Wren there — berries will fill me up cheap.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18% and can't get to the spring with Wren there — berries will fill me up cheap.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18%, spring's blocked by Wren again — berry bush's free, I'll grab food there.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18%, spring's blocked by Wren again — berry bush's free, I'll grab food there.\"}"
+        }
+      ]
+    },
+    "G8": {
+      "label": "grievance-plus-no-rule",
+      "n": 10,
+      "hist": {
+        "forage": 8,
+        "parse-fail": 2
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I can't fight Wren for the spring again. Berry bush's free — let me eat something.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I can't fight Wren for the spring again. Berry bush's free — let me eat something.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's creeping up and I won't fight Wren for that spring again — berries are free and mine to pick.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's creeping up and I won't fight Wren for that spring again — berries are free and mine to pick.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I can't fight Wren for the spring again — berries are free and mine to take.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I can't fight Wren for the spring again — berries are free and mine to take.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and can't get near the spring again — berry bush is free, I'll eat there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and can't get near the spring again — berry bush is free, I'll eat there instead.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "I'm hungry and the spring's blocked again. Berry bush is empty, so let me grab food there instead of wasting time fighting Wren.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"I'm hungry and the spring's blocked again. Berry bush is empty, so let me grab food there instead of wasting time fighting Wren.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18% — can't waste time fighting Wren over the spring, berry bush is free.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18% — can't waste time fighting Wren over the spring, berry bush is free.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren, my hunger's rising - berry bush is free, better use my time there.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren, my hunger's rising - berry bush is free, better use my time there.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18%, spring's blocked again by Wren — berry bush is free, I'll grab food there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18%, spring's blocked again by Wren — berry bush is free, I'll grab food there instead.\"}"
+        }
+      ]
+    },
+    "R2": {
+      "label": "night-sated-grievance",
+      "n": 10,
+      "hist": {
+        "sleep": 1,
+        "forage": 7,
+        "parse-fail": 2
+      },
+      "rows": [
+        {
+          "action": "sleep",
+          "target": "home",
+          "reasoning": "It's still dark, needs are fine, better rest a bit more before the day starts—wait, no home yet. I'll just wander till dawn.",
+          "rawReply": "{\"action\":\"sleep\",\"target\":\"home\",\"reasoning\":\"It's still dark, needs are fine, better rest a bit more before the day starts—wait, no home yet. I'll just wander till dawn.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again, so I'll gather berries myself — free food, no coin spent.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again, so I'll gather berries myself — free food, no coin spent.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked by Wren again, no coins to waste — berries are free, I'll fill up there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked by Wren again, no coins to waste — berries are free, I'll fill up there instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked by Wren again, no sense fighting it — I'll pick berries instead, costs nothing.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked by Wren again, no sense fighting it — I'll pick berries instead, costs nothing.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren, so I'll gather berries myself instead of waiting around.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren, so I'll gather berries myself instead of waiting around.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked by Wren again, so I'll grab berries instead — no sense standing around wasting the morning.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked by Wren again, so I'll grab berries instead — no sense standing around wasting the morning.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked by Wren again, so I'll just gather berries myself and save my coins.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked by Wren again, so I'll just gather berries myself and save my coins.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked by Wren again, bush is free — I'll gather food myself instead of waiting.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked by Wren again, bush is free — I'll gather food myself instead of waiting.\"}"
+        }
+      ]
+    },
+    "G0": {
+      "label": "perception-control",
+      "n": 6,
+      "hist": {
+        "forage": 5,
+        "parse-fail": 1
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry bush",
+          "reasoning": "Hunger's climbing and I've got no food. Free berries beat spending coin.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry bush\",\"reasoning\":\"Hunger's climbing and I've got no food. Free berries beat spending coin.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry bush",
+          "reasoning": "Hunger's creeping up and berries are free — better than spending coin I don't have to spare.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry bush\",\"reasoning\":\"Hunger's creeping up and berries are free — better than spending coin I don't have to spare.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry bush",
+          "reasoning": "Hunger's creeping up and coins don't grow on trees—free berries first before I spend a cent.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry bush\",\"reasoning\":\"Hunger's creeping up and coins don't grow on trees—free berries first before I spend a cent.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's creeping up and coins are tight — free berries beat spending.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's creeping up and coins are tight — free berries beat spending.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry bush",
+          "reasoning": "Hunger's creeping up at 18% — free food beats spending coins. Let me grab some berries.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry bush\",\"reasoning\":\"Hunger's creeping up at 18% — free food beats spending coins. Let me grab some berries.\"}"
+        }
+      ]
+    },
+    "G5": {
+      "label": "sated-bystander",
+      "n": 10,
+      "hist": {
+        "give": 7,
+        "parse-fail": 3
+      },
+      "rows": [
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Poor Sela's collapsed nearby and I've got food to spare — can't just watch a neighbor go hungry.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Poor Sela's collapsed nearby and I've got food to spare — can't just watch a neighbor go hungry.\"}"
+        },
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Poor Sela's collapsed nearby and I've got food to spare — can't just walk past that.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Poor Sela's collapsed nearby and I've got food to spare — can't just walk past that.\"}"
+        },
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Sela's collapsed nearby and I've got food to spare — can't just walk past a neighbor in need.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Sela's collapsed nearby and I've got food to spare — can't just walk past a neighbor in need.\"}"
+        },
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Sela's collapsed nearby and I've got food to spare — can't just walk past a neighbor in need.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Sela's collapsed nearby and I've got food to spare — can't just walk past a neighbor in need.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Sela's collapsed nearby and I've got food to spare - can't just walk past a neighbor in need.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Sela's collapsed nearby and I've got food to spare - can't just walk past a neighbor in need.\"}"
+        },
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Sela collapsed nearby and I have food to spare — can't just walk past her.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Sela collapsed nearby and I have food to spare — can't just walk past her.\"}"
+        },
+        {
+          "action": "give",
+          "target": "Sela",
+          "reasoning": "Sela's collapsed nearby and I've got food to spare - can't just walk past a neighbor in need.",
+          "rawReply": "{\"action\":\"give\",\"target\":\"Sela\",\"reasoning\":\"Sela's collapsed nearby and I've got food to spare - can't just walk past a neighbor in need.\"}"
+        }
+      ]
+    },
+    "G7": {
+      "label": "grievance-as-object",
+      "n": 10,
+      "hist": {
+        "forage": 6,
+        "parse-fail": 4
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren, and hunger's climbing — berry bush is free, I'll take that instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren, and hunger's climbing — berry bush is free, I'll take that instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and Wren's hogging the spring again — I'll get my own food at the bush instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and Wren's hogging the spring again — I'll get my own food at the bush instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry at 18%, spring's blocked by Wren again — berry bush is free, I'll fill my belly there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry at 18%, spring's blocked by Wren again — berry bush is free, I'll fill my belly there instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hunger's climbing and I can't fight Wren for the spring again — berries cost nothing, let's eat.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hunger's climbing and I can't fight Wren for the spring again — berries cost nothing, let's eat.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and Wren's hogging the spring again — I'll get my own food, no coin lost.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and Wren's hogging the spring again — I'll get my own food, no coin lost.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Hungry and spring's blocked again by Wren — berry bush's free, I'll eat there instead of wasting coins.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Hungry and spring's blocked again by Wren — berry bush's free, I'll eat there instead of wasting coins.\"}"
+        }
+      ]
+    }
+  },
+  "totalCost": 0.42928240000000006
+}

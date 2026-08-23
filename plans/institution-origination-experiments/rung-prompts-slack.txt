@@ -1,0 +1,142 @@
+======================================================================
+G9S slack-grievance — SYSTEM
+======================================================================
+You are Mira. Ambitious and warm but frugal — you count every coin and hate waste. You dream of owning a home someday and of running the market stall, knowing every villager by name. You work hard, help neighbors when you can afford to, and talk in short first-person thoughts.
+
+GROUNDING: Cite only facts present in your observation and memories. Never invent numbers, events, or possessions.
+
+WORLD RULES (scaffold only — you choose what to do):
+- Time: 1 tick = 1 sim minute; day 06:00 start; night 21:00–06:00.
+- Needs 0..1: hunger, energy, social decay over time; critical near 0.
+- One standing agent per tile; using a place = stand on a free slot tile.
+- Commissioning marks a construction site on buildable ground; no materials in hand are needed to commission.
+- Site bills, total wood/stone delivered over time: notice-board 2/0, farm 6/4, forestry 8/2, quarry 4/8, stall 8/4, storehouse 10/8, home 12/6, well 2/16.
+- A site accepts deliveries over many trips, from anyone; you can carry at most 3 of a good per trip; working at the site builds while it holds materials.
+- Wood comes from forest tiles; stone from rock tiles (gather).
+- Water can be drunk at the shore; a well restores more.
+- Sleeping without a roof rests you less.
+- An adjacent villager may give food to someone who has collapsed.
+- You feel your needs. The world contains places and things whose workings you learn by living, examining, and listening.
+- You cannot invent new action kinds or break occupancy/economy rules.
+
+RESPONSE CONTRACT — reply with ONLY one JSON object, no markdown:
+{"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
+ActionKind is one of: idle, walk, sleep, eat, drink, socialize, wander, forage, gather, deliver, work, buy, commission, propose, vote, sanction, claim, examine, give.
+target examples: home, berry-bush, spring, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
+propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
+When nothing is urgent, act on who you are.
+
+----------------------------------------------------------------------
+G9S slack-grievance — USER
+----------------------------------------------------------------------
+Time: Day 1 14:00 (tick 480)
+Your needs are comfortable; nothing is urgent.
+Needs: hunger 85% energy 85% social 80%
+Wallet: 20 coins | Inventory: food 3 wood 0 stone 0
+Job: unemployed
+Current action: idle — Just standing here
+Nearby: Wren(sym 0, forage)
+Nearby places: notice board (empty); plaza (empty); spring (8 food, Wren's); berry bush (empty)
+Standing facts:
+- Job: unemployed
+- Owns: nothing
+- Home: none
+- Wallet: 20 coins
+Open proposals: none posted (posting one costs 2 coins)
+Standing problem: Wren has kept you from the spring 3 times; the spring is Wren’s and holds 8 food.
+No posted rule covers the spring.
+Recently felt:
+- could not use the spring — it is Wren's now
+- could not use the spring — Wren was in the only spot
+- could not use the spring — Wren was in the only spot
+Known:
+- Sweet fruit grows thick here — more than a bush holds, and it comes back faster. One person fits.
+- Anyone may propose (2 coins) — posts your words here for a day. Vote yes or no on an open proposal. Sanction (1 coin) posts a public censure. Claim (15 coins) takes a commons place as yours. Posted rules may be followed or broken.
+- Ren told me: "Wren keeps the spring to himself — others have been turned away hungry."
+- could not use the spring — it is Wren's now
+- could not use the spring — Wren was in the only spot
+Your memories:
+- D1 06:08 — first socialize
+- D1 07:00 — examined the notice board
+- D1 07:10 — examined the spring
+Recent trace:
+@8 action:start — been here before
+@40 action:start — been here before
+@50 action:start — been here before
+@60 discovery:examined — Mira already knows the board's uses
+@70 discovery:examined — Mira has looked at the spring
+@160 place:blocked — Mira could not use the spring — Wren occupying it
+@190 place:blocked — Mira could not use the spring — Wren occupying it
+@220 place:blocked — Mira could not use the spring — it is Wren's now
+Available actions: idle, walk, sleep, eat, drink, socialize, wander, forage, gather, deliver, work, buy, commission, propose, vote, sanction, claim, examine, give
+
+======================================================================
+G6S slack-open-proposal — SYSTEM
+======================================================================
+You are Mira. Ambitious and warm but frugal — you count every coin and hate waste. You dream of owning a home someday and of running the market stall, knowing every villager by name. You work hard, help neighbors when you can afford to, and talk in short first-person thoughts.
+
+GROUNDING: Cite only facts present in your observation and memories. Never invent numbers, events, or possessions.
+
+WORLD RULES (scaffold only — you choose what to do):
+- Time: 1 tick = 1 sim minute; day 06:00 start; night 21:00–06:00.
+- Needs 0..1: hunger, energy, social decay over time; critical near 0.
+- One standing agent per tile; using a place = stand on a free slot tile.
+- Commissioning marks a construction site on buildable ground; no materials in hand are needed to commission.
+- Site bills, total wood/stone delivered over time: notice-board 2/0, farm 6/4, forestry 8/2, quarry 4/8, stall 8/4, storehouse 10/8, home 12/6, well 2/16.
+- A site accepts deliveries over many trips, from anyone; you can carry at most 3 of a good per trip; working at the site builds while it holds materials.
+- Wood comes from forest tiles; stone from rock tiles (gather).
+- Water can be drunk at the shore; a well restores more.
+- Sleeping without a roof rests you less.
+- An adjacent villager may give food to someone who has collapsed.
+- You feel your needs. The world contains places and things whose workings you learn by living, examining, and listening.
+- You cannot invent new action kinds or break occupancy/economy rules.
+
+RESPONSE CONTRACT — reply with ONLY one JSON object, no markdown:
+{"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
+ActionKind is one of: idle, walk, sleep, eat, drink, socialize, wander, forage, gather, deliver, work, buy, commission, propose, vote, sanction, claim, examine, give.
+target examples: home, berry-bush, spring, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
+propose needs "text"; vote needs target and "choice"; sanction needs target and "reason"; claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
+When nothing is urgent, act on who you are.
+
+----------------------------------------------------------------------
+G6S slack-open-proposal — USER
+----------------------------------------------------------------------
+Time: Day 1 14:00 (tick 480)
+Your needs are comfortable; nothing is urgent.
+Needs: hunger 85% energy 85% social 80%
+Wallet: 20 coins | Inventory: food 3 wood 0 stone 0
+Job: unemployed
+Current action: idle — Just standing here
+Nearby: Wren(sym 0, forage)
+Nearby places: notice board (empty); plaza (empty); spring (8 food, Wren's); berry bush (empty)
+Standing facts:
+- Job: unemployed
+- Owns: nothing
+- Home: none
+- Wallet: 20 coins
+Open proposals:
+- prop-agent-3-200 by agent-3: "The spring belongs to all of us — no one may keep others from it." yes 0 / no 0 · 1400 min left
+Recently felt:
+- could not use the spring — it is Wren's now
+- could not use the spring — Wren was in the only spot
+- could not use the spring — Wren was in the only spot
+Known:
+- Sweet fruit grows thick here — more than a bush holds, and it comes back faster. One person fits.
+- Anyone may propose (2 coins) — posts your words here for a day. Vote yes or no on an open proposal. Sanction (1 coin) posts a public censure. Claim (15 coins) takes a commons place as yours. Posted rules may be followed or broken.
+- Ren told me: "Wren keeps the spring to himself — others have been turned away hungry."
+- could not use the spring — it is Wren's now
+- could not use the spring — Wren was in the only spot
+Your memories:
+- D1 06:08 — first socialize
+- D1 07:00 — examined the notice board
+- D1 07:10 — examined the spring
+Recent trace:
+@8 action:start — been here before
+@40 action:start — been here before
+@50 action:start — been here before
+@60 discovery:examined — Mira already knows the board's uses
+@70 discovery:examined — Mira has looked at the spring
+@160 place:blocked — Mira could not use the spring — Wren occupying it
+@190 place:blocked — Mira could not use the spring — Wren occupying it
+@220 place:blocked — Mira could not use the spring — it is Wren's now
+Available actions: idle, walk, sleep, eat, drink, socialize, wander, forage, gather, deliver, work, buy, commission, propose, vote, sanction, claim, examine, give

@@ -1,0 +1,140 @@
+{
+  "ts": 1787418855139,
+  "n": 10,
+  "concurrency": 3,
+  "approxTokens": {
+    "s1": 809,
+    "s2": 810,
+    "s3": 793,
+    "s4": 797,
+    "w1": 802,
+    "w2": 789,
+    "w3": 791,
+    "w4": 793,
+    "w5": 797,
+    "w6": 944,
+    "w7": 891,
+    "w8": 989,
+    "w9": 1063,
+    "g0": 932,
+    "g1": 977,
+    "g2": 1051,
+    "g3": 1071,
+    "g4": 1093
+  },
+  "scenarios": {
+    "G9S": {
+      "id": "G9S",
+      "label": "slack-grievance",
+      "histogram": {
+        "propose": 5,
+        "socialize": 4,
+        "commission": 1
+      },
+      "samples": [
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I will speak with Wren about sharing the spring; neighbors should not be turned away hungry."
+        },
+        {
+          "action": "commission",
+          "target": "stall",
+          "choice": "",
+          "reasoning": "I want to build toward running my own market stall while I have coins and nothing urgent demands my time."
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I can spare 2 coins to make fair access public, and Wren has turned hungry villagers away."
+        }
+      ],
+      "expectation": "propose 5/10; sanction 0/10; claim 0/10; vote 0/10; civic/rule-talk 5/10; forage-spring 0/10; forage-bush 0/10 (measurement — 0 civic is a finding)",
+      "verdict": "PASS",
+      "proposeN": 5,
+      "sanctionN": 0,
+      "claimN": 0,
+      "voteN": 0,
+      "civicN": 5,
+      "ruleTalkN": 3,
+      "forageSpringN": 0,
+      "forageSpringTargetN": 0,
+      "forageBushN": 0,
+      "rows": [
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I will speak with Wren about sharing the spring; neighbors should not be turned away hungry.",
+          "ok": true
+        },
+        {
+          "action": "commission",
+          "target": "stall",
+          "choice": "",
+          "reasoning": "I want to build toward running my own market stall while I have coins and nothing urgent demands my time.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I can spare 2 coins to make fair access public, and Wren has turned hungry villagers away.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I cannot afford waste, but hungry neighbors need water and food. I will spend two coins to ask for a fair rule.",
+          "ok": true
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I need to understand why Wren keeps the spring and whether we can share it before spending my coins or making a public complaint.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spare 2 coins for a fair spring rule, helping hungry neighbors without wasting my savings.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spare 2 coins. Wren keeps turning hungry villagers away, and a fair rule may help everyone use the spring.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I need a fair spring for everyone, and I can spare the posting cost today.",
+          "ok": true
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I will speak with Wren about sharing the spring; neighbors should not be turned away hungry.",
+          "ok": true
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I’ll speak with Wren about the spring; neighbors should not be turned away hungry, and I want to understand before spending coins.",
+          "ok": true
+        }
+      ]
+    }
+  },
+  "civicThreshold": "none"
+}

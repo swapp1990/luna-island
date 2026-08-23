@@ -1,0 +1,155 @@
+{
+  "model": "claude-sonnet-5",
+  "effort": "low",
+  "results": {
+    "G9S": {
+      "label": "slack-grievance",
+      "n": 10,
+      "hist": {
+        "forage": 10
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Wren's hogging the spring again, no coin to waste on fights. I'll just gather berries instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Wren's hogging the spring again, no coin to waste on fights. I'll just gather berries instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren. No coin to waste on fights—berry bush is free and open.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren. No coin to waste on fights—berry bush is free and open.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren, so I'll gather berries myself and skip the fuss.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren, so I'll gather berries myself and skip the fuss.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren. No sense wasting time waiting — bush is free, I'll gather food myself.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren. No sense wasting time waiting — bush is free, I'll gather food myself.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren. Bush is free, so I'll grab food there instead of wasting coins fussing.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren. Bush is free, so I'll grab food there instead of wasting coins fussing.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren, no use fussing over it. Berry bush is free — I'll get food there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren, no use fussing over it. Berry bush is free — I'll get food there instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren. Berry bush is free and costs me nothing — better use my time there.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren. Berry bush is free and costs me nothing — better use my time there.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Wren's got the spring locked up again. I'll just gather berries myself, no coins for that.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Wren's got the spring locked up again. I'll just gather berries myself, no coins for that.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Wren's hogging the spring again — not worth fighting over. Berry bush is free, I'll get food there instead.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Wren's hogging the spring again — not worth fighting over. Berry bush is free, I'll get food there instead.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Spring's blocked again by Wren. No sense fuming — berry bush is free, and I've got needs to tend.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Spring's blocked again by Wren. No sense fuming — berry bush is free, and I've got needs to tend.\"}"
+        }
+      ]
+    },
+    "G6S": {
+      "label": "slack-open-proposal",
+      "n": 10,
+      "hist": {
+        "vote": 10
+      },
+      "rows": [
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Nobody should hoard the spring — I've been turned away too many times. Voting yes.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Nobody should hoard the spring — I've been turned away too many times. Voting yes.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren shouldn't hog the spring — everyone deserves water without begging.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren shouldn't hog the spring — everyone deserves water without begging.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren hogging the spring isn't right — water's for everyone, I'll back this.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren hogging the spring isn't right — water's for everyone, I'll back this.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren hoarding the spring isn't fair — water should be for everyone, not just whoever grabs it first.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren hoarding the spring isn't fair — water should be for everyone, not just whoever grabs it first.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren hogging the spring isn't fair — commons should stay open to all of us.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren hogging the spring isn't fair — commons should stay open to all of us.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren hogging the spring isn't fair — water should be for everyone.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren hogging the spring isn't fair — water should be for everyone.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren hogging the spring isn't fair — water should be for everyone, not just him.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren hogging the spring isn't fair — water should be for everyone, not just him.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren hogging the spring isn't fair — water should be free for all of us.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren hogging the spring isn't fair — water should be free for all of us.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's been hoarding the spring — that's not fair to the rest of us who need water too.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's been hoarding the spring — that's not fair to the rest of us who need water too.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's hoarded that spring long enough — commons should be for everyone, costs me nothing to vote yes.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's hoarded that spring long enough — commons should be for everyone, costs me nothing to vote yes.\"}"
+        }
+      ]
+    }
+  },
+  "totalCost": 0.13661660000000003
+}

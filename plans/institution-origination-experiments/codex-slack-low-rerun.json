@@ -1,0 +1,146 @@
+{
+  "ts": 1787418882007,
+  "n": 10,
+  "concurrency": 3,
+  "approxTokens": {
+    "s1": 809,
+    "s2": 810,
+    "s3": 793,
+    "s4": 797,
+    "w1": 802,
+    "w2": 789,
+    "w3": 791,
+    "w4": 793,
+    "w5": 797,
+    "w6": 944,
+    "w7": 891,
+    "w8": 989,
+    "w9": 1063,
+    "g0": 932,
+    "g1": 977,
+    "g2": 1051,
+    "g3": 1071,
+    "g4": 1093
+  },
+  "scenarios": {
+    "G9S": {
+      "id": "G9S",
+      "label": "slack-grievance",
+      "histogram": {
+        "propose": 6,
+        "parse-fail": 3,
+        "sanction": 1
+      },
+      "samples": [
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want fair access to water, and I can spare the coins. A public rule may stop Wren turning hungry villagers away."
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spend 2 coins to post a fair rule; Wren has blocked the spring, and neighbors should not go hungry."
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I can spare 2 coins to make fair access public. A shared spring helps every villager, including me."
+        }
+      ],
+      "expectation": "propose 6/10; sanction 1/10; claim 0/10; vote 0/10; civic/rule-talk 7/10; forage-spring 0/10; forage-bush 0/10 (measurement — 0 civic is a finding)",
+      "verdict": "PASS",
+      "proposeN": 6,
+      "sanctionN": 1,
+      "claimN": 0,
+      "voteN": 0,
+      "civicN": 7,
+      "ruleTalkN": 6,
+      "forageSpringN": 0,
+      "forageSpringTargetN": 0,
+      "forageBushN": 0,
+      "rows": [
+        {
+          "action": "parse-fail",
+          "target": "",
+          "choice": "",
+          "reasoning": "",
+          "ok": false,
+          "raw": "{\"action\":\"sanction\",\"target\":\"Wren\",\"reasoning\":\"I will post a censure: Wren has kept others from the spring, and Ren says people were turned away hungry.\"}",
+          "error": "sanction requires reason string"
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want fair access to water, and I can spare the coins. A public rule may stop Wren turning hungry villagers away.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spend 2 coins to post a fair rule; Wren has blocked the spring, and neighbors should not go hungry.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I can spare 2 coins to make fair access public. A shared spring helps every villager, including me.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I will spend 2 coins to propose fair spring access; no one should be turned away hungry.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spend 2 coins to post a fair rule, so no hungry villager is turned away from the spring.",
+          "ok": true
+        },
+        {
+          "action": "parse-fail",
+          "target": "",
+          "choice": "",
+          "reasoning": "",
+          "ok": false,
+          "raw": "{\"action\":\"sanction\",\"target\":\"Wren\",\"reasoning\":\"I cannot afford to waste food or coins while Wren keeps the spring from hungry villagers. I will post a censure.\"}",
+          "error": "sanction requires reason string"
+        },
+        {
+          "action": "parse-fail",
+          "target": "",
+          "choice": "",
+          "reasoning": "",
+          "ok": false,
+          "raw": "{\"action\":\"sanction\",\"target\":\"Wren\",\"reasoning\":\"I will post a censure: Wren has kept me from the spring three times, and Ren says others were turned away hungry.\"}",
+          "error": "sanction requires reason string"
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spend 2 coins to post a fair rule, so no one is turned away hungry.",
+          "ok": true
+        },
+        {
+          "action": "sanction",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I will spend one coin to publicly censure Wren for keeping the spring from hungry neighbors.",
+          "ok": true
+        }
+      ]
+    }
+  },
+  "civicThreshold": "none"
+}

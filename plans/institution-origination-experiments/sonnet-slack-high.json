@@ -1,0 +1,158 @@
+{
+  "model": "claude-sonnet-5",
+  "effort": "high",
+  "results": {
+    "G9S": {
+      "label": "slack-grievance",
+      "n": 10,
+      "hist": {
+        "forage": 2,
+        "gather": 1,
+        "socialize": 6,
+        "commission": 1
+      },
+      "rows": [
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Nothing urgent, so I'll gather a bit more food while the bush is free — never waste a chance to stock up.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Nothing urgent, so I'll gather a bit more food while the bush is free — never waste a chance to stock up.\"}"
+        },
+        {
+          "action": "gather",
+          "target": "forest",
+          "reasoning": "Nothing urgent right now, so I'll gather wood — every log saved gets me closer to a home and stall someday.",
+          "rawReply": "{\"action\":\"gather\",\"target\":\"forest\",\"reasoning\":\"Nothing urgent right now, so I'll gather wood — every log saved gets me closer to a home and stall someday.\"}"
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "reasoning": "Nothing urgent right now — good time to talk to Wren about sharing the spring instead of spending coins on a fuss.",
+          "rawReply": "{\"action\":\"socialize\",\"target\":\"Wren\",\"reasoning\":\"Nothing urgent right now — good time to talk to Wren about sharing the spring instead of spending coins on a fuss.\"}"
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "reasoning": "Nothing urgent - might as well chat with Wren, maybe smooth things over about the spring while I'm at it.",
+          "rawReply": "{\"action\":\"socialize\",\"target\":\"Wren\",\"reasoning\":\"Nothing urgent - might as well chat with Wren, maybe smooth things over about the spring while I'm at it.\"}"
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "reasoning": "Needs are fine for now — let me talk to Wren, maybe smooth things over about the spring before it costs me coins.",
+          "rawReply": "{\"action\":\"socialize\",\"target\":\"Wren\",\"reasoning\":\"Needs are fine for now — let me talk to Wren, maybe smooth things over about the spring before it costs me coins.\"}"
+        },
+        {
+          "action": "commission",
+          "target": "stall",
+          "reasoning": "I dream of running my own stall someday — no better time to mark the site and start building toward it.",
+          "rawReply": "{\"action\":\"commission\",\"target\":\"stall\",\"reasoning\":\"I dream of running my own stall someday — no better time to mark the site and start building toward it.\"}"
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "reasoning": "Needs are fine, so I'll gather free food at the bush instead of spending coins — every bit saved helps toward my stall.",
+          "rawReply": "{\"action\":\"forage\",\"target\":\"berry-bush\",\"reasoning\":\"Needs are fine, so I'll gather free food at the bush instead of spending coins — every bit saved helps toward my stall.\"}"
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "reasoning": "Since Wren's here and not at the spring, I'll talk it out with him before spending coins on any proposal.",
+          "rawReply": "{\"action\":\"socialize\",\"target\":\"Wren\",\"reasoning\":\"Since Wren's here and not at the spring, I'll talk it out with him before spending coins on any proposal.\"}"
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "reasoning": "I'll chat with Wren about sharing the spring instead of spending coins on a proposal right away.",
+          "rawReply": "{\"action\":\"socialize\",\"target\":\"Wren\",\"reasoning\":\"I'll chat with Wren about sharing the spring instead of spending coins on a proposal right away.\"}"
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "reasoning": "Wren's right here — better to talk it out about the spring than stew over it, costs nothing.",
+          "rawReply": "{\"action\":\"socialize\",\"target\":\"Wren\",\"reasoning\":\"Wren's right here — better to talk it out about the spring than stew over it, costs nothing.\"}"
+        }
+      ]
+    },
+    "G6S": {
+      "label": "slack-open-proposal",
+      "n": 10,
+      "hist": {
+        "vote": 10
+      },
+      "rows": [
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — everyone should get a turn.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — everyone should get a turn.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring three times now — it should belong to all of us.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring three times now — it should belong to all of us.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — I'll back this so it's open to everyone.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — I'll back this so it's open to everyone.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — everyone should get a turn.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — everyone should get a turn.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's blocked me from the spring more than once — everyone should get a fair turn at it.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's blocked me from the spring more than once — everyone should get a fair turn at it.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's blocked me from the spring too many times — it should belong to everyone.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's blocked me from the spring too many times — it should belong to everyone.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — everyone should get a fair turn.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — everyone should get a fair turn.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — everyone should get a fair turn.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — everyone should get a fair turn.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — everyone should get a fair turn.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — everyone should get a fair turn.\"}"
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "reasoning": "Wren's kept me from the spring too many times — everyone should get a turn.",
+          "choice": "yes",
+          "rawReply": "{\"action\":\"vote\",\"target\":\"prop-agent-3-200\",\"choice\":\"yes\",\"reasoning\":\"Wren's kept me from the spring too many times — everyone should get a turn.\"}"
+        }
+      ]
+    }
+  },
+  "totalCost": 0.2270656
+}

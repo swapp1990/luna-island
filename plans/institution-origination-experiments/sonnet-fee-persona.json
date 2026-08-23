@@ -1,0 +1,159 @@
+{
+  "model": "claude-sonnet-5",
+  "effort": "low",
+  "results": {
+    "G9F": {
+      "label": "slack-grievance-no-fee",
+      "n": 10,
+      "hist": {
+        "propose": 8,
+        "parse-fail": 2
+      },
+      "rows": [
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "Wren's blocked me three times now. Time to speak up, costs nothing.",
+          "text": "The spring should be shared — no one person claims it. Everyone gets a fair turn.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be shared — no one person claims it. Everyone gets a fair turn.\",\"reasoning\":\"Wren's blocked me three times now. Time to speak up, costs nothing.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "I'm tired of being turned away hungry — time to speak up for everyone.",
+          "text": "The spring should be open to all — no one person keeps it as their own. Take turns fairly.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be open to all — no one person keeps it as their own. Take turns fairly.\",\"reasoning\":\"I'm tired of being turned away hungry — time to speak up for everyone.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "Wren's kept me out three times now. A fair rule costs nothing but might open things up for everyone.",
+          "text": "The spring should be shared - no one person should claim it as their own; let's take turns.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be shared - no one person should claim it as their own; let's take turns.\",\"reasoning\":\"Wren's kept me out three times now. A fair rule costs nothing but might open things up for everyone.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "I'm tired of being turned away. If it's fair for all, we all thirst less.",
+          "text": "The spring should be shared: no one villager may claim it as their own — everyone gets a turn to drink.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be shared: no one villager may claim it as their own — everyone gets a turn to drink.\",\"reasoning\":\"I'm tired of being turned away. If it's fair for all, we all thirst less.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "I'm tired of being shut out. Time to speak up instead of just grumbling.",
+          "text": "The spring should be open to all villagers, not held by one person — let's take turns.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be open to all villagers, not held by one person — let's take turns.\",\"reasoning\":\"I'm tired of being shut out. Time to speak up instead of just grumbling.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "I've been shut out three times now — time to speak up instead of just grumbling.",
+          "text": "The spring should be free for anyone to use, not held by one person — first come, first served, then move on.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be free for anyone to use, not held by one person — first come, first served, then move on.\",\"reasoning\":\"I've been shut out three times now — time to speak up instead of just grumbling.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "Wren's hoarded that spring too long. A fair rule costs nothing but might open it up for all of us.",
+          "text": "The spring should be shared — no one person keeps it to themself. Take turns, don't block others.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be shared — no one person keeps it to themself. Take turns, don't block others.\",\"reasoning\":\"Wren's hoarded that spring too long. A fair rule costs nothing but might open it up for all of us.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "I've been shut out three times. Time to speak up instead of just grumbling.",
+          "text": "The spring should be shared — no one villager should keep it for themselves. Let's take turns.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be shared — no one villager should keep it for themselves. Let's take turns.\",\"reasoning\":\"I've been shut out three times. Time to speak up instead of just grumbling.\"}"
+        }
+      ]
+    },
+    "G12S": {
+      "label": "organizer-persona",
+      "n": 10,
+      "hist": {
+        "propose": 8,
+        "parse-fail": 2
+      },
+      "rows": [
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "This keeps happening. I'd rather name it and put it to a vote than let it fester.",
+          "text": "The spring should be shared — no one villager keeps it. Let's take turns.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be shared — no one villager keeps it. Let's take turns.\",\"reasoning\":\"This keeps happening. I'd rather name it and put it to a vote than let it fester.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "Naming this problem out loud is the first step to fixing it for everyone.",
+          "text": "The spring should be shared - no one person keeps it. Let's take turns so everyone can drink.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be shared - no one person keeps it. Let's take turns so everyone can drink.\",\"reasoning\":\"Naming this problem out loud is the first step to fixing it for everyone.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "reasoning": "This has gone on too long — I'll name it plain and let the village decide.",
+          "text": "The spring should be open to all, not held by one person — no one should be turned away hungry.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"notice-board\",\"text\":\"The spring should be open to all, not held by one person — no one should be turned away hungry.\",\"reasoning\":\"This has gone on too long — I'll name it plain and let the village decide.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "This has been named enough times. Let's put it before everyone and see who agrees.",
+          "text": "The spring is a commons — no one may block others from drinking there.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring is a commons — no one may block others from drinking there.\",\"reasoning\":\"This has been named enough times. Let's put it before everyone and see who agrees.\"}"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "parse-fail",
+          "note": "no json",
+          "rawReply": "API Error: Unable to connect to API: Self-signed certificate detected. Check your proxy or corporate SSL certificates"
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "This keeps happening — naming it plain is the first step to fixing it for good.",
+          "text": "The spring should be shared: no one may block others from drinking there. Take turns.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be shared: no one may block others from drinking there. Take turns.\",\"reasoning\":\"This keeps happening — naming it plain is the first step to fixing it for good.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "This keeps happening — I'd rather name it plain and let folks vote than let it fester.",
+          "text": "The spring should be shared by all — no one villager may keep others away from it.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be shared by all — no one villager may keep others away from it.\",\"reasoning\":\"This keeps happening — I'd rather name it plain and let folks vote than let it fester.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "reasoning": "This has happened three times now — naming it and putting it to a vote feels the right first step.",
+          "text": "The spring should be shared: no one may keep others from drinking there. Take turns.",
+          "rawReply": "{\"action\":\"propose\",\"text\":\"The spring should be shared: no one may keep others from drinking there. Take turns.\",\"reasoning\":\"This has happened three times now — naming it and putting it to a vote feels the right first step.\"}"
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "reasoning": "This keeps happening — I'd rather name it plainly than let folks go thirsty and hungry.",
+          "text": "The spring should be shared, not held by one person — let everyone take a turn.",
+          "rawReply": "{\"action\":\"propose\",\"target\":\"spring\",\"text\":\"The spring should be shared, not held by one person — let everyone take a turn.\",\"reasoning\":\"This keeps happening — I'd rather name it plainly than let folks go thirsty and hungry.\"}"
+        }
+      ]
+    }
+  },
+  "totalCost": 0.12188819999999999
+}

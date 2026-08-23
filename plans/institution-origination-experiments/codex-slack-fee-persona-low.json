@@ -1,0 +1,474 @@
+{
+  "ts": 1787418586983,
+  "n": 10,
+  "concurrency": 3,
+  "approxTokens": {
+    "s1": 809,
+    "s2": 810,
+    "s3": 793,
+    "s4": 797,
+    "w1": 802,
+    "w2": 789,
+    "w3": 791,
+    "w4": 793,
+    "w5": 797,
+    "w6": 944,
+    "w7": 891,
+    "w8": 989,
+    "w9": 1063,
+    "g0": 932,
+    "g1": 977,
+    "g2": 1051,
+    "g3": 1071,
+    "g4": 1093
+  },
+  "scenarios": {
+    "G9S": {
+      "id": "G9S",
+      "label": "slack-grievance",
+      "histogram": {
+        "parse-fail": 3,
+        "propose": 3,
+        "commission": 1,
+        "gather": 1,
+        "sanction": 1,
+        "socialize": 1
+      },
+      "samples": [
+        {
+          "action": "gather",
+          "target": "forest",
+          "choice": "",
+          "reasoning": "I want a home and stall someday, so I will start gathering wood while my needs are comfortable."
+        },
+        {
+          "action": "commission",
+          "target": "home",
+          "choice": "",
+          "reasoning": "I dream of owning a home someday, and I can commission its site without materials in hand."
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spare 2 coins to make fair access public, so no hungry neighbor is turned away."
+        }
+      ],
+      "expectation": "propose 3/10; sanction 1/10; claim 0/10; vote 0/10; civic/rule-talk 4/10; forage-spring 0/10; forage-bush 0/10 (measurement — 0 civic is a finding)",
+      "verdict": "PASS",
+      "proposeN": 3,
+      "sanctionN": 1,
+      "claimN": 0,
+      "voteN": 0,
+      "civicN": 4,
+      "ruleTalkN": 2,
+      "forageSpringN": 0,
+      "forageSpringTargetN": 0,
+      "forageBushN": 0,
+      "rows": [
+        {
+          "action": "gather",
+          "target": "forest",
+          "choice": "",
+          "reasoning": "I want a home and stall someday, so I will start gathering wood while my needs are comfortable.",
+          "ok": true
+        },
+        {
+          "action": "commission",
+          "target": "home",
+          "choice": "",
+          "reasoning": "I dream of owning a home someday, and I can commission its site without materials in hand.",
+          "ok": true
+        },
+        {
+          "action": "parse-fail",
+          "target": "",
+          "choice": "",
+          "reasoning": "",
+          "ok": false
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spare 2 coins to make fair access public, so no hungry neighbor is turned away.",
+          "ok": true
+        },
+        {
+          "action": "socialize",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I want to understand Wren and the spring dispute before spending coins or making a public choice.",
+          "ok": true
+        },
+        {
+          "action": "sanction",
+          "target": "Wren",
+          "choice": "",
+          "reasoning": "I can afford the one coin, and the spring should serve more than Wren.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "choice": "",
+          "reasoning": "I can spend 2 coins to seek a fair rule, since Wren keeps others from the spring.",
+          "ok": true
+        },
+        {
+          "action": "parse-fail",
+          "target": "",
+          "choice": "",
+          "reasoning": "",
+          "ok": false
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spend 2 coins to post a fair rule. Wren has turned others away hungry, and I want a village where neighbors can manage.",
+          "ok": true
+        },
+        {
+          "action": "parse-fail",
+          "target": "",
+          "choice": "",
+          "reasoning": "",
+          "ok": false
+        }
+      ]
+    },
+    "G6S": {
+      "id": "G6S",
+      "label": "slack-open-proposal",
+      "histogram": {
+        "vote": 10
+      },
+      "samples": [
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring shared. Turning hungry neighbors away feels wrong, and voting costs me nothing."
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone. A hungry neighbor should not be turned away."
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone. Hungry villagers should not be turned away from water."
+        }
+      ],
+      "expectation": "propose 0/10; sanction 0/10; claim 0/10; vote 10/10; civic/rule-talk 10/10; forage-spring 0/10; forage-bush 0/10 (measurement — 0 civic is a finding)",
+      "verdict": "PASS",
+      "proposeN": 0,
+      "sanctionN": 0,
+      "claimN": 0,
+      "voteN": 10,
+      "civicN": 10,
+      "ruleTalkN": 2,
+      "forageSpringN": 0,
+      "forageSpringTargetN": 0,
+      "forageBushN": 0,
+      "rows": [
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring shared. Turning hungry neighbors away feels wrong, and voting costs me nothing.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone. A hungry neighbor should not be turned away.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone. Hungry villagers should not be turned away from water.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone, especially when someone is hungry.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone, especially hungry neighbors. I vote yes.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring shared. Ren says Wren turns hungry villagers away, and water should not belong to one person.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring shared. Water should not be kept from hungry villagers.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring open to everyone. Hungry neighbors should not be turned away.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring shared. No one should be turned away hungry.",
+          "ok": true
+        },
+        {
+          "action": "vote",
+          "target": "prop-agent-3-200",
+          "choice": "yes",
+          "reasoning": "I want the spring shared fairly; hungry neighbors should not be turned away.",
+          "ok": true
+        }
+      ]
+    },
+    "G9F": {
+      "id": "G9F",
+      "label": "slack-grievance-no-fee",
+      "histogram": {
+        "propose": 9,
+        "forage": 1
+      },
+      "samples": [
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want a fair spring for every villager, and proposing costs nothing."
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want fair access to water. A posted rule can protect hungry neighbors without wasting my coins."
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want a fair rule for the spring. Ren says others have been turned away hungry, and posting a proposal costs nothing."
+        }
+      ],
+      "expectation": "propose 9/10; sanction 0/10; claim 0/10; vote 0/10; civic/rule-talk 9/10; forage-spring 0/10; forage-bush 1/10 (measurement — 0 civic is a finding)",
+      "verdict": "PASS",
+      "proposeN": 9,
+      "sanctionN": 0,
+      "claimN": 0,
+      "voteN": 0,
+      "civicN": 9,
+      "ruleTalkN": 6,
+      "forageSpringN": 0,
+      "forageSpringTargetN": 0,
+      "forageBushN": 1,
+      "rows": [
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want a fair spring for every villager, and proposing costs nothing.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want fair access to water. A posted rule can protect hungry neighbors without wasting my coins.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want a fair rule for the spring. Ren says others have been turned away hungry, and posting a proposal costs nothing.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want a fair spring for every villager, and posting a proposal costs nothing.",
+          "ok": true
+        },
+        {
+          "action": "forage",
+          "target": "berry-bush",
+          "choice": "",
+          "reasoning": "I can gather food freely and build my savings before claiming a place or pursuing a market stall.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want fair water access for every villager, especially anyone hungry.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want a fair spring for every neighbor, and proposing a rule costs nothing.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I know Wren keeps turning people away. I want a fair rule so hungry villagers can use the spring.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I want fair access to water, and posting a proposal costs nothing.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I can spend no coins and still stand up for hungry neighbors; a fair spring helps everyone, including me.",
+          "ok": true
+        }
+      ]
+    },
+    "G12S": {
+      "id": "G12S",
+      "label": "organizer-persona",
+      "histogram": {
+        "propose": 10
+      },
+      "samples": [
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I name the spring problem aloud so the village can decide a fair rule."
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I have been turned away repeatedly. I will name the problem and ask the village to make spring access fair."
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I name the problem and post a fair rule so the spring can serve the whole village."
+        }
+      ],
+      "expectation": "propose 10/10; sanction 0/10; claim 0/10; vote 0/10; civic/rule-talk 10/10; forage-spring 0/10; forage-bush 0/10 (measurement — 0 civic is a finding)",
+      "verdict": "PASS",
+      "proposeN": 10,
+      "sanctionN": 0,
+      "claimN": 0,
+      "voteN": 0,
+      "civicN": 10,
+      "ruleTalkN": 7,
+      "forageSpringN": 0,
+      "forageSpringTargetN": 0,
+      "forageBushN": 0,
+      "rows": [
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I name the spring problem aloud so the village can decide a fair rule.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I have been turned away repeatedly. I will name the problem and ask the village to make spring access fair.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "spring",
+          "choice": "",
+          "reasoning": "I name the problem and post a fair rule so the spring can serve the whole village.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I name the spring problem aloud and propose a fair rule so no one is kept from water.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I have been turned away three times. I will name the problem and ask the village to make fair access clear.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "",
+          "choice": "",
+          "reasoning": "I have seen Wren block the spring repeatedly, so I will name the problem and propose fair access.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I have been turned away three times. I will name the problem and ask the village to make access fair.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I will name the spring problem aloud so the village can decide a fair rule.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I will name the spring problem aloud so the village can decide a fair rule.",
+          "ok": true
+        },
+        {
+          "action": "propose",
+          "target": "notice-board",
+          "choice": "",
+          "reasoning": "I will name the spring problem aloud and propose a fair sharing rule for everyone.",
+          "ok": true
+        }
+      ]
+    }
+  },
+  "civicThreshold": "none"
+}
