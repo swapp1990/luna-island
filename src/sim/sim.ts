@@ -102,6 +102,20 @@ const COMMISSION_COST = 30
 export const COMMISSION_COOLDOWN_TICKS = 240
 /** Island-wide cap on simultaneous construction-sites. */
 export const MAX_ACTIVE_SITES = 3
+/** Highest Place.level a BuildableKind structure can reach. Missing level ⇒ 1. */
+export const MAX_PLACE_LEVEL = 3
+
+/** Effective building tier. Missing / non-positive ⇒ 1. */
+export function placeLevel(place: Place | undefined | null): number {
+  const n = place?.level
+  if (typeof n !== 'number' || n < 1) return 1
+  return n
+}
+
+/** WORLD_RULES line: upgrade affordance, bill scale, capacity. Facts only. */
+export function upgradeRuleLine(): string {
+  return `Commissioning a kind you already own upgrades it; a commons notice-board or well may be upgraded by anyone. Bill scales with current level (max ${MAX_PLACE_LEVEL}). A level adds one use slot and +1 yield on producing places.`
+}
 /** Ticks per wood/stone unit gathered from raw terrain. */
 export const GATHER_TICKS_PER_UNIT = 12
 /** Max carried units of one gathered good. */
@@ -294,6 +308,9 @@ function deepClonePlace(p: Place): Place {
           progress: p.construction.progress,
           consumeTicks: p.construction.consumeTicks,
           targetKind: p.construction.targetKind,
+          ...(p.construction.upgradeOf
+            ? { upgradeOf: p.construction.upgradeOf }
+            : {}),
         }
       : undefined,
   }
@@ -2349,9 +2366,7 @@ export class Simulation {
       return
     }
 
-    const labour =
-      BUILD_RECIPES[(c.targetKind ?? 'home') as BuildableKind]?.labourTicks ??
-      CONSTRUCTION_TICKS
+    const labour = this.constructionLabourTicks(c)
     c.progress += 1 / labour
     const totalNeed =
       (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
@@ -3829,14 +3844,17 @@ export class Simulation {
                 ? `unknown-kind: ${kind} — buildable kinds are ${buildableKindList()}`
                 : why === 'tile-not-buildable'
                   ? 'no buildable ground'
-                  : why
+                  : why === 'max-level'
+                    ? `already at level ${MAX_PLACE_LEVEL}`
+                    : why
     const skipBill =
       !recipe ||
       why === 'unknown-kind' ||
       why === 'already-owns' ||
       why === 'already-commissioning' ||
       why === 'site-cap' ||
-      why === 'cannot-afford'
+      why === 'cannot-afford' ||
+      why === 'max-level'
     if (skipBill) {
       return `could not commission a ${kind} — ${whyText}`
     }
@@ -3874,8 +3892,9 @@ export class Simulation {
 
   /**
    * Commission a structure: recipe bill + optional home coin fee →
-   * create a construction-site. At most one active site per commissioner
-   * and MAX_ACTIVE_SITES island-wide.
+   * create a construction-site. Owning the kind (or a commons
+   * notice-board / well) routes to an upgrade site instead of a new build.
+   * At most one active site per commissioner and MAX_ACTIVE_SITES island-wide.
    */
   commission(
     agentId: string,
@@ -3894,17 +3913,19 @@ export class Simulation {
       return fail('unknown-kind', `${agent.name} cannot commission an unknown structure`)
     }
     const recipe = BUILD_RECIPES[kind]
-    const fee = kind === 'home' ? this.homeCommissionFee() : 0
-    if (kind === 'home' && fee > 0 && agent.wallet < fee) {
+    const upgradeTarget = this.findUpgradeTarget(agentId, kind, x, y)
+    if (upgradeTarget && placeLevel(upgradeTarget) >= MAX_PLACE_LEVEL) {
+      const label = kind === 'home' ? 'house' : kind
+      return fail(
+        'max-level',
+        `${agent.name} could not commission — already at level ${MAX_PLACE_LEVEL} (${label})`,
+      )
+    }
+    const fee = !upgradeTarget && kind === 'home' ? this.homeCommissionFee() : 0
+    if (!upgradeTarget && kind === 'home' && fee > 0 && agent.wallet < fee) {
       return fail(
         'cannot-afford',
         `${agent.name} could not afford the ${fee}-coin house fee`,
-      )
-    }
-    if (this.agentOwnsKind(agentId, kind)) {
-      return fail(
-        'already-owns',
-        `${agent.name} already owns a ${kind} and cannot commission another`,
       )
     }
     const activeSites = this.state.places.filter((p) => p.kind === 'construction-site')
@@ -3912,6 +3933,15 @@ export class Simulation {
       return fail(
         'already-commissioning',
         `${agent.name} already has an active construction site`,
+      )
+    }
+    if (
+      upgradeTarget &&
+      activeSites.some((p) => p.construction?.upgradeOf === upgradeTarget.id)
+    ) {
+      return fail(
+        'already-commissioning',
+        `${agent.name} could not commission — that ${kind} is already being upgraded`,
       )
     }
     if (activeSites.length >= MAX_ACTIVE_SITES) {
@@ -3922,7 +3952,23 @@ export class Simulation {
     }
 
     let plot: { x: number; y: number } | null = null
-    if (x !== undefined && y !== undefined) {
+    if (upgradeTarget) {
+      if (x !== undefined && y !== undefined) {
+        const px = Math.round(x)
+        const py = Math.round(y)
+        const d = Math.max(Math.abs(px - upgradeTarget.x), Math.abs(py - upgradeTarget.y))
+        if (d >= 1 && d <= 2 && this.isBuildablePlot(px, py, upgradeTarget.id)) {
+          plot = { x: px, y: py }
+        }
+      }
+      if (!plot) plot = this.findUpgradePlot(upgradeTarget)
+      if (!plot) {
+        return fail(
+          'tile-not-buildable',
+          `${agent.name} found no buildable ground beside the ${kind}`,
+        )
+      }
+    } else if (x !== undefined && y !== undefined) {
       const px = Math.round(x)
       const py = Math.round(y)
       if (!this.isBuildablePlot(px, py)) {
@@ -3942,7 +3988,7 @@ export class Simulation {
       }
     }
 
-    if (kind === 'home' && fee > 0) {
+    if (!upgradeTarget && kind === 'home' && fee > 0) {
       const paid = this.transferCoins(
         agentId,
         'treasury',
@@ -3958,9 +4004,12 @@ export class Simulation {
       }
     }
 
+    const scale = upgradeTarget ? placeLevel(upgradeTarget) : 1
     const needs: Partial<Record<Good, number>> = {}
-    if (recipe.wood > 0) needs.wood = recipe.wood
-    if (recipe.stone > 0) needs.stone = recipe.stone
+    const wood = recipe.wood * scale
+    const stone = recipe.stone * scale
+    if (wood > 0) needs.wood = wood
+    if (stone > 0) needs.stone = stone
 
     const siteId = `site-${agentId}-${this.state.tick}`
     const site: Place = {
@@ -3977,6 +4026,7 @@ export class Simulation {
         progress: 0,
         consumeTicks: 0,
         targetKind: kind,
+        ...(upgradeTarget ? { upgradeOf: upgradeTarget.id } : {}),
       },
     }
     // Clear 3×3 pad so the site is walkable
@@ -3996,6 +4046,7 @@ export class Simulation {
     this.state.places.push(site)
     this.state.owners[siteId] = agentId
     this.clearCommissionStreak(agentId)
+    const label = kind === 'home' ? 'house' : kind
     this.events.append({
       tick: this.state.tick,
       type: 'construction:commissioned',
@@ -4007,25 +4058,75 @@ export class Simulation {
         cost: fee,
         x: plot.x,
         y: plot.y,
+        ...(upgradeTarget ? { upgradeOf: upgradeTarget.id } : {}),
       },
-      reason: `${agent.name} commissioned a ${kind === 'home' ? 'house' : kind}`,
+      reason: upgradeTarget
+        ? `${agent.name} commissioned an upgrade of ${label}`
+        : `${agent.name} commissioned a ${label}`,
     })
     return true
   }
 
-  /** True when agent already owns a completed (or site) place of this kind. */
-  private agentOwnsKind(agentId: string, kind: BuildableKind): boolean {
+  /**
+   * Own completed place of this kind → always upgrade (cannot found a second).
+   * Commons notice-board / well: upgrade when coords are omitted or adjacent;
+   * an explicit free plot founds a new one instead.
+   */
+  private findUpgradeTarget(
+    agentId: string,
+    kind: BuildableKind,
+    x?: number,
+    y?: number,
+  ): Place | undefined {
+    const owned: Place[] = []
+    const commonsCivic: Place[] = []
     for (const place of this.state.places) {
-      if (this.state.owners[place.id] !== agentId) continue
-      if (place.kind === kind) return true
-      if (
-        place.kind === 'construction-site' &&
-        (place.construction?.targetKind ?? 'home') === kind
+      if (place.kind !== kind) continue
+      const owner = this.state.owners[place.id]
+      if (owner === agentId) owned.push(place)
+      else if (
+        (kind === 'notice-board' || kind === 'well') &&
+        (owner === 'commons' || owner === undefined)
       ) {
-        return true
+        commonsCivic.push(place)
       }
     }
-    return false
+    const pick = (list: Place[]): Place | undefined => {
+      if (list.length === 0) return undefined
+      list.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      return list[0]
+    }
+    const own = pick(owned)
+    if (own) return own
+    const civic = pick(commonsCivic)
+    if (!civic) return undefined
+    if (x === undefined || y === undefined) return civic
+    const d = Math.max(Math.abs(Math.round(x) - civic.x), Math.abs(Math.round(y) - civic.y))
+    if (d >= 1 && d <= 2) return civic
+    return undefined
+  }
+
+  /**
+   * Free plot on Chebyshev ring 1, then 2, around the upgrade target.
+   * Spacing ignores the target itself so the site can sit beside it.
+   */
+  private findUpgradePlot(target: Place): { x: number; y: number } | null {
+    const candidates: Array<[number, number]> = []
+    for (let maxD = 1; maxD <= 2; maxD++) {
+      candidates.length = 0
+      for (let dy = -maxD; dy <= maxD; dy++) {
+        for (let dx = -maxD; dx <= maxD; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== maxD) continue
+          const hx = target.x + dx
+          const hy = target.y + dy
+          if (this.isBuildablePlot(hx, hy, target.id)) candidates.push([hx, hy])
+        }
+      }
+      if (candidates.length > 0) break
+    }
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => (a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]))
+    return { x: candidates[0]![0], y: candidates[0]![1] }
   }
 
   /**
@@ -4083,7 +4184,7 @@ export class Simulation {
   }
 
   /** True when (x,y) can host a construction pad (walkable land, spaced). */
-  private isBuildablePlot(hx: number, hy: number): boolean {
+  private isBuildablePlot(hx: number, hy: number, ignorePlaceId?: string): boolean {
     if (hx < 1 || hy < 1 || hx >= this.state.width - 1 || hy >= this.state.height - 1) {
       return false
     }
@@ -4092,6 +4193,7 @@ export class Simulation {
     const chebyshev = (ax: number, ay: number, bx: number, by: number) =>
       Math.max(Math.abs(ax - bx), Math.abs(ay - by))
     for (const p of this.state.places) {
+      if (ignorePlaceId && p.id === ignorePlaceId) continue
       if (
         p.kind === 'home' ||
         p.kind === 'construction-site' ||
@@ -4110,12 +4212,20 @@ export class Simulation {
   /**
    * Site complete: becomes the commissioned kind; jobs dissolve; ownership deed.
    * Founder (commissioner) keeps the deed for every kind — worldgen places stay commons.
+   * Upgrade sites (`construction.upgradeOf`) increment the target's level instead.
    */
   private completeConstruction(site: Place): void {
     if (site.kind !== 'construction-site') return
     const finishedKind: BuildableKind = isBuildableKind(site.construction?.targetKind ?? 'home')
       ? (site.construction!.targetKind ?? 'home')
       : 'home'
+    const upgradeOf = site.construction?.upgradeOf
+    if (upgradeOf) {
+      const target = this.state.places.find((p) => p.id === upgradeOf)
+      if (target) this.completeUpgrade(site, target, finishedKind)
+      else this.removePlace(site)
+      return
+    }
     const commissioner = this.state.owners[site.id] ?? 'commons'
     const commissionerAgent =
       commissioner !== 'commons'
@@ -4195,6 +4305,82 @@ export class Simulation {
           : `built this ${label} and knows its workings`,
       })
     }
+  }
+
+  /**
+   * Upgrade site done: remove the site, increment target level, keep inventory /
+   * jobs / owner. Slots +1 and production yield +1 per level above 1.
+   */
+  private completeUpgrade(site: Place, target: Place, kind: BuildableKind): void {
+    const commissioner = this.state.owners[site.id] ?? 'commons'
+    const commissionerAgent =
+      commissioner !== 'commons'
+        ? this.state.agents.find((a) => a.id === commissioner)
+        : undefined
+
+    for (const a of this.state.agents) {
+      if (a.employedAt === site.id) {
+        this.vacateJob(a, `${a.name}'s construction job finished — ${kind} upgraded`)
+      }
+      if (a.action.targetPlaceId === site.id) {
+        a.action = { kind: 'idle', reason: `${kind} upgrade finished` }
+        a.actionTicks = 0
+        a.workPhase = null
+        this.clearHaul(a)
+      } else if (a.haulDropoffId === site.id || a.haulSourceId === site.id) {
+        this.clearHaul(a)
+      }
+    }
+
+    const fromLevel = placeLevel(target)
+    const newLevel = Math.min(MAX_PLACE_LEVEL, fromLevel + 1)
+    if (newLevel > fromLevel) {
+      target.level = newLevel
+      target.slots += 1
+      if (target.production) target.production.yield += 1
+    }
+
+    this.removePlace(site)
+
+    const ownerId = this.state.owners[target.id]
+    const ownerAgent =
+      ownerId && ownerId !== 'commons'
+        ? this.state.agents.find((a) => a.id === ownerId)
+        : undefined
+    const kindLabel = kind === 'home' ? 'house' : kind
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:completed',
+      agentId: commissioner !== 'commons' ? commissioner : undefined,
+      data: {
+        placeId: target.id,
+        agentName: commissionerAgent?.name,
+        kind,
+        upgradeOf: target.id,
+        level: newLevel,
+      },
+      reason: ownerAgent
+        ? `${ownerAgent.name}'s ${kindLabel} was raised to level ${newLevel}`
+        : `the ${kindLabel} was raised to level ${newLevel}`,
+    })
+  }
+
+  private removePlace(place: Place): void {
+    const i = this.state.places.indexOf(place)
+    if (i >= 0) this.state.places.splice(i, 1)
+    delete this.state.owners[place.id]
+  }
+
+  /**
+   * Labour ticks for a site. Upgrade bill = recipe × current target level
+   * (1→2 costs 1×, 2→3 costs 2×). New builds use 1×.
+   */
+  private constructionLabourTicks(c: NonNullable<Place['construction']>): number {
+    const kind = (c.targetKind ?? 'home') as BuildableKind
+    const base = BUILD_RECIPES[kind]?.labourTicks ?? CONSTRUCTION_TICKS
+    if (!c.upgradeOf) return base
+    const target = this.state.places.find((p) => p.id === c.upgradeOf)
+    return base * placeLevel(target)
   }
 
   /**

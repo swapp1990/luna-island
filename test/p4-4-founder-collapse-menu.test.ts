@@ -245,26 +245,25 @@ describe('P4-4 A — founder owns what they found', () => {
 })
 
 describe('P4-4 C — menu knowable + parser honesty + same-kind ownership', () => {
-  it('same-kind ownership refuses; different kind allowed', () => {
+  it('same-kind ownership upgrades; different kind allowed', () => {
     const sim = new Simulation(42)
     const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
     agent.wallet = 80
     const home = sim.state.places.find((p) => p.kind === 'home')!
     sim.state.owners[home.id] = 'agent-0'
 
-    expect(sim.commission('agent-0', 'home')).toBe(false)
-    const refuse = sim
-      .getEvents()
-      .filter((e) => e.type === 'construction:commission-refused')
-      .at(-1)
-    expect(refuse?.data?.why).toBe('already-owns')
-    expect(String(refuse?.data?.felt)).toMatch(/you already own a home/i)
-    expect(String(refuse?.data?.felt)).toMatch(/different kind/i)
-    expect(String(refuse?.data?.felt)).toMatch(/stall/)
+    expect(sim.commission('agent-0', 'home')).toBe(true)
+    const homeSite = sim.state.places.find((p) => p.kind === 'construction-site')!
+    expect(homeSite.construction?.upgradeOf).toBe(home.id)
+    expect(homeSite.construction?.targetKind).toBe('home')
+    sim.state.places = sim.state.places.filter((p) => p.id !== homeSite.id)
+    delete sim.state.owners[homeSite.id]
 
     const plot = findOpenPlot(sim)
     expect(sim.commission('agent-0', 'stall', plot.x, plot.y)).toBe(true)
-    expect(sim.state.places.some((p) => p.kind === 'construction-site')).toBe(true)
+    const stallSite = sim.state.places.find((p) => p.kind === 'construction-site')!
+    expect(stallSite.construction?.targetKind).toBe('stall')
+    expect(stallSite.construction?.upgradeOf).toBeUndefined()
   })
 
   it('unknown commission target refuses with menu felt line (not mapped to home)', () => {

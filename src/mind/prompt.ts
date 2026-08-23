@@ -2,6 +2,7 @@ import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '..
 import { toSimTime } from '../sim/time'
 import {
   buildableMenuLine,
+  upgradeRuleLine,
   COLLAPSE_VIEW_RADIUS,
   GATHER_CARRY,
   bindingTally,
@@ -59,6 +60,7 @@ function worldRulesText(): string {
 - One standing agent per tile; using a place = stand on a free slot tile.
 - Commissioning marks a construction site on buildable ground; no materials in hand are needed to commission.
 - ${buildableMenuLine()}
+- ${upgradeRuleLine()}
 - A site accepts deliveries over many trips, from anyone; you can carry at most ${GATHER_CARRY.cap} of a good per trip; working at the site builds while it holds materials.
 - Wood comes from forest tiles; stone from rock tiles (gather).
 - Water can be drunk at the shore; a well restores more.

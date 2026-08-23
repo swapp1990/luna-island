@@ -60,25 +60,29 @@ export function examineKnowledgeFor(place: Place, ctx?: ExamineContext): string 
     const whose = ownerPossessive(place.id, ctx)
     const bill = remainingBill(place.construction?.needs)
     const label = target === 'home' ? 'house' : target
+    const upgrading = !!place.construction?.upgradeOf
+    const shape = upgrading ? `An upgrade of a ${label} taking shape` : `A ${label} taking shape`
     if (whose) {
       return bill === 'nothing more'
-        ? `A ${label} taking shape — ${whose}; materials in, walls going up`
-        : `A ${label} taking shape — ${whose}; still needs ${bill}`
+        ? `${shape} — ${whose}; materials in, walls going up`
+        : `${shape} — ${whose}; still needs ${bill}`
     }
     return bill === 'nothing more'
-      ? `A ${label} taking shape — materials in, walls going up`
-      : `A ${label} taking shape — still needs ${bill}`
+      ? `${shape} — materials in, walls going up`
+      : `${shape} — still needs ${bill}`
   }
 
   const base =
     EXAMINE_BY_KIND[place.kind as Exclude<PlaceKind, 'construction-site'>] ??
     `A ${place.kind} stands here.`
+  const lv = place.level ?? 1
+  const lvTag = lv > 1 ? ` (lv ${lv})` : ''
   const whose = ownerPossessive(place.id, ctx)
-  if (!whose) return base
+  if (!whose) return `${base}${lvTag}`
   if (place.kind === 'home') {
-    return `A bed under a roof — ${whose}. Sleeping here left me deeply rested.`
+    return `A bed under a roof — ${whose}${lvTag}. Sleeping here left me deeply rested.`
   }
-  return `${base} Belongs to ${whose.replace(/'s$/, '')}.`
+  return `${base} Belongs to ${whose.replace(/'s$/, '')}${lvTag}.`
 }
 
 export function placeKindLabel(kind: PlaceKind | string): string {

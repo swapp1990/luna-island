@@ -734,16 +734,17 @@ describe('founding trap — fee, cooldown, observation', () => {
     )
 
     agent.wallet = 50
-    // Same-kind ownership: owning a home blocks another home (not any place).
+    // Same-kind at max level refuses max-level (upgrade seam, not already-owns).
     const home = sim.state.places.find((p) => p.kind === 'home')!
     sim.state.owners[home.id] = 'agent-0'
+    home.level = 3
     expect(sim.commission('agent-0', 'home')).toBe(false)
     const ev = sim
       .getEvents()
       .filter((e) => e.type === 'construction:commission-refused')
       .at(-1)
-    expect(ev?.data?.why).toBe('already-owns')
-    expect(sim.state.commissionLastRefusal?.['agent-0']).toBe('already-owns')
+    expect(ev?.data?.why).toBe('max-level')
+    expect(sim.state.commissionLastRefusal?.['agent-0']).toBe('max-level')
     expect(sim.state.commissionCooldownUntil?.['agent-0'] ?? 0).toBeLessThanOrEqual(
       sim.state.tick,
     )

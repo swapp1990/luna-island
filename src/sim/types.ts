@@ -79,6 +79,11 @@ export interface ConstructionSpec {
    * Missing on older saves ⇒ home.
    */
   targetKind?: BuildableKind
+  /**
+   * When set, this site upgrades an existing place instead of becoming a new one.
+   * Missing ⇒ new construction. Additive; old saves treat as a new build.
+   */
+  upgradeOf?: string
 }
 
 /** Place owner: a villager id or the village commons. */
@@ -108,6 +113,11 @@ export interface Place {
   production?: ProductionSpec
   /** Present only on construction-site places. */
   construction?: ConstructionSpec
+  /**
+   * Building tier. Missing ⇒ 1. Additive; old saves treat as level 1.
+   * Only BuildableKind places level (max 3).
+   */
+  level?: number
 }
 
 /** Hourly economy sample (Dispatch L UI). */

@@ -194,11 +194,12 @@ describe('P4-5 A — bill is a stream', () => {
 
     const home = sim.state.places.find((p) => p.kind === 'home')!
     sim.state.owners[home.id] = 'agent-0'
+    home.level = 3
     expect(sim.commission('agent-0', 'home')).toBe(false)
-    const alreadyOwns = lastRefusal(sim)
-    expect(alreadyOwns?.data?.why).toBe('already-owns')
-    expect(String(alreadyOwns?.data?.felt)).not.toContain('you carry')
-    expect(String(alreadyOwns?.data?.felt)).not.toMatch(/\d+ wood/)
+    const maxLevel = lastRefusal(sim)
+    expect(maxLevel?.data?.why).toBe('max-level')
+    expect(String(maxLevel?.data?.felt)).not.toContain('you carry')
+    expect(String(maxLevel?.data?.felt)).not.toMatch(/\d+ wood/)
 
     sim.state.owners[home.id] = 'commons'
     const plot = findOpenPlot(sim)
@@ -237,7 +238,7 @@ describe('P4-5 A — bill is a stream', () => {
 
 describe('P4-5 B — builders know what they built', () => {
   it('completion appends founder-knowledge and knowledgeLinesForPrompt surfaces it', () => {
-    const sim = new Simulation(42)
+    const sim = new Simulation(42, { preset: 'wild' })
     const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
     agent.wallet = 80
     const plot = findOpenPlot(sim)
@@ -271,7 +272,7 @@ describe('P4-5 B — builders know what they built', () => {
   })
 
   it('commons-commissioned completion appends no founder-knowledge event', () => {
-    const sim = new Simulation(42)
+    const sim = new Simulation(42, { preset: 'wild' })
     const agent = sim.state.agents.find((a) => a.id === 'agent-0')!
     agent.wallet = 80
     const plot = findOpenPlot(sim)

@@ -315,9 +315,17 @@ function stockAndOwnerInner(inventory: Place['inventory'] | undefined, ownerName
   return ownerName ? `${stock}, ${ownerName}'s` : stock
 }
 
+function nearbyPlaceInner(place: Place, ownerName?: string | null): string {
+  const bits: string[] = []
+  const lv = place.level ?? 1
+  if (lv > 1) bits.push(`lv ${lv}`)
+  bits.push(stockAndOwnerInner(place.inventory, ownerName))
+  return bits.join(', ')
+}
+
 export function formatNearbyPlaceLine(row: NearbyPlaceLine): string {
   const label = placeKindLabel(row.place.kind)
-  const inner = stockAndOwnerInner(row.place.inventory, row.ownerName)
+  const inner = nearbyPlaceInner(row.place, row.ownerName)
   const base = `${label} (${inner})`
   return row.unfamiliar ? `${base} (unfamiliar)` : base
 }
@@ -356,6 +364,6 @@ export function formatUnfamiliarPlaceFact(
       : onPlaza
         ? `${dist} tiles ${dir}, on the plaza`
         : `${dist} tiles ${dir}`
-  const inner = stockAndOwnerInner(place.inventory, privateOwnerName(place.id, world))
+  const inner = nearbyPlaceInner(place, privateOwnerName(place.id, world))
   return `${place.kind} (${where}; ${inner})`
 }
