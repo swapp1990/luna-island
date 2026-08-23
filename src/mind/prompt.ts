@@ -10,7 +10,7 @@ import {
   PROPOSE_COST,
   proposalTally,
 } from '../sim/sim'
-import { coinPhrase } from '../sim/costs'
+import { coinPhrase, publicWorksRuleLine } from '../sim/costs'
 import { REFLECT_MARKER, SLACK_MARKER } from './promptMarkers'
 import { personaFor } from './personas'
 import {
@@ -62,6 +62,7 @@ function worldRulesText(): string {
 - ${buildableMenuLine()}
 - ${upgradeRuleLine()}
 - A site accepts deliveries over many trips, from anyone; you can carry at most ${GATHER_CARRY.cap} of a good per trip; working at the site builds while it holds materials.
+- ${publicWorksRuleLine()}
 - Wood comes from forest tiles; stone from rock tiles (gather).
 - Water can be drunk at the shore; a well restores more.
 - Sleeping without a roof rests you less.
@@ -74,7 +75,7 @@ const RESPONSE_CONTRACT = `RESPONSE CONTRACT — reply with ONLY one JSON object
 {"action":"<ActionKind>","target":"<optional place kind or agent name>","reasoning":"<≤160 chars, first person>"}
 ActionKind is one of: ${ACTION_KINDS.join(', ')}.
 target examples: home, berry-bush, spring, well, plaza, farm, stall, forestry, quarry, storehouse, notice-board, forest, rock, or a villager name.
-propose needs "text" (the rule you want posted); vote needs target and "choice"; sanction needs target and "text" (the censure to post publicly — separate from your own "reasoning"); claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
+propose needs "text" (the rule you want posted) and may carry "build" (a structure kind the village raises as commons if the proposal passes); vote needs target and "choice"; sanction needs target and "text" (the censure to post publicly — separate from your own "reasoning"); claim needs target; examine needs target; commission needs target (place kind); gather needs target (forest or rock); deliver needs target (construction-site) when you carry wood or stone it still needs; give needs target (collapsed villager name) when you carry food and stand beside them.
 When nothing is urgent, act on who you are.`
 
 export function buildSystemPrompt(agentId: string): string {
@@ -224,8 +225,9 @@ function civicObservationLines(
       // read as losing 2-16 — a mind that only saw the second number would
       // reasonably give up on a rule that is actually about to pass.
       const bind = bindingTally(p)
+      const buildTag = p.build ? ` [+ ${p.build.kind}]` : ''
       lines.push(
-        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" deciding yes ${bind.yes} / no ${bind.no} (needs ${PROPOSAL_QUORUM}) · village yes ${tally.yes} / no ${tally.no} advisory · ${left} min left${yours}`,
+        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}"${buildTag} deciding yes ${bind.yes} / no ${bind.no} (needs ${PROPOSAL_QUORUM}) · village yes ${tally.yes} / no ${tally.no} advisory · ${left} min left${yours}`,
       )
     }
   } else if (board) {

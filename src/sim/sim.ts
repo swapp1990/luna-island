@@ -137,8 +137,14 @@ export const DRINK_SHORE_ENERGY = 0.01
 const EXAMINE_RANGE = 1.5
 const EXAMINE_RANGE_SQ = EXAMINE_RANGE * EXAMINE_RANGE
 /** Civic fees live in ./costs so examine.ts can share them; re-exported here. */
-export { PROPOSE_COST, VOTE_COST, SANCTION_COST, CLAIM_COST } from './costs'
-import { CLAIM_COST, PROPOSE_COST, SANCTION_COST, VOTE_COST } from './costs'
+export { PROPOSE_COST, VOTE_COST, SANCTION_COST, CLAIM_COST, PUBLIC_WORKS_STAKE } from './costs'
+import {
+  CLAIM_COST,
+  PROPOSE_COST,
+  PUBLIC_WORKS_STAKE,
+  SANCTION_COST,
+  VOTE_COST,
+} from './costs'
 import { LUNA_AGENT_ID_SET } from './lunaRoster'
 /** Proposal stays open this many ticks (one sim day). */
 export const PROPOSAL_WINDOW_TICKS = 1440
@@ -311,6 +317,9 @@ function deepClonePlace(p: Place): Place {
           ...(p.construction.upgradeOf
             ? { upgradeOf: p.construction.upgradeOf }
             : {}),
+          ...(p.construction.contributors && p.construction.contributors.length > 0
+            ? { contributors: [...p.construction.contributors] }
+            : {}),
         }
       : undefined,
   }
@@ -329,6 +338,15 @@ function cloneIntent(intent: Intent): Intent {
     targetAgentId: intent.targetAgentId,
     ruleId: intent.ruleId,
     placeKind: intent.placeKind,
+    ...(intent.build
+      ? {
+          build: {
+            kind: intent.build.kind,
+            ...(intent.build.x !== undefined ? { x: intent.build.x } : {}),
+            ...(intent.build.y !== undefined ? { y: intent.build.y } : {}),
+          },
+        }
+      : {}),
   }
 }
 
@@ -341,6 +359,15 @@ function cloneProposal(p: Proposal): Proposal {
     closesTick: p.closesTick,
     votes: { ...p.votes },
     status: p.status,
+    ...(p.build
+      ? {
+          build: {
+            kind: p.build.kind,
+            ...(p.build.x !== undefined ? { x: p.build.x } : {}),
+            ...(p.build.y !== undefined ? { y: p.build.y } : {}),
+          },
+        }
+      : {}),
   }
 }
 
@@ -1295,7 +1322,11 @@ export class Simulation {
    * caps and the day-long window, not by the fee. Refusal is a no-op with an
    * honest event.
    */
-  propose(agentId: string, text: string): boolean {
+  propose(
+    agentId: string,
+    text: string,
+    build?: { kind: string; x?: number; y?: number },
+  ): boolean {
     ensureMindFields(this.state)
     const agent = this.state.agents.find((a) => a.id === agentId)
     if (!agent) return false
@@ -1309,6 +1340,61 @@ export class Simulation {
         reason: `${agent.name} tried to propose with no text`,
       })
       return false
+    }
+    let storedBuild: Proposal['build']
+    if (build !== undefined) {
+      const kindRaw = String(build.kind ?? '')
+      if (!isBuildableKind(kindRaw)) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'institution:propose-refused',
+          agentId,
+          data: { agentName: agent.name, why: 'unknown-kind', text: clipped, kind: kindRaw },
+          reason: `${agent.name} could not propose a ${kindRaw || 'structure'} — unknown-kind`,
+        })
+        return false
+      }
+      const hasX = build.x !== undefined && Number.isFinite(build.x)
+      const hasY = build.y !== undefined && Number.isFinite(build.y)
+      if (hasX || hasY) {
+        if (!hasX || !hasY) {
+          this.events.append({
+            tick: this.state.tick,
+            type: 'institution:propose-refused',
+            agentId,
+            data: {
+              agentName: agent.name,
+              why: 'bad-build-site',
+              text: clipped,
+              kind: kindRaw,
+            },
+            reason: `${agent.name} could not propose a ${kindRaw} — bad-build-site`,
+          })
+          return false
+        }
+        const px = Math.round(build.x!)
+        const py = Math.round(build.y!)
+        if (!this.isBuildablePlot(px, py)) {
+          this.events.append({
+            tick: this.state.tick,
+            type: 'institution:propose-refused',
+            agentId,
+            data: {
+              agentName: agent.name,
+              why: 'bad-build-site',
+              text: clipped,
+              kind: kindRaw,
+              x: px,
+              y: py,
+            },
+            reason: `${agent.name} could not propose a ${kindRaw} at ${px},${py} — bad-build-site`,
+          })
+          return false
+        }
+        storedBuild = { kind: kindRaw, x: px, y: py }
+      } else {
+        storedBuild = { kind: kindRaw }
+      }
     }
     const open = this.openProposals()
     if (open.some((p) => p.proposerId === agentId)) {
@@ -1371,6 +1457,7 @@ export class Simulation {
       closesTick: this.state.tick + PROPOSAL_WINDOW_TICKS,
       votes: {},
       status: 'open',
+      ...(storedBuild ? { build: storedBuild } : {}),
     }
     this.state.proposals.push(proposal)
     this.events.append({
@@ -1384,8 +1471,11 @@ export class Simulation {
         agentName: agent.name,
         closesTick: proposal.closesTick,
         firstProposal: this.state.proposals.length === 1,
+        ...(storedBuild ? { build: storedBuild } : {}),
       },
-      reason: `${agent.name} proposed: "${clipped}"`,
+      reason: storedBuild
+        ? `${agent.name} proposed: "${clipped}" (founding a ${storedBuild.kind})`
+        : `${agent.name} proposed: "${clipped}"`,
     })
     return true
   }
@@ -1694,6 +1784,7 @@ export class Simulation {
       const binding = bindingTally(proposal)
       const passed = binding.yes > binding.no && binding.total >= PROPOSAL_QUORUM
       proposal.status = passed ? 'passed' : 'failed'
+      let foundedKind: BuildableKind | undefined
       if (passed) {
         this.state.rules.push({
           id: proposal.id,
@@ -1702,8 +1793,15 @@ export class Simulation {
           enactedTick: tick,
           active: true,
         })
+        if (proposal.build) {
+          const staked = this.commissionPublicWorks(proposal)
+          if (staked) foundedKind = proposal.build.kind
+        }
       }
       const firstRule = passed && this.state.rules.filter((r) => r.active).length === 1
+      const foundedLabel = foundedKind
+        ? placeKindLabel(foundedKind)
+        : undefined
       this.events.append({
         tick,
         type: 'institution:closed',
@@ -1721,9 +1819,12 @@ export class Simulation {
           status: proposal.status,
           text: proposal.text,
           firstRule,
+          ...(foundedKind ? { build: { kind: foundedKind } } : {}),
         },
         reason: passed
-          ? `Proposal passed (${binding.yes}–${binding.no}, village ${tally.yes}–${tally.no})`
+          ? foundedLabel
+            ? `Proposal passed (${binding.yes}–${binding.no}, village ${tally.yes}–${tally.no}) and a ${foundedLabel} site was staked by the village`
+            : `Proposal passed (${binding.yes}–${binding.no}, village ${tally.yes}–${tally.no})`
           : `Proposal failed (${binding.yes}–${binding.no}, village ${tally.yes}–${tally.no})`,
       })
     }
@@ -1732,7 +1833,9 @@ export class Simulation {
   private coinBalance(party: CoinParty): number {
     if (party === 'treasury') return this.state.treasury
     const agent = this.state.agents.find((a) => a.id === party)
-    return agent?.wallet ?? 0
+    if (agent) return agent.wallet
+    const place = this.state.places.find((p) => p.id === party)
+    return place?.wallet ?? 0
   }
 
   private setCoinBalance(party: CoinParty, value: number): void {
@@ -1741,7 +1844,14 @@ export class Simulation {
       return
     }
     const agent = this.state.agents.find((a) => a.id === party)
-    if (agent) agent.wallet = value
+    if (agent) {
+      agent.wallet = value
+      return
+    }
+    const place = this.state.places.find((p) => p.id === party)
+    if (!place) return
+    if (value <= 0) delete place.wallet
+    else place.wallet = value
   }
 
   private goodsInventory(party: GoodsParty): Inventory | null {
@@ -2368,6 +2478,7 @@ export class Simulation {
 
     const labour = this.constructionLabourTicks(c)
     c.progress += 1 / labour
+    this.recordSiteContributor(workplace, agent.id)
     const totalNeed =
       (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
     if (totalNeed > 0) {
@@ -2524,13 +2635,16 @@ export class Simulation {
       if (atDrop) {
         const amt = Math.min(agent.haulAmount, agent.inventory[good] ?? 0)
         if (amt > 0) {
-          this.transferGoods(
+          const ok = this.transferGoods(
             { kind: 'agent', id: agent.id },
             { kind: 'place', id: dropoff.id },
             good,
             amt,
             `${agent.name} delivered ${amt} ${good} to the ${dropoff.kind}`,
           )
+          if (ok && dropoff.kind === 'construction-site') {
+            this.recordSiteContributor(dropoff, agent.id)
+          }
         }
         this.clearHaul(agent)
         // If dropoff is the workplace (construction inbound), resume tend
@@ -3143,7 +3257,7 @@ export class Simulation {
     if (kind === 'propose' || kind === 'vote' || kind === 'sanction' || kind === 'claim') {
       let ok = false
       if (kind === 'propose') {
-        ok = this.propose(agent.id, intent.text ?? '')
+        ok = this.propose(agent.id, intent.text ?? '', intent.build)
       } else if (kind === 'vote') {
         const choice = intent.choice === 'no' ? 'no' : intent.choice === 'yes' ? 'yes' : null
         ok = choice != null && this.vote(agent.id, intent.proposalId ?? '', choice)
@@ -3891,6 +4005,129 @@ export class Simulation {
   }
 
   /**
+   * Passage-time public works: a construction-site deeded to commons.
+   * No commissioner, no per-agent cooldown, no one-site-per-commissioner
+   * check. Island-wide MAX_ACTIVE_SITES still applies. New-builds only.
+   * Returns true when a site was staked.
+   */
+  private commissionPublicWorks(proposal: Proposal): boolean {
+    const build = proposal.build
+    if (!build || !isBuildableKind(build.kind)) return false
+    const kind = build.kind
+    const activeSites = this.state.places.filter((p) => p.kind === 'construction-site')
+    if (activeSites.length >= MAX_ACTIVE_SITES) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:build-skipped',
+        agentId: proposal.proposerId,
+        data: {
+          proposalId: proposal.id,
+          kind,
+          why: 'site-cap',
+        },
+        reason: `the village passed a ${kind} but could not stake a site — ${MAX_ACTIVE_SITES} sites already underway`,
+      })
+      return false
+    }
+    const plot = this.resolvePublicWorksPlot(build)
+    if (!plot) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'institution:build-skipped',
+        agentId: proposal.proposerId,
+        data: {
+          proposalId: proposal.id,
+          kind,
+          why: 'tile-not-buildable',
+        },
+        reason: `the village passed a ${kind} but could not stake a site — no buildable ground`,
+      })
+      return false
+    }
+
+    const recipe = BUILD_RECIPES[kind]
+    const needs: Partial<Record<Good, number>> = {}
+    if (recipe.wood > 0) needs.wood = recipe.wood
+    if (recipe.stone > 0) needs.stone = recipe.stone
+
+    const siteId = `site-commons-${proposal.id}`
+    const site: Place = {
+      id: siteId,
+      kind: 'construction-site',
+      x: plot.x,
+      y: plot.y,
+      slots: 2,
+      jobSlots: 2,
+      wage: 7,
+      inventory: emptyInventory(),
+      construction: {
+        needs,
+        progress: 0,
+        consumeTicks: 0,
+        targetKind: kind,
+      },
+    }
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const px = plot.x + dx
+        const py = plot.y + dy
+        if (px < 0 || py < 0 || px >= this.state.width || py >= this.state.height) {
+          continue
+        }
+        const t = this.state.tiles[py * this.state.width + px]!
+        if (t.kind === 'water') continue
+        t.kind = 'grass'
+        t.walkable = true
+      }
+    }
+    this.state.places.push(site)
+    this.state.owners[siteId] = 'commons'
+    const label = kind === 'home' ? 'house' : kind
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:commissioned',
+      data: {
+        placeId: siteId,
+        kind,
+        cost: 0,
+        x: plot.x,
+        y: plot.y,
+        owner: 'commons',
+        proposalId: proposal.id,
+      },
+      reason: `the village staked a ${label} site`,
+    })
+    this.stakePublicWorks(siteId, proposal.id)
+    return true
+  }
+
+  private resolvePublicWorksPlot(
+    build: NonNullable<Proposal['build']>,
+  ): { x: number; y: number } | null {
+    if (build.x !== undefined && build.y !== undefined) {
+      const px = Math.round(build.x)
+      const py = Math.round(build.y)
+      if (this.isBuildablePlot(px, py)) return { x: px, y: py }
+    }
+    const board = this.state.places.find((p) => p.kind === 'notice-board')
+    const origin = board ?? this.state.places.find((p) => p.kind === 'plaza')
+    if (!origin) return null
+    return this.findNearestBuildablePlot(origin.x, origin.y)
+  }
+
+  private stakePublicWorks(siteId: string, proposalId: string): void {
+    const amount = Math.min(PUBLIC_WORKS_STAKE, this.coinBalance('treasury'))
+    if (amount <= 0) return
+    this.transferCoins(
+      'treasury',
+      siteId,
+      amount,
+      `the treasury staked ${amount} coins on the public-works site`,
+      { kind: 'public-works-stake', placeId: siteId, proposalId },
+    )
+  }
+
+  /**
    * Commission a structure: recipe bill + optional home coin fee →
    * create a construction-site. Owning the kind (or a commons
    * notice-board / well) routes to an upgrade site instead of a new build.
@@ -4209,6 +4446,27 @@ export class Simulation {
     return true
   }
 
+  /** Nearest isBuildablePlot to (cx,cy); Euclidean, then x, then y. */
+  private findNearestBuildablePlot(cx: number, cy: number): { x: number; y: number } | null {
+    let best: { x: number; y: number } | null = null
+    let bestD = Infinity
+    for (let y = 1; y < this.state.height - 1; y++) {
+      for (let x = 1; x < this.state.width - 1; x++) {
+        if (!this.isBuildablePlot(x, y)) continue
+        const d = (x - cx) ** 2 + (y - cy) ** 2
+        const closer = d < bestD - 1e-12
+        const tie =
+          Math.abs(d - bestD) <= 1e-12 &&
+          (!best || x < best.x || (x === best.x && y < best.y))
+        if (closer || tie) {
+          bestD = d
+          best = { x, y }
+        }
+      }
+    }
+    return best
+  }
+
   /**
    * Site complete: becomes the commissioned kind; jobs dissolve; ownership deed.
    * Founder (commissioner) keeps the deed for every kind — worldgen places stay commons.
@@ -4216,6 +4474,7 @@ export class Simulation {
    */
   private completeConstruction(site: Place): void {
     if (site.kind !== 'construction-site') return
+    this.payPublicWorksBounty(site)
     const finishedKind: BuildableKind = isBuildableKind(site.construction?.targetKind ?? 'home')
       ? (site.construction!.targetKind ?? 'home')
       : 'home'
@@ -4371,6 +4630,58 @@ export class Simulation {
     delete this.state.owners[place.id]
   }
 
+  private recordSiteContributor(site: Place, agentId: string): void {
+    const c = site.construction
+    if (!c) return
+    if (!c.contributors) c.contributors = []
+    if (!c.contributors.includes(agentId)) c.contributors.push(agentId)
+  }
+
+  /**
+   * Split a site's wallet equally among recorded contributors (floor);
+   * remainder returns to the treasury. No-op when the site holds nothing.
+   */
+  private payPublicWorksBounty(site: Place): void {
+    const bounty = this.coinBalance(site.id)
+    if (bounty <= 0) return
+    const living = (site.construction?.contributors ?? []).filter((id) =>
+      this.state.agents.some((a) => a.id === id),
+    )
+    if (living.length === 0) {
+      this.transferCoins(
+        site.id,
+        'treasury',
+        bounty,
+        `unclaimed public-works bounty returned to the treasury`,
+        { kind: 'public-works-bounty', placeId: site.id },
+      )
+      return
+    }
+    const share = Math.floor(bounty / living.length)
+    if (share > 0) {
+      for (const id of living) {
+        const who = this.state.agents.find((a) => a.id === id)
+        this.transferCoins(
+          site.id,
+          id,
+          share,
+          `${who?.name ?? id} received a public-works bounty share`,
+          { kind: 'public-works-bounty', placeId: site.id, recipient: id },
+        )
+      }
+    }
+    const leftover = this.coinBalance(site.id)
+    if (leftover > 0) {
+      this.transferCoins(
+        site.id,
+        'treasury',
+        leftover,
+        `public-works bounty remainder returned to the treasury`,
+        { kind: 'public-works-bounty', placeId: site.id },
+      )
+    }
+  }
+
   /**
    * Labour ticks for a site. Upgrade bill = recipe × current target level
    * (1→2 costs 1×, 2→3 costs 2×). New builds use 1×.
@@ -4467,7 +4778,10 @@ export class Simulation {
         amt,
         `${agent.name} delivered ${amt} ${g} to the build at ${site.id}`,
       )
-      if (ok) moved += amt
+      if (ok) {
+        moved += amt
+        this.recordSiteContributor(site, agent.id)
+      }
     }
     return moved
   }

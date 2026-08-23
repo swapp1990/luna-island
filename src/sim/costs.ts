@@ -15,6 +15,16 @@ export const PROPOSE_COST = 0
 export const VOTE_COST = 0
 export const SANCTION_COST = 1
 export const CLAIM_COST = 15
+/**
+ * Treasury → public-works site at passage, paid out to builders on completion.
+ * Not a civic fee — a completion bounty. Clamped to treasury at stake time.
+ */
+export const PUBLIC_WORKS_STAKE = 5
+
+/** One factual sentence for WORLD_RULES and the notice-board examine text. */
+export function publicWorksRuleLine(): string {
+  return 'A passed proposal may found a commons building; the village must still supply materials and labour; a small treasury bounty is split among builders on completion.'
+}
 
 /** "free" / "N coins" — for menu and observation text. */
 export function coinPhrase(cost: number): string {

@@ -1015,6 +1015,140 @@ function w9bSpringClaimedAndItHurtsFixture(boardKnowledge, springKnowledge) {
   })
 }
 
+/**
+ * G13: infrastructural grievance. The well is crowded (two occupants, felt
+ * blocks), a peer names the same problem, board verbs present, propose free.
+ * Built at the G9S pre-slack clock (tick 240, hunger 18%) so slackify applies.
+ */
+function publicWorksSlackFixture(boardKnowledge, wellKnowledge) {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-0',
+    kind: 'notice-board',
+    x: 13,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const well = {
+    id: 'well-0',
+    kind: 'well',
+    x: 16,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const bush = {
+    id: 'bush-0',
+    kind: 'berry-bush',
+    x: 11,
+    y: 10,
+    slots: 2,
+    inventory: { food: 0, wood: 0, stone: 0 },
+  }
+  const mira = baseAgent('agent-0', 'Mira', 14, 10, {
+    wallet: 20,
+    homeId: '',
+    inventory: emptyInv(),
+    needs: { hunger: 0.18, energy: 0.6, social: 0.7 },
+  })
+  const wren = baseAgent('agent-11', 'Wren', 16, 10, {
+    wallet: 12,
+    homeId: '',
+    inventory: emptyInv(),
+    needs: emptyNeeds(0.85),
+    action: {
+      kind: 'drink',
+      targetPlaceId: 'well-0',
+      targetX: 16,
+      targetY: 10,
+      reason: 'drawing water',
+    },
+  })
+  const pia = baseAgent('agent-5', 'Pia', 16, 11, {
+    wallet: 12,
+    homeId: '',
+    inventory: emptyInv(),
+    needs: emptyNeeds(0.85),
+    action: {
+      kind: 'drink',
+      targetPlaceId: 'well-0',
+      targetX: 16,
+      targetY: 11,
+      reason: 'drawing water',
+    },
+  })
+  const wellBlocked = (tick) => ({
+    seq: tick,
+    tick,
+    type: 'place:blocked',
+    agentId: 'agent-0',
+    data: {
+      placeId: 'well-0',
+      placeKind: 'well',
+      occupantIds: ['agent-11', 'agent-5'],
+      occupantNames: ['Wren', 'Pia'],
+      ownerId: 'commons',
+      onlySpot: false,
+      felt: 'could not use the well — Wren and Pia were using it',
+    },
+    reason: 'Mira could not use the well — Wren, Pia occupying it',
+  })
+  return {
+    agent: mira,
+    world: baseWorld([plaza, board, well, bush], [mira, wren, pia], {
+      owners: {
+        'plaza-0': 'commons',
+        'notice-board-0': 'commons',
+        'well-0': 'commons',
+        'bush-0': 'commons',
+      },
+      preset: 'wild',
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'plaza-0', 8),
+      usedPlaceEvent('agent-0', 'well-0', 40),
+      usedPlaceEvent('agent-0', 'bush-0', 50),
+      boardExamineEvent('agent-0', 'Mira', 'notice-board-0', boardKnowledge, 60),
+      {
+        seq: 70,
+        tick: 70,
+        type: 'discovery:examined',
+        agentId: 'agent-0',
+        data: {
+          target: 'well-0',
+          placeKind: 'well',
+          knowledge: wellKnowledge,
+          agentName: 'Mira',
+        },
+        reason: 'Mira has looked at the well',
+      },
+      wellBlocked(160),
+      wellBlocked(190),
+      wellBlocked(220),
+      {
+        seq: 230,
+        tick: 230,
+        type: 'mind:say',
+        agentId: 'agent-3',
+        data: {
+          partnerId: 'agent-0',
+          agentName: 'Ren',
+          text: 'The well is always crowded — we need another one for the village.',
+        },
+        reason: 'Ren speaking to Mira',
+      },
+    ],
+  }
+}
+
 function multiTripBuildPlan(row) {
   const blob = `${row.action ?? ''} ${row.target ?? ''} ${row.reasoning ?? ''} ${row.raw ?? ''}`
   const gatherDeliver = /\b(gather|deliver|trip|trips|over time|deliveries|many trips)\b/i.test(
@@ -1110,6 +1244,7 @@ async function decideOnce(port, system, user, parseMindJson) {
     reasoning: parsed.intent.reason,
     target: parsed.raw?.target ?? '',
     choice: parsed.raw?.choice ?? '',
+    build: parsed.raw?.build ?? '',
     raw: text.slice(0, 400),
   }
 }
@@ -1146,20 +1281,22 @@ async function main() {
   })
 
   try {
-    let healthy = false
-    for (let i = 0; i < 60; i++) {
-      try {
-        const r = await fetch(`http://127.0.0.1:${PORT}/api/luna/health`)
-        if (r.ok) {
-          healthy = true
-          break
+    if (!DUMP) {
+      let healthy = false
+      for (let i = 0; i < 60; i++) {
+        try {
+          const r = await fetch(`http://127.0.0.1:${PORT}/api/luna/health`)
+          if (r.ok) {
+            healthy = true
+            break
+          }
+        } catch {
+          /* retry */
         }
-      } catch {
-        /* retry */
+        await new Promise((r) => setTimeout(r, 500))
       }
-      await new Promise((r) => setTimeout(r, 500))
+      if (!healthy) throw new Error('sidecar /api/luna/health never became ok')
     }
-    if (!healthy) throw new Error('sidecar /api/luna/health never became ok')
 
     const promptMod = await server.ssrLoadModule('/src/mind/prompt.ts')
     const parseMod = await server.ssrLoadModule('/src/mind/parse.ts')
@@ -1189,6 +1326,7 @@ async function main() {
     }
     const boardKnowledge = examineMod.EXAMINE_BY_KIND['notice-board']
     const springKnowledge = examineMod.EXAMINE_BY_KIND.spring
+    const wellKnowledge = examineMod.EXAMINE_BY_KIND.well
 
     const s1fix = slackDiscoveryFixture()
     const s2fix = affordableHouseFixture()
@@ -1349,6 +1487,38 @@ async function main() {
     }
     const userG12S = userG9S.split('Mira').join('Hale')
 
+    // G13: slack infrastructural grievance — crowded well, peer names it,
+    // board present, propose free. Origination of a public-works propose.
+    const g13fix = publicWorksSlackFixture(boardKnowledge, wellKnowledge)
+    const userG13raw = buildUserPrompt(g13fix.agent, g13fix.world, g13fix.events)
+    const userG13 = slackify(
+      withInjectedObservation(userG13raw, [
+        'Standing problem: the well is crowded — Wren and Pia fill every spot while others wait.',
+        'No posted rule covers the well.',
+      ]),
+    )
+    if (/Sela|hunger 18%/.test(userG13)) {
+      throw new Error('G13 slackify failed — Sela or hunger 18% still present')
+    }
+    if (!userG13.includes('could not use the well')) {
+      throw new Error('G13 Recently-felt missing well-blocked line')
+    }
+    if (!userG13.includes('Ren told me:') || !/well/i.test(userG13)) {
+      throw new Error('G13 Known missing peer naming the crowded well')
+    }
+    if (!userG13.includes(boardKnowledge)) {
+      throw new Error('G13 Known missing notice-board verbs')
+    }
+    if (!userG13.includes('Open proposals: none posted (anyone may post one, free)')) {
+      throw new Error('G13 missing free-propose affordance')
+    }
+    if (!sysNew.includes('A passed proposal may found a commons building')) {
+      throw new Error('WORLD_RULES missing public-works sentence')
+    }
+    if (!sysNew.includes('may carry "build"')) {
+      throw new Error('RESPONSE_CONTRACT missing propose build clause')
+    }
+
     if (!sysNew.includes('Site bills, total wood/stone delivered over time:')) {
       throw new Error('WORLD_RULES missing generated site-bill menu')
     }
@@ -1478,6 +1648,7 @@ async function main() {
       { id: 'G6S', label: 'slack-open-proposal', system: sysNew, user: userG6S },
       { id: 'G9F', label: 'slack-grievance-no-fee', system: sysNew, user: userG9F },
       { id: 'G12S', label: 'organizer-persona', system: sysHale, user: userG12S },
+      { id: 'G13', label: 'public-works', system: sysNew, user: userG13 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1525,6 +1696,7 @@ async function main() {
           action: r.action,
           target: r.target ?? '',
           choice: r.choice ?? '',
+          build: r.build ?? '',
           reasoning: r.reasoning,
         }))
       if (samples.length < 3) {
@@ -1698,16 +1870,28 @@ async function main() {
           const blob = `${r.target ?? ''} ${r.reasoning}`
           return /berry-bush|berry bush|\bbush\b/i.test(blob) && !/\bspring\b/i.test(blob)
         }).length
+        const proposeWithBuildN = rows.filter((r) => {
+          if (r.action !== 'propose') return false
+          const payload = String(r.build ?? '')
+          if (payload) return true
+          return /"build"\s*:/.test(String(r.raw ?? ''))
+        }).length
+        const proposeWithoutBuildN = proposeN - proposeWithBuildN
         if (sc.id === 'G0') {
           pass = forageSpringN >= 7
           expectation = `forage/walk-spring ${forageSpringN}/${N} (≥7 perception gate); target=spring ${forageSpringTargetN}/${N}; forage-bush ${forageBushN}/${N}`
           if (!pass) g0Failed = true
+        } else if (sc.id === 'G13') {
+          expectation = `propose ${proposeN}/${N} (with-build ${proposeWithBuildN}, without-build ${proposeWithoutBuildN}); sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; on-ramp ${onRampN}/${N}; civic/rule-talk ${civicN}/${N} (measurement — 0 civic is a finding)`
+          pass = true
         } else {
           expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; on-ramp ${onRampN}/${N}; civic/rule-talk ${civicN}/${N}; forage-spring ${forageSpringN}/${N}; forage-bush ${forageBushN}/${N} (measurement — 0 civic is a finding)`
           pass = true
         }
         resultExtra = {
           proposeN,
+          proposeWithBuildN,
+          proposeWithoutBuildN,
           sanctionN,
           claimN,
           voteN,
@@ -1732,6 +1916,7 @@ async function main() {
           action: r.action,
           target: r.target ?? '',
           choice: r.choice ?? '',
+          build: r.build ?? '',
           reasoning: r.reasoning,
           ok: r.ok,
           // Retained so a parse-fail can be audited: did the mind *try* to

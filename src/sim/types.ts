@@ -84,6 +84,11 @@ export interface ConstructionSpec {
    * Missing ⇒ new construction. Additive; old saves treat as a new build.
    */
   upgradeOf?: string
+  /**
+   * Distinct agent ids who delivered materials or worked this site.
+   * Missing ⇒ none. Additive; used to split a public-works bounty.
+   */
+  contributors?: string[]
 }
 
 /** Place owner: a villager id or the village commons. */
@@ -113,6 +118,11 @@ export interface Place {
   production?: ProductionSpec
   /** Present only on construction-site places. */
   construction?: ConstructionSpec
+  /**
+   * Coins held at this place (public-works bounty). Missing ⇒ 0.
+   * Additive; old saves treat as empty. Moves only via transferCoins.
+   */
+  wallet?: number
   /**
    * Building tier. Missing ⇒ 1. Additive; old saves treat as level 1.
    * Only BuildableKind places level (max 3).
@@ -170,6 +180,11 @@ export interface Proposal {
   closesTick: Tick
   votes: Record<string, VoteChoice>
   status: ProposalStatus
+  /**
+   * Optional public-works payload. Structured — never parsed from `text`.
+   * Missing ⇒ rule-only proposal. Coords omitted ⇒ plot chosen at passage.
+   */
+  build?: { kind: BuildableKind; x?: number; y?: number }
 }
 
 /**
@@ -419,6 +434,11 @@ export interface Intent {
    * Additive; old external-intent logs treat as home.
    */
   placeKind?: PlaceKind | string
+  /**
+   * Public-works payload on a propose intent. Structured — never parsed from
+   * `text`. Missing ⇒ rule-only proposal.
+   */
+  build?: { kind: BuildableKind; x?: number; y?: number }
 }
 
 /** THE brain seam. UtilityBrain (Phase 1) and LunaBrain (Phase 3, LLM) both implement this. */

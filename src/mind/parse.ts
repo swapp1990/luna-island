@@ -1,6 +1,7 @@
 import type {
   ActionKind,
   AgentState,
+  BuildableKind,
   Intent,
   Place,
   PlaceKind,
@@ -13,6 +14,7 @@ import {
   pickShoreStand,
   placeHasCapacity,
 } from '../sim/spots'
+import { buildableKindList, isBuildableKind } from '../sim/sim'
 
 const ACTION_KINDS = new Set<ActionKind>([
   'idle',
@@ -59,6 +61,7 @@ export interface MindIntentJson {
   choice?: string
   reason?: string
   ruleId?: string
+  build?: string
 }
 
 export type ParseMindResult =
@@ -131,6 +134,13 @@ export function parseMindJson(text: string): ParseMindResult {
     const text = obj.text.trim()
     if (text.length === 0) return { ok: false, error: 'propose text empty' }
     if (text.length > 200) return { ok: false, error: 'propose text exceeds 200 chars' }
+    if (obj.build !== undefined) {
+      if (typeof obj.build !== 'string') {
+        return { ok: false, error: 'propose build must be a string' }
+      }
+      const parsedBuild = parseProposeBuild(obj.build)
+      if (!parsedBuild.ok) return parsedBuild
+    }
   } else if (action === 'vote') {
     if (typeof obj.target !== 'string' || obj.target.trim().length === 0) {
       return { ok: false, error: 'vote requires target proposal id' }
@@ -189,8 +199,30 @@ export function parseMindJson(text: string): ParseMindResult {
             ? obj.reason
             : undefined,
       ruleId: typeof obj.ruleId === 'string' ? obj.ruleId : undefined,
+      build: typeof obj.build === 'string' ? obj.build : undefined,
     },
   }
+}
+
+/** `"well"` or `"well@12,20"` — invalid kind is a parse failure. */
+export function parseProposeBuild(
+  raw: string,
+):
+  | { ok: true; kind: BuildableKind; x?: number; y?: number }
+  | { ok: false; error: string } {
+  const t = raw.trim()
+  const m = t.match(/^([a-z0-9-]+)(?:@(-?\d+),(-?\d+))?$/i)
+  if (!m) {
+    return { ok: false, error: 'propose build must be kind or kind@x,y' }
+  }
+  const kindRaw = resolvePlaceKindTarget(m[1]!)
+  if (!isBuildableKind(kindRaw)) {
+    return { ok: false, error: `propose build must be one of ${buildableKindList()}` }
+  }
+  if (m[2] !== undefined && m[3] !== undefined) {
+    return { ok: true, kind: kindRaw, x: Number(m[2]), y: Number(m[3]) }
+  }
+  return { ok: true, kind: kindRaw }
 }
 
 /**
@@ -370,11 +402,22 @@ export function resolveMindIntent(
   const target = raw.target?.trim()
 
   if (kind === 'propose') {
-    return {
+    const intent: Intent = {
       kind: 'propose',
       reason,
       text: (raw.text ?? '').trim().slice(0, 200),
     }
+    if (raw.build) {
+      const parsed = parseProposeBuild(raw.build)
+      if (parsed.ok) {
+        intent.build = {
+          kind: parsed.kind,
+          ...(parsed.x !== undefined ? { x: parsed.x } : {}),
+          ...(parsed.y !== undefined ? { y: parsed.y } : {}),
+        }
+      }
+    }
+    return intent
   }
 
   if (kind === 'vote') {
