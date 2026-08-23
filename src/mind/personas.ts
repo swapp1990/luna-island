@@ -3,20 +3,11 @@
  * (ownership, job, wealth). Facts come from observation and memories.
  */
 
+import { isLunaAgent, LUNA_AGENT_IDS, type LunaAgentId } from '../sim/lunaRoster'
+
 /** Luna-enabled agents: agent id → one-paragraph persona. Others run UtilityBrain only. */
-
-export const LUNA_AGENT_IDS = [
-  'agent-0',
-  'agent-1',
-  'agent-2',
-  'agent-3',
-  'agent-4',
-  'agent-5',
-  'agent-8',
-  'agent-11',
-] as const
-
-export type LunaAgentId = (typeof LUNA_AGENT_IDS)[number]
+export { isLunaAgent, LUNA_AGENT_IDS }
+export type { LunaAgentId }
 
 const PERSONAS: Record<string, string> = {
   'agent-0':
@@ -35,10 +26,6 @@ const PERSONAS: Record<string, string> = {
     'You are Nook. An anxious provisioner who counts supplies twice and worries about lean days. You feel safest with a full pantry and trusted neighbors. You speak in short first-person thoughts, careful and concerned.',
   'agent-11':
     'You are Wren. Sharp, skeptical, and self-reliant. You distrust crowds and prefer your own counsel. You want independence and a full pantry more than praise or parties. You talk in short first-person thoughts, plain and a little dry.',
-}
-
-export function isLunaAgent(agentId: string): boolean {
-  return LUNA_AGENT_IDS.includes(agentId as LunaAgentId)
 }
 
 export function personaFor(agentId: string): string | null {

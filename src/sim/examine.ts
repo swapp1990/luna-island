@@ -15,7 +15,7 @@ export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, st
   // Generated from the fee constants so the menu can never drift from what the
   // sim actually charges — the drift that produced the accidental propose/vote
   // asymmetry in the first place.
-  'notice-board': `Anyone may propose (${coinPhrase(PROPOSE_COST)}) — posts your words here for a day. Vote yes or no on an open proposal (${coinPhrase(VOTE_COST)}). Sanction (${coinPhrase(SANCTION_COST)}) posts a public censure. Claim (${coinPhrase(CLAIM_COST)}) takes a commons place as yours. Posted rules may be followed or broken.`,
+  'notice-board': `Anyone may propose (${coinPhrase(PROPOSE_COST)}) — posts your words here for a day. Vote yes or no on an open proposal (${coinPhrase(VOTE_COST)}); every villager's vote is recorded, but a proposal is decided by the votes of those who weigh it themselves. Sanction (${coinPhrase(SANCTION_COST)}) posts a public censure. Claim (${coinPhrase(CLAIM_COST)}) takes a commons place as yours. Posted rules may be followed or broken.`,
   'berry-bush': 'Berries grow here, sparser in lean times.',
   well: 'Cool water here — drinking left me a little more awake.',
   farm: 'People tend the soil here and food grows if they stay with it.',

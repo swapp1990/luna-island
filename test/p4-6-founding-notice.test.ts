@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { LUNA_AGENT_IDS } from '../src/sim/lunaRoster'
 import { PROPOSAL_WINDOW_TICKS, Simulation, isSheepAgent } from '../src/sim/sim'
 import { EXAMINE_BY_KIND } from '../src/sim/examine'
 import { knowledgeLinesForPrompt } from '../src/mind/knowledge'
@@ -89,7 +90,9 @@ describe('P4-6 founding notice', () => {
     expect(proposed[0]!.reason).toBe(`A founding notice was posted: "${FOUNDING_TEXT}"`)
 
     const minds = sim.state.agents.filter((a) => !isSheepAgent(a.id))
-    expect(minds.length).toBe(6)
+    // Derived from the one roster (src/sim/lunaRoster.ts) rather than pinned —
+    // a hardcoded copy of this number is what let sim and mind disagree.
+    expect(minds.length).toBe(LUNA_AGENT_IDS.length)
     const examined = sim.getEvents().filter((e) => e.type === 'discovery:examined')
     expect(examined).toHaveLength(minds.length)
     for (const agent of minds) {

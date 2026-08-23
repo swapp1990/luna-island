@@ -7,6 +7,7 @@ import {
   PROPOSAL_WINDOW_TICKS,
   SANCTION_COST,
   SHEEP_SYMPATHY_YES,
+  bindingTally,
   Simulation,
   VOTE_COST,
   isSheepAgent,
@@ -125,43 +126,84 @@ describe('institution mechanics', () => {
     expect(refused.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('quorum + passage math: yes > no and total ≥ 8 passes, else fails', () => {
+  it('passage counts binding votes only; advisory votes are recorded, not decisive', () => {
     const sim = new Simulation(SEED)
+    const minds = sim.state.agents.filter((a) => !isSheepAgent(a.id)).map((a) => a.id)
+    const sheep = sim.state.agents.filter((a) => isSheepAgent(a.id)).map((a) => a.id)
+    expect(minds.length).toBeGreaterThanOrEqual(PROPOSAL_QUORUM + 1)
+
     fund(sim, 'agent-0', PROPOSE_COST)
     sim.propose('agent-0', 'Pass me')
     const id = sim.state.proposals[0]!.id
-    // 5 yes, 3 no = 8 votes, yes > no → pass
-    const yesVoters = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5']
-    const noVoters = ['agent-6', 'agent-7', 'agent-8']
+
+    // Quorum of binding yes votes, and every sheep in the world voting no.
+    const yesVoters = minds.filter((m) => m !== 'agent-0').slice(0, PROPOSAL_QUORUM)
     for (const v of yesVoters) expect(sim.vote(v, id, 'yes')).toBe(true)
-    for (const v of noVoters) expect(sim.vote(v, id, 'no')).toBe(true)
+    for (const v of sheep) expect(sim.vote(v, id, 'no')).toBe(true)
+
     const p = sim.state.proposals[0]!
     p.closesTick = sim.state.tick
     sim.advanceTicks(1)
+    // A landslide of advisory noes does not defeat it.
     expect(sim.state.proposals[0]!.status).toBe('passed')
     expect(sim.state.rules).toHaveLength(1)
     expect(sim.state.rules[0]!.text).toBe('Pass me')
-    expect(sim.state.rules[0]!.active).toBe(true)
+
     const closed = sim.getEvents().find((e) => e.type === 'institution:closed')
     expect(closed?.data?.status).toBe('passed')
-    expect(closed?.data?.yes).toBe(5)
-    expect(closed?.data?.no).toBe(3)
-    expect(closed?.data?.total).toBe(PROPOSAL_QUORUM)
+    // The reported verdict is the binding count...
+    expect(closed?.data?.yes).toBe(PROPOSAL_QUORUM)
+    expect(closed?.data?.no).toBe(0)
+    // ...with everyone's opinion preserved alongside it.
+    expect(closed?.data?.allNo).toBe(sheep.length)
+    expect(bindingTally(sim.state.proposals[0]!).total).toBe(PROPOSAL_QUORUM)
+    expect(proposalTally(sim.state.proposals[0]!).total).toBe(
+      PROPOSAL_QUORUM + sheep.length,
+    )
+  })
 
-    // Fail path: 3 yes, 2 no (below quorum)
-    fund(sim, 'agent-1', PROPOSE_COST)
-    sim.propose('agent-1', 'Fail me')
-    const id2 = sim.state.proposals.find((x) => x.status === 'open')!.id
-    expect(sim.vote('agent-0', id2, 'yes')).toBe(true)
-    expect(sim.vote('agent-2', id2, 'yes')).toBe(true)
-    expect(sim.vote('agent-3', id2, 'yes')).toBe(true)
-    expect(sim.vote('agent-4', id2, 'no')).toBe(true)
-    expect(sim.vote('agent-5', id2, 'no')).toBe(true)
-    const p2 = sim.state.proposals.find((x) => x.id === id2)!
-    p2.closesTick = sim.state.tick
+  it('below binding quorum fails even when advisory support is overwhelming', () => {
+    const sim = new Simulation(SEED)
+    const minds = sim.state.agents.filter((a) => !isSheepAgent(a.id)).map((a) => a.id)
+    const sheep = sim.state.agents.filter((a) => isSheepAgent(a.id)).map((a) => a.id)
+
+    fund(sim, 'agent-0', PROPOSE_COST)
+    sim.propose('agent-0', 'Fail me')
+    const id = sim.state.proposals[0]!.id
+
+    // One short of quorum among those who decide; the whole village says yes.
+    for (const v of minds.filter((m) => m !== 'agent-0').slice(0, PROPOSAL_QUORUM - 1)) {
+      expect(sim.vote(v, id, 'yes')).toBe(true)
+    }
+    for (const v of sheep) expect(sim.vote(v, id, 'yes')).toBe(true)
+
+    const p = sim.state.proposals[0]!
+    p.closesTick = sim.state.tick
     sim.advanceTicks(1)
-    expect(sim.state.proposals.find((x) => x.id === id2)!.status).toBe('failed')
-    expect(sim.state.rules).toHaveLength(1)
+    expect(sim.state.proposals[0]!.status).toBe('failed')
+    expect(sim.state.rules).toHaveLength(0)
+  })
+
+  it('a tie or a binding majority against fails', () => {
+    const sim = new Simulation(SEED)
+    const minds = sim.state.agents
+      .filter((a) => !isSheepAgent(a.id))
+      .map((a) => a.id)
+      .filter((m) => m !== 'agent-0')
+
+    fund(sim, 'agent-0', PROPOSE_COST)
+    sim.propose('agent-0', 'Split me')
+    const id = sim.state.proposals[0]!.id
+    // Quorum met, evenly split → yes > no is false.
+    const half = Math.max(1, Math.ceil(PROPOSAL_QUORUM / 2))
+    for (const v of minds.slice(0, half)) expect(sim.vote(v, id, 'yes')).toBe(true)
+    for (const v of minds.slice(half, half * 2)) expect(sim.vote(v, id, 'no')).toBe(true)
+
+    const p = sim.state.proposals[0]!
+    p.closesTick = sim.state.tick
+    sim.advanceTicks(1)
+    expect(sim.state.proposals[0]!.status).toBe('failed')
+    expect(sim.state.rules).toHaveLength(0)
   })
 
   it('sheep electorate votes at 18:00 by sympathy threshold, agent-index order', () => {

@@ -123,12 +123,21 @@ const EXAMINE_RANGE_SQ = EXAMINE_RANGE * EXAMINE_RANGE
 /** Civic fees live in ./costs so examine.ts can share them; re-exported here. */
 export { PROPOSE_COST, VOTE_COST, SANCTION_COST, CLAIM_COST } from './costs'
 import { CLAIM_COST, PROPOSE_COST, SANCTION_COST, VOTE_COST } from './costs'
+import { LUNA_AGENT_ID_SET } from './lunaRoster'
 /** Proposal stays open this many ticks (one sim day). */
 export const PROPOSAL_WINDOW_TICKS = 1440
 /** Mechanical island-wide cap on simultaneous open proposals. */
 export const MAX_OPEN_PROPOSALS = 2
-/** Passage requires yes > no AND at least this many votes. */
-export const PROPOSAL_QUORUM = 8
+/**
+ * Passage requires yes > no AND at least this many BINDING votes.
+ *
+ * Derived from the deliberating body, not a fixed number. It was 8 — a third
+ * of the ~24-villager electorate — back when every villager's vote counted.
+ * Now that only deliberating villagers bind (see bindingTally), a literal 8
+ * would mean unanimous turnout and nothing could ever pass; measured turnout
+ * is 2-3 of 8. Keeping the same one-third-of-the-electorate intent gives 3.
+ */
+export const PROPOSAL_QUORUM = Math.max(2, Math.ceil(LUNA_AGENT_ID_SET.size / 3))
 /** Seeded founding proposal — world artifact, not a mind action. */
 const FOUNDING_PROPOSAL_ID = 'prop-founding-0'
 const FOUNDING_PROPOSAL_TEXT =
@@ -141,14 +150,8 @@ export const SHEEP_SYMPATHY_YES = 0.25
  * Must stay aligned with LUNA_AGENT_IDS in src/mind/personas.ts.
  * Kept here so src/sim never imports the mind layer.
  */
-const LUNA_MIND_IDS: ReadonlySet<string> = new Set([
-  'agent-0',
-  'agent-1',
-  'agent-2',
-  'agent-4',
-  'agent-8',
-  'agent-11',
-])
+/** Derived — never a second copy. See src/sim/lunaRoster.ts for why. */
+const LUNA_MIND_IDS: ReadonlySet<string> = LUNA_AGENT_ID_SET
 /** Worked ticks to complete a house (progress += 1/N per tick). Fallback for old sites. */
 const CONSTRUCTION_TICKS = 900
 /** Worked ticks between each 1-unit material consume on a site. */
@@ -346,6 +349,28 @@ export function proposalTally(p: Proposal): { yes: number; no: number; total: nu
   let yes = 0
   let no = 0
   for (const choice of Object.values(p.votes)) {
+    if (choice === 'yes') yes++
+    else if (choice === 'no') no++
+  }
+  return { yes, no, total: yes + no }
+}
+
+/**
+ * The votes that decide passage: every villager may vote and every vote is
+ * recorded, but only deliberating villagers' votes bind.
+ *
+ * The sheep electorate votes by sympathy toward the PROPOSER, never on the
+ * text, so a well-argued rule from an unpopular villager was arithmetically
+ * unpassable. Measured over 5 sim days: deliberating villagers voted 10 yes /
+ * 0 no across five proposals and every one of them still failed 2-16, because
+ * ~16 scripted votes tracked how much the electorate liked the author.
+ * Advisory votes stay visible in the tally — they are opinion, not a verdict.
+ */
+export function bindingTally(p: Proposal): { yes: number; no: number; total: number } {
+  let yes = 0
+  let no = 0
+  for (const [agentId, choice] of Object.entries(p.votes)) {
+    if (isSheepAgent(agentId)) continue
     if (choice === 'yes') yes++
     else if (choice === 'no') no++
   }
@@ -1634,7 +1659,9 @@ export class Simulation {
       if (proposal.status !== 'open') continue
       if (tick < proposal.closesTick) continue
       const tally = proposalTally(proposal)
-      const passed = tally.yes > tally.no && tally.total >= PROPOSAL_QUORUM
+      // Advisory votes are recorded and reported; only binding votes decide.
+      const binding = bindingTally(proposal)
+      const passed = binding.yes > binding.no && binding.total >= PROPOSAL_QUORUM
       proposal.status = passed ? 'passed' : 'failed'
       if (passed) {
         this.state.rules.push({
@@ -1652,16 +1679,21 @@ export class Simulation {
         agentId: proposal.proposerId,
         data: {
           proposalId: proposal.id,
+          // The numbers that decided it.
+          yes: binding.yes,
+          no: binding.no,
+          total: binding.total,
+          // Everyone's opinion, including the advisory electorate.
+          allYes: tally.yes,
+          allNo: tally.no,
+          allTotal: tally.total,
           status: proposal.status,
-          yes: tally.yes,
-          no: tally.no,
-          total: tally.total,
           text: proposal.text,
           firstRule,
         },
         reason: passed
-          ? `Proposal passed (${tally.yes}–${tally.no})`
-          : `Proposal failed (${tally.yes}–${tally.no})`,
+          ? `Proposal passed (${binding.yes}–${binding.no}, village ${tally.yes}–${tally.no})`
+          : `Proposal failed (${binding.yes}–${binding.no}, village ${tally.yes}–${tally.no})`,
       })
     }
   }

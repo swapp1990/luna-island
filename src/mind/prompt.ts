@@ -4,6 +4,8 @@ import {
   buildableMenuLine,
   COLLAPSE_VIEW_RADIUS,
   GATHER_CARRY,
+  bindingTally,
+  PROPOSAL_QUORUM,
   PROPOSE_COST,
   proposalTally,
 } from '../sim/sim'
@@ -215,8 +217,13 @@ function civicObservationLines(
       // 5-day soak, ~3% of every decision the island made.
       const mine = p.votes?.[agent.id]
       const yours = mine ? ` · you voted ${mine}` : ''
+      // Show the deciding count first. The village tally is dominated by
+      // advisory votes, so a proposal winning 2-0 among those who decide can
+      // read as losing 2-16 — a mind that only saw the second number would
+      // reasonably give up on a rule that is actually about to pass.
+      const bind = bindingTally(p)
       lines.push(
-        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" yes ${tally.yes} / no ${tally.no} · ${left} min left${yours}`,
+        `- ${p.id} by ${proposer}: "${clipObs(p.text, 80)}" deciding yes ${bind.yes} / no ${bind.no} (needs ${PROPOSAL_QUORUM}) · village yes ${tally.yes} / no ${tally.no} advisory · ${left} min left${yours}`,
       )
     }
   } else if (board) {
