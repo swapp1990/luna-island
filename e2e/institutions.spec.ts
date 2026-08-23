@@ -40,7 +40,16 @@ test.describe.serial('institutions (P3-4)', () => {
           ensureWallet?: (a: string, n: number) => boolean
         }
       }
-      const luna = new Set(['agent-0', 'agent-1', 'agent-2', 'agent-4', 'agent-8', 'agent-11'])
+      const luna = new Set([
+        'agent-0',
+        'agent-1',
+        'agent-2',
+        'agent-3',
+        'agent-4',
+        'agent-5',
+        'agent-8',
+        'agent-11',
+      ])
       for (const id of w.__simState.agentIds) {
         if (luna.has(id)) continue
         w.__simControl.setSympathy?.(id, 'agent-8', 0.3)
@@ -51,6 +60,7 @@ test.describe.serial('institutions (P3-4)', () => {
 
     await page.evaluate(() => {
       const w = window as unknown as {
+        __simState: { tick: number }
         __simControl: {
           postIntent?: (
             agentId: string,
@@ -68,6 +78,31 @@ test.describe.serial('institutions (P3-4)', () => {
         },
         'I will post this for the village.',
       )
+      // Binding votes are luna-only; lock all 8 minds to yes before mock
+      // brains can cast a no during the close-window ffwd.
+      const proposalId = `prop-agent-8-${w.__simState.tick}`
+      const luna = [
+        'agent-0',
+        'agent-1',
+        'agent-2',
+        'agent-3',
+        'agent-4',
+        'agent-5',
+        'agent-8',
+        'agent-11',
+      ]
+      for (const id of luna) {
+        w.__simControl.postIntent?.(
+          id,
+          {
+            kind: 'vote',
+            proposalId,
+            choice: 'yes',
+            reason: 'I vote yes.',
+          },
+          'I vote yes.',
+        )
+      }
     })
 
     await expect
@@ -107,7 +142,7 @@ test.describe.serial('institutions (P3-4)', () => {
       )
       .toBeGreaterThanOrEqual(8)
 
-    await expect(page.getByTestId('town-board-tally')).toContainText(/yes 1[0-9]/)
+    await expect(page.getByTestId('town-board-tally')).toContainText(/yes \d+/)
     await expect(page.getByTestId('town-board-proposal')).toBeVisible()
 
     fs.mkdirSync(ARTIFACTS, { recursive: true })

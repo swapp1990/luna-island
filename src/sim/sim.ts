@@ -113,6 +113,8 @@ export const GATHER_CARRY_CAP = 3
 export const GATHER_CARRY = { cap: GATHER_CARRY_CAP }
 /** Bounded yield per forest/rock tile (same cap as a berry bush). */
 export const GATHER_STOCK_MAX = 6
+/** Cumulative foot-traffic cap per tile. Missing wear reads as 0. */
+export const WEAR_CAP = 10000
 /** Energy restored per drink tick at a well (improvement). */
 export const DRINK_WELL_ENERGY = 0.02
 /** Energy restored per drink tick at the shore (weaker than a well). */
@@ -591,6 +593,18 @@ function resolveTarget(agent: AgentState): { x: number; y: number } | null {
     return { x: a.targetX, y: a.targetY }
   }
   return null
+}
+
+/** One completed step onto (x, y). No-op at the cap; missing wear counts as 0. */
+function accrueWear(world: WorldState, x: number, y: number): void {
+  const tx = Math.round(x)
+  const ty = Math.round(y)
+  if (tx < 0 || ty < 0 || tx >= world.width || ty >= world.height) return
+  const tile = world.tiles[ty * world.width + tx]
+  if (!tile) return
+  const cur = tile.wear ?? 0
+  if (cur >= WEAR_CAP) return
+  tile.wear = cur + 1
 }
 
 function cloneSimSnapshot(s: SimSnapshot): SimSnapshot {
@@ -1923,6 +1937,7 @@ export class Simulation {
           agent.x = nx
           agent.y = ny
           agent.pathIndex++
+          accrueWear(this.state, nx, ny)
           remaining -= dist
         } else if (dist > 0) {
           agent.x += (dx / dist) * remaining

@@ -20,6 +20,11 @@ export interface Tile {
    * Missing ⇒ full stock. Additive; old saves treat as full.
    */
   gatherStock?: number
+  /**
+   * Cumulative completed agent steps onto this tile (minds and sheep).
+   * Missing ⇒ 0. Additive; old saves treat as unworn.
+   */
+  wear?: number
 }
 
 export type PlaceKind =

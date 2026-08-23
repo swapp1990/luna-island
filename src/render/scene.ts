@@ -509,8 +509,10 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   }
 
   const lookAt = (x: number, z: number, dist = 12) => {
+    controls.enableDamping = false
     controls.target.set(x, 0.2, z)
     camera.position.set(x + dist * 0.7, dist * 0.75, z + dist * 0.7)
+    camera.updateMatrixWorld()
     controls.update()
   }
 

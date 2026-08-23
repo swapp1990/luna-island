@@ -126,6 +126,28 @@ const COLORS: Record<TerrainKind, number> = {
 
 const FOREST_GROUND = 0x4a7a38 // slightly darker — reads as forest without a tree
 const PATH_COLOR = 0xc9b58a // packed dirt
+/** Wear → packed-dirt bands (completed steps). Path tiles are already max. */
+const WEAR_BAND_LIGHT = 25
+const WEAR_BAND_TRODDEN = 150
+const WEAR_BAND_PACKED = 600
+
+interface WearGround {
+  mesh: THREE.InstancedMesh
+  index: number
+  x: number
+  y: number
+  band: number
+  baseColor: number
+}
+
+function wearBandFromCount(wear: number, isPath: boolean): number {
+  if (isPath) return 3
+  if (wear >= WEAR_BAND_PACKED) return 3
+  if (wear >= WEAR_BAND_TRODDEN) return 2
+  if (wear >= WEAR_BAND_LIGHT) return 1
+  return 0
+}
+
 const PLAZA_STONE = 0xcfc6b3
 const FOLIAGE_A = 0x2f6b3a
 const FOLIAGE_B = 0x3d7d46
@@ -273,6 +295,15 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
   }
 
   // Ground boxes — path tiles get packed-dirt color over any walkable kind
+  const wearGround: WearGround[] = []
+  const wearColorTmp = new THREE.Color()
+  const wearPathTmp = new THREE.Color(PATH_COLOR)
+  const wearBaseTmp = new THREE.Color()
+  const colorForWearBand = (base: number, band: number): THREE.Color => {
+    wearBaseTmp.set(base)
+    if (band <= 0) return wearBaseTmp
+    return wearColorTmp.copy(wearBaseTmp).lerp(wearPathTmp, band / 3)
+  }
   {
     const pathTiles = land.filter((t) => t.path)
     const nonPath = land.filter((t) => !t.path)
@@ -287,7 +318,7 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
       const color = kind === 'forest' ? FOREST_GROUND : COLORS[kind]
       const mat = track(
         new THREE.MeshStandardMaterial({
-          color,
+          color: 0xffffff,
           roughness: 0.85,
           metalness: 0,
         }),
@@ -302,8 +333,25 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
         dummy.scale.set(1, 1, 1)
         dummy.updateMatrix()
         inst.setMatrixAt(i, dummy.matrix)
+        const worldTile = world.tiles[t.y * world.width + t.x]
+        const walkable = worldTile?.walkable ?? false
+        const band = walkable
+          ? wearBandFromCount(worldTile?.wear ?? 0, false)
+          : 0
+        inst.setColorAt(i, colorForWearBand(color, band))
+        if (walkable) {
+          wearGround.push({
+            mesh: inst,
+            index: i,
+            x: t.x,
+            y: t.y,
+            band,
+            baseColor: color,
+          })
+        }
       }
       inst.instanceMatrix.needsUpdate = true
+      if (inst.instanceColor) inst.instanceColor.needsUpdate = true
       root.add(inst)
     }
 
@@ -473,6 +521,23 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     const iy = Math.round(y)
     if (ix < 0 || iy < 0 || ix >= world.width || iy >= world.height) return undefined
     return latestTiles[iy * world.width + ix]
+  }
+
+  const updateWear = () => {
+    if (wearGround.length === 0) return
+    const dirty = new Set<THREE.InstancedMesh>()
+    for (const rec of wearGround) {
+      const tile = tileAt(rec.x, rec.y)
+      if (!tile || !tile.walkable) continue
+      const band = wearBandFromCount(tile.wear ?? 0, !!tile.path)
+      if (band === rec.band) continue
+      rec.band = band
+      rec.mesh.setColorAt(rec.index, colorForWearBand(rec.baseColor, band))
+      dirty.add(rec.mesh)
+    }
+    for (const mesh of dirty) {
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    }
   }
 
   const applyTreeMatrix = (rec: TreeInstance, now: number) => {
@@ -763,6 +828,7 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     tiles?: Tile[],
   ) => {
     if (tiles) latestTiles = tiles
+    updateWear()
     updateBushStock(places)
     syncDynamicPlaces(places)
     updateTreeShakes(now)

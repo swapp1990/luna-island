@@ -778,17 +778,19 @@ test.describe.serial('lunabrain harness', () => {
       )
       .toBe(true)
 
-    // Six luna minds registered
+    // Eight luna minds registered
     const agentIds = await page.evaluate(
       () => (window as any).__simState?.mind?.agentIds as string[],
     )
-    expect(agentIds?.length).toBe(6)
+    expect(agentIds?.length).toBe(8)
     expect(agentIds).toEqual(
       expect.arrayContaining([
         'agent-0',
         'agent-1',
         'agent-2',
+        'agent-3',
         'agent-4',
+        'agent-5',
         'agent-8',
         'agent-11',
       ]),
@@ -946,17 +948,17 @@ test.describe.serial('lunabrain harness', () => {
       )
       .toBe(true)
 
-    // Still six minds only
+    // Eight luna minds; agent-6 is UtilityBrain sheep
     const agentIds = await page.evaluate(
       () => (window as any).__simState?.mind?.agentIds as string[],
     )
-    expect(agentIds?.length).toBe(6)
+    expect(agentIds?.length).toBe(8)
 
-    // Seed mind↔sheep (agent-3 is UtilityBrain sheep); partner mid-eat sticky
+    // Seed mind↔sheep (agent-6 is UtilityBrain sheep); partner mid-eat sticky
     const seeded = await page.evaluate(() =>
       (window as any).__simControl.seedConversation({
         agentIdA: 'agent-0',
-        agentIdB: 'agent-3',
+        agentIdB: 'agent-6',
         maxTicks: 200,
         partnerEating: true,
         minSays: 2,
@@ -989,7 +991,7 @@ test.describe.serial('lunabrain harness', () => {
     expect(lineCount).toBeGreaterThanOrEqual(2)
 
     // Sheep Life log has 💬 rows (no Mind tab required)
-    await page.evaluate(() => (window as any).__simControl.selectAgent('agent-3'))
+    await page.evaluate(() => (window as any).__simControl.selectAgent('agent-6'))
     await page.getByTestId('tab-life').click()
     await expect
       .poll(async () => {
@@ -1002,7 +1004,7 @@ test.describe.serial('lunabrain harness', () => {
     await page.evaluate(() =>
       (window as any).__simControl.seedConversation({
         agentIdA: 'agent-0',
-        agentIdB: 'agent-3',
+        agentIdB: 'agent-6',
         maxTicks: 120,
         partnerEating: true,
         minSays: 2,

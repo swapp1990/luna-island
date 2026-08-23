@@ -7,7 +7,17 @@ type Visual = {
   variant?: 'mind' | 'sheep'
 }
 
-const LUNA_IDS = ['agent-0', 'agent-1', 'agent-2', 'agent-4', 'agent-8', 'agent-11']
+const LUNA_IDS = [
+  'agent-0',
+  'agent-1',
+  'agent-2',
+  'agent-3',
+  'agent-4',
+  'agent-5',
+  'agent-8',
+  'agent-11',
+]
+const SHEEP_ID = 'agent-6'
 
 async function readyFresh(page: import('@playwright/test').Page) {
   await page.goto('/?brain=mock')
@@ -34,7 +44,7 @@ async function readyFresh(page: import('@playwright/test').Page) {
 }
 
 test.describe.serial('villager charm (P3-12)', () => {
-  test('probe: 6 minds, sheep vs mind variants', async ({ page }) => {
+  test('probe: 8 minds, sheep vs mind variants', async ({ page }) => {
     await readyFresh(page)
 
     const report = await page.evaluate((luna) => {
@@ -54,15 +64,17 @@ test.describe.serial('villager charm (P3-12)', () => {
         expected: [...luna].sort(),
         agent0: variants.find((x) => x.id === 'agent-0')?.variant ?? null,
         agent3: variants.find((x) => x.id === 'agent-3')?.variant ?? null,
+        agent6: variants.find((x) => x.id === 'agent-6')?.variant ?? null,
       }
     }, LUNA_IDS)
 
     expect(report.total).toBe(24)
-    expect(report.mindCount).toBe(6)
-    expect(report.sheepCount).toBe(18)
+    expect(report.mindCount).toBe(8)
+    expect(report.sheepCount).toBe(16)
     expect(report.mindIds).toEqual(report.expected)
     expect(report.agent0).toBe('mind')
-    expect(report.agent3).toBe('sheep')
+    expect(report.agent3).toBe('mind')
+    expect(report.agent6).toBe('sheep')
   })
 
   test('blink/arm paths survive 200-tick ffwd; fallen/lying/lean still probe', async ({
@@ -87,17 +99,16 @@ test.describe.serial('villager charm (P3-12)', () => {
       }
     })
     expect(afterFwd.ok).toBe(true)
-    expect(afterFwd.minds).toBe(6)
-    expect(afterFwd.sheep).toBe(18)
+    expect(afterFwd.minds).toBe(8)
+    expect(afterFwd.sheep).toBe(16)
     expect(afterFwd.tick).toBeGreaterThanOrEqual(200)
 
-    const fallen = await page.evaluate(() => {
-      const id = window.__simState.agentIds[3] as string
-      window.__simControl.setNeeds?.(id, { hunger: 0 })
+    const fallen = await page.evaluate((sheepId) => {
+      window.__simControl.setNeeds?.(sheepId, { hunger: 0 })
       window.__simControl.ffwd(2)
-      const v = window.__simControl.describeAgentVisual?.(id) as Visual | null
+      const v = window.__simControl.describeAgentVisual?.(sheepId) as Visual | null
       return v ? `${v.posture}/${v.glyph}/${v.variant}` : ''
-    })
+    }, SHEEP_ID)
     expect(fallen).toBe('fallen/collapsed/sheep')
 
     const lean = await page.evaluate(() => {
