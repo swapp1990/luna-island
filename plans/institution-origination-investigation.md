@@ -273,6 +273,37 @@ n=1 per configuration. Proposals fell 5 → 3 between soaks and completed talk�
 
 ---
 
+## Addendum 6 (2026-08-24): the capstone — the full chain fires live, once; variance is now the story
+
+Between Addendum 5 and this one, three engine rungs landed in luna-island (P5-1 wear paths `1c62b00`, P5-2 building tiers `76a2cb8`, P5-3 public works `6da9b78`): a proposal may carry a structured `build` payload; passage founds a COMMONS construction site with a small treasury completion-bounty; buildings level up through the same deliver-and-labour physics; foot traffic wears visible paths. Probe G13 (slack + crowded-well grievance): codex proposes **10/10, all 10 with a build payload**.
+
+Two capstone soaks ran (default preset, seed 42, 120 min, 8 minds, same harness):
+
+**Run A (truncated at 43 valid minutes — a stray click on the headed browser's timeline scrubbed the view into replay and paused the sim; the harness now auto-recovers, `4e13af0`).** In under 2 sim days, the entire chain fired unprompted:
+
+- t22: Ode independently commissioned a farm — and at some point **Ode, not Pia, proposed** *"Raise a commons notice-board for village plans and work"* with `{build: notice-board}`. **First origination ever by a second agent.**
+- t1462: passed **4-0 binding** (village advisory 4-16 against); treasury staked 5 coins.
+- t1610: the board **completed** — bounty split among Pia (a mind) and **Kiba and Lark, two scripted sheep who hauled materials of their own accord**; remainder honestly returned to the treasury.
+- A second build-proposal (Pia, storehouse) was open at truncation.
+
+Grievance → propose+build → binding pass → treasury stake → mixed mind/sheep construction → standing commons building: every link, live, zero scripting.
+
+**Run B (full 120 minutes, guarded).** A different island entirely:
+
+- 4 proposals — all Pia again, **none carrying a build**, all failed **on turnout** (binding 1-0, 2-0, 1-0, 2-0 against quorum 3; village advisory against every one). Zero rules bound, zero sanctions, zero public works.
+- But a **private construction boom**: Ode's farm plus five house commissions (Mira, Wren, Kes, Ansel, Nia — four completed in-run, Pia's sixth underway). Prior soaks saw at most one commission. The day-lapse strip and the day-1/day-5 stills show a visibly larger town ringed by new roofs, two active sites, and a fully established wear-path network.
+
+**What the pair establishes:**
+
+1. **The capability ceiling is proven live** (Run A) — the sim can now grow its town through politics, and through private initiative (Run B), with zero choreography. "These agents never originate institutions" is not just false; the full Ostrom arc from grievance to standing commons infrastructure has been observed end-to-end in an unscripted world.
+2. **Run-to-run variance is now the dominant unknown.** Same seed, same fixtures: one run produced a village that legislates its infrastructure; the next produced a village that builds privately and lets every proposal die one vote short. n=1 per condition cannot say which is modal. The next real question is a variance study (same config, 5+ runs), not another mechanism.
+3. **Turnout remains the binding civic constraint** (Run B: every failure at 1-2 binding votes vs quorum 3), unchanged since Addendum 5. Origination breadth (who proposes) crossed a threshold once (Ode) and regressed to Pia-only — dispositional monoculture in practice even with two organizer personas.
+4. Housekeeping findings: the headed soak browser is a live control surface — one click cost 76 of 120 minutes before the auto-recover guard; and a port collision let a soak silently attach to a dying orphan vite (brainless run, caught at minute 5 by decisions=0). Both now guarded or preflighted.
+
+Raw: journals `capstone-truncated-journal.jsonl` / `capstone-full-journal.jsonl` alongside the other materials; world exports remain in luna-island `artifacts/` (43.9 MB each, ungitted).
+
+---
+
 ## Appendix: source index
 
 **Human institutional origination.** Ostrom, *Governing the Commons* (1990) — Törbel 1483; Valencia huerta/Tribunal de las Aguas; design principle 3. Ostrom, Walker & Gardner, "Covenants with and without a Sword," *APSR* 1992. Heckathorn, "Collective Action and the Second-Order Free-Rider Problem," *Rationality & Society* 1989. Sunstein, "Social Norms and Social Roles," *Colum. L. Rev.* 1996. Finnemore & Sikkink, "International Norm Dynamics," *IO* 1998. Centola et al., *Science* 2018 (25% tipping). Nielsen, participation inequality (90-9-1); Wikipedia policy authorship (Forte & Bruckman, HICSS 2008). Change.org ratios (Chartio); UK e-petitions (Commons Library CBP-8620); Pew civic engagement 2013/2026. Kingdon, *Agendas, Alternatives, and Public Policies* (1984). Olson, *Logic of Collective Action* (1965). Marwell & Oliver, *The Critical Mass in Collective Action* (1993). Schelling, *The Strategy of Conflict* (1960). Ault, *Open-Field Farming in Medieval England* (1972). Lansing on Balinese subak, *Am. Anthropologist* 1987. Bryan, *Real Democracy* (2004); 17 V.S.A. §2642. McCarthy & Zald, *AJS* 1977. Benford & Snow, framing (2000). Birkland, *After Disaster* (1997). "Copy-paste legislation," Center for Public Integrity.
