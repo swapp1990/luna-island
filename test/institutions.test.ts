@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
+// @ts-expect-error tsconfig types is vite/client only — vitest still runs in Node
+import { readFileSync } from 'node:fs'
+// @ts-expect-error tsconfig types is vite/client only — vitest still runs in Node
+import { resolve } from 'node:path'
 import {
+  ASSEMBLY_DURATION_TICKS,
   CLAIM_COST,
   MAX_OPEN_PROPOSALS,
   PROPOSE_COST,
@@ -7,6 +12,7 @@ import {
   PROPOSAL_WINDOW_TICKS,
   SANCTION_COST,
   SHEEP_SYMPATHY_YES,
+  assemblyWindowFor,
   bindingTally,
   Simulation,
   VOTE_COST,
@@ -26,9 +32,11 @@ import type {
   Rule,
   WorldState,
 } from '../src/sim/types'
+import { emptyInventory } from '../src/sim/types'
 import { parseMindJson, resolveMindIntent } from '../src/mind/parse'
 import { coinPhrase } from '../src/sim/costs'
-import { EXAMINE_BY_KIND } from '../src/sim/examine'
+import { EXAMINE_BY_KIND, examineKnowledgeFor, villageCensusLine } from '../src/sim/examine'
+import { inPlazaRadius } from '../src/sim/spots'
 import { buildSystemPrompt, buildUserPrompt } from '../src/mind/prompt'
 import { fnv1aHex, stableStringify } from '../src/sim/stableStringify'
 
@@ -60,6 +68,32 @@ function fund(sim: Simulation, agentId: string, amount: number): void {
 
 function stripRules(state: WorldState): WorldState {
   return { ...state, rules: [] }
+}
+
+function boxAround(sim: Simulation, cx: number, cy: number, radius: number): void {
+  for (let dy = -radius; dy <= radius; dy++) {
+    for (let dx = -radius; dx <= radius; dx++) {
+      if (dx === 0 && dy === 0) continue
+      const x = cx + dx
+      const y = cy + dy
+      if (x < 0 || y < 0 || x >= sim.state.width || y >= sim.state.height) continue
+      const tile = sim.state.tiles[y * sim.state.width + x]
+      if (!tile) continue
+      tile.walkable = false
+      tile.kind = 'rock'
+    }
+  }
+}
+
+function parkAgent(
+  a: { x: number; y: number; action: { kind: string; reason: string; path?: unknown }; pathIndex: number },
+  x: number,
+  y: number,
+): void {
+  a.x = x
+  a.y = y
+  a.action = { kind: 'idle', reason: 'parked' }
+  a.pathIndex = 0
 }
 
 function behaviorHash(sim: Simulation): string {
@@ -206,13 +240,19 @@ describe('institution mechanics', () => {
     expect(sim.state.rules).toHaveLength(0)
   })
 
-  it('sheep electorate votes at 18:00 by sympathy threshold, agent-index order', () => {
+  it('sheep vote in person at the plaza during the assembly window; absence is silence', () => {
     const sim = new Simulation(SEED)
     fund(sim, 'agent-0', PROPOSE_COST)
     sim.propose('agent-0', 'Sheep please')
     const id = sim.state.proposals[0]!.id
+    const g = sim.state.gatherings![0]!
+    expect(g.kind).toBe('assembly')
+    expect(g.subjectId).toBe(id)
+    expect(g.placeId).toBe(sim.state.places.find((p) => p.kind === 'plaza')!.id)
+    expect(g.startTick).toBe(720)
+    expect(g.endTick).toBe(720 + ASSEMBLY_DURATION_TICKS)
 
-    // Half the sheep like Mira (≥ 0.25), half do not
+    const plaza = sim.state.places.find((p) => p.kind === 'plaza')!
     const sheep = sim.state.agents.filter((a) => isSheepAgent(a.id))
     expect(sheep.length).toBeGreaterThanOrEqual(8)
     for (let i = 0; i < sheep.length; i++) {
@@ -221,41 +261,68 @@ describe('institution mechanics', () => {
       a.sympathy['agent-0'] = i % 2 === 0 ? SHEEP_SYMPATHY_YES : 0
     }
 
-    // Day 1 18:00 = tick 720
-    const toEighteen = 720 - sim.state.tick
-    sim.advanceTicks(toEighteen)
+    sim.advanceTicks(g.startTick - 1 - sim.state.tick)
+    expect(sim.state.tick).toBe(g.startTick - 1)
+
+    const atPlaza = [sheep[0]!, sheep[1]!]
+    const far = sheep[2]!
+    const keep = new Set(atPlaza.map((a) => a.id))
+    for (const a of sim.state.agents) {
+      if (keep.has(a.id)) {
+        parkAgent(a, plaza.x, plaza.y)
+        a.needs = { hunger: 0.9, energy: 0.9, social: 0.9 }
+        a.collapsed = false
+      } else {
+        parkAgent(a, 2, 2)
+      }
+    }
+    boxAround(sim, 2, 2, 2)
+
+    sim.advanceTicks(2)
 
     const p = sim.state.proposals[0]!
     expect(p.id).toBe(id)
+    expect(p.votes[atPlaza[0]!.id]).toBe('yes')
+    expect(p.votes[atPlaza[1]!.id]).toBe('no')
+    expect(p.votes[far.id]).toBeUndefined()
+    expect(inPlazaRadius(far.x, far.y, plaza)).toBe(false)
+
     const sheepVotes = sim
       .getEvents()
       .filter((e) => e.type === 'institution:voted' && e.data?.sheep === true)
-    expect(sheepVotes.length).toBe(sheep.length)
+    expect(sheepVotes.length).toBe(2)
 
-    // Deterministic: even-index sheep yes, odd no
-    for (let i = 0; i < sheep.length; i++) {
-      const a = sheep[i]!
-      const expectChoice = i % 2 === 0 ? 'yes' : 'no'
-      expect(p.votes[a.id]).toBe(expectChoice)
-    }
-    // Luna minds must not have been auto-voted
     for (const a of sim.state.agents) {
       if (!isSheepAgent(a.id) && a.id !== 'agent-0') {
         expect(p.votes[a.id]).toBeUndefined()
       }
     }
 
-    // Same seed + same sympathy → identical vote sequence
     const simB = new Simulation(SEED)
     fund(simB, 'agent-0', PROPOSE_COST)
     simB.propose('agent-0', 'Sheep please')
+    const plazaB = simB.state.places.find((pl) => pl.kind === 'plaza')!
     const sheepB = simB.state.agents.filter((a) => isSheepAgent(a.id))
     for (let i = 0; i < sheepB.length; i++) {
       const a = sheepB[i]!
       if (!a.sympathy) a.sympathy = {}
       a.sympathy['agent-0'] = i % 2 === 0 ? SHEEP_SYMPATHY_YES : 0
     }
-    simB.advanceTicks(720 - simB.state.tick)
+    const gB = simB.state.gatherings![0]!
+    simB.advanceTicks(gB.startTick - 1 - simB.state.tick)
+    const atPlazaB = [sheepB[0]!, sheepB[1]!]
+    const keepB = new Set(atPlazaB.map((a) => a.id))
+    for (const a of simB.state.agents) {
+      if (keepB.has(a.id)) {
+        parkAgent(a, plazaB.x, plazaB.y)
+        a.needs = { hunger: 0.9, energy: 0.9, social: 0.9 }
+        a.collapsed = false
+      } else {
+        parkAgent(a, 2, 2)
+      }
+    }
+    boxAround(simB, 2, 2, 2)
+    simB.advanceTicks(2)
     expect(simB.state.proposals[0]!.votes).toEqual(p.votes)
   })
 
@@ -665,6 +732,9 @@ describe('civic affordances (origination fixes)', () => {
     // The old copy hardcoded "2 coins" for propose; if the constant is 0 the
     // menu must say so rather than quoting a price the sim never charges.
     if (PROPOSE_COST === 0) expect(text).not.toMatch(/propose \(\d+ coins?\)/)
+    expect(text).toContain(
+      'Proposals are weighed at a plaza assembly on their closing eve.',
+    )
   })
 
   it('sanction accepts "text", and recovers a censure written into "reasoning"', () => {
@@ -709,5 +779,175 @@ describe('civic affordances (origination fixes)', () => {
   it('a sanction with no censure text anywhere is still refused', () => {
     const r = parseMindJson(JSON.stringify({ action: 'sanction', target: 'Wren' }))
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('assemblies + census (P5-4)', () => {
+  it('assembly window is the last evening before close; fallback is first 18:00', () => {
+    // Posted at Day 1 06:00, closes Day 2 06:00 → last evening is Day 1 18:00–20:00
+    expect(assemblyWindowFor(0, 1440)).toEqual({ startTick: 720, endTick: 840 })
+    // Posted after 18:00; close is next day after 18:00 → that next evening
+    const late = assemblyWindowFor(800, 800 + 1440)
+    expect(late.startTick).toBe(2160)
+    expect(late.endTick).toBe(2280)
+    // Close before any 18:00 exists → first available 18:00
+    expect(assemblyWindowFor(0, 100).startTick).toBe(720)
+  })
+
+  it('propose schedules a gathering with correct window math and reason', () => {
+    const sim = new Simulation(SEED)
+    expect(sim.propose('agent-0', 'Share the well after dusk')).toBe(true)
+    const p = sim.state.proposals[0]!
+    const g = sim.state.gatherings![0]!
+    const win = assemblyWindowFor(p.createdTick, p.closesTick)
+    expect(g).toMatchObject({
+      kind: 'assembly',
+      subjectId: p.id,
+      startTick: win.startTick,
+      endTick: win.endTick,
+    })
+    const ev = sim.getEvents().find((e) => e.type === 'gathering:scheduled')
+    expect(ev?.data?.subjectId).toBe(p.id)
+    expect(ev?.data?.startTick).toBe(win.startTick)
+    expect(ev?.reason).toMatch(/assembly is scheduled at the plaza/)
+    expect(ev?.reason).toContain('Share the well after dusk')
+  })
+
+  it('gathering expires after endTick and reports attendance', () => {
+    const sim = new Simulation(SEED)
+    sim.propose('agent-0', 'Weigh me')
+    const g0 = sim.state.gatherings![0]!
+    const plaza = sim.state.places.find((p) => p.kind === 'plaza')!
+    const sheep = sim.state.agents.filter((a) => isSheepAgent(a.id))
+    sim.advanceTicks(g0.startTick - 1 - sim.state.tick)
+    const keep = new Set([sheep[0]!.id, sheep[1]!.id])
+    for (const a of sim.state.agents) {
+      if (keep.has(a.id)) {
+        parkAgent(a, plaza.x, plaza.y)
+        a.needs = { hunger: 0.95, energy: 0.95, social: 0.95 }
+        a.collapsed = false
+      } else {
+        parkAgent(a, 2, 2)
+      }
+    }
+    boxAround(sim, 2, 2, 2)
+    sim.advanceTicks(g0.endTick - sim.state.tick)
+    expect(sim.state.tick).toBe(g0.endTick)
+    expect(sim.state.gatherings ?? []).toHaveLength(0)
+    const ended = sim.getEvents().find((e) => e.type === 'gathering:ended')
+    expect(ended).toBeTruthy()
+    expect(ended!.data?.attendance).toBe(2)
+    expect(ended!.reason).toMatch(/2 villagers attended/)
+    const started = sim.getEvents().find((e) => e.type === 'gathering:started')
+    expect(started).toBeTruthy()
+    expect(started!.reason).toMatch(/has gathered at the plaza/)
+  })
+
+  it('census line derives from places; adding a place changes the count', () => {
+    const sim = new Simulation(SEED)
+    const before = villageCensusLine(sim.state.places)
+    expect(before).toMatch(/^The village holds:/)
+    expect(before).toContain('notice-board')
+    const homes = sim.state.places.filter((p) => p.kind === 'home').length
+    expect(before).toContain(`${homes} homes`)
+    sim.state.places.push({
+      id: 'home-census-extra',
+      kind: 'home',
+      x: 3,
+      y: 3,
+      slots: 2,
+      inventory: emptyInventory(),
+    })
+    const after = villageCensusLine(sim.state.places)
+    expect(after).toContain(`${homes + 1} homes`)
+    expect(after).not.toBe(before)
+    const board = sim.state.places.find((p) => p.kind === 'notice-board')!
+    const examined = examineKnowledgeFor(board, { places: sim.state.places })
+    expect(examined).toContain(after!)
+    expect(examined).toContain(
+      'Proposals are weighed at a plaza assembly on their closing eve.',
+    )
+  })
+
+  it('assembly observation lines render only in their windows; census when near the board', () => {
+    const sim = new Simulation(SEED)
+    sim.propose('agent-0', 'Quiet nights at the plaza')
+    const mira = sim.state.agents.find((a) => a.id === 'agent-0')!
+    const board = sim.state.places.find((p) => p.kind === 'notice-board')!
+    const g = sim.state.gatherings![0]!
+
+    mira.x = board.x
+    mira.y = board.y
+    let user = buildUserPrompt(mira, sim.state, sim.getEvents())
+    expect(user).toContain(
+      'An assembly gathers at the plaza at 18:00 to weigh "Quiet nights at the plaza"',
+    )
+    expect(user).not.toContain('The assembly is gathered at the plaza NOW')
+    expect(user).toMatch(/The village holds:/)
+
+    sim.advanceTicks(g.startTick - sim.state.tick)
+    user = buildUserPrompt(mira, sim.state, sim.getEvents())
+    expect(user).toContain('The assembly is gathered at the plaza NOW')
+    expect(user).toContain('"Quiet nights at the plaza" is being weighed')
+    expect(user).not.toContain('An assembly gathers at the plaza at 18:00')
+
+    sim.advanceTicks(g.endTick - sim.state.tick)
+    user = buildUserPrompt(mira, sim.state, sim.getEvents())
+    expect(user).not.toContain('An assembly gathers at the plaza at 18:00')
+    expect(user).not.toContain('The assembly is gathered at the plaza NOW')
+
+    mira.x = 0
+    mira.y = 0
+    const far = buildUserPrompt(mira, sim.state, sim.getEvents())
+    const census = villageCensusLine(sim.state.places)!
+    expect(far).not.toContain(census)
+  })
+
+  it('save and stateAt round-trip gatherings', () => {
+    const sim = new Simulation(SEED)
+    sim.postExternalIntent(
+      'agent-0',
+      { kind: 'propose', text: 'Round trip the assembly', reason: 'I will post this.' },
+      meta('I will post this.'),
+    )
+    sim.advanceTicks(5)
+    expect(sim.state.gatherings?.length).toBe(1)
+    const save = serializeSave(sim)
+    expect(save.formatVersion).toBe(5)
+    const restored = restoreSave(save)
+    expect(restored.hash()).toBe(sim.hash())
+    expect(restored.state.gatherings).toEqual(sim.state.gatherings)
+    const fork = sim.stateAt(sim.state.tick)
+    expect(fork.hash()).toBe(sim.hash())
+    expect(fork.state.gatherings).toEqual(sim.state.gatherings)
+  })
+
+  it('recorded soak worlds still import (missing gatherings ⇒ none scheduled)', () => {
+    for (const file of [
+      'artifacts/soak-1787430602479-world.json',
+      'artifacts/soak-1787452399090-world.json',
+    ]) {
+      const raw = JSON.parse(readFileSync(resolve(file), 'utf8')) as {
+        tick: number
+        seed: number
+      }
+      const loaded = restoreSave(raw)
+      expect(loaded.state.tick).toBe(raw.tick)
+      expect(loaded.state.seed).toBe(raw.seed)
+      expect(loaded.state.gatherings ?? []).toEqual([])
+    }
+  }, 120_000)
+
+  it('binding votes stay valid from anywhere; no attendance gate on minds', () => {
+    const sim = new Simulation(SEED)
+    sim.propose('agent-0', 'Minds may vote from the woods')
+    const id = sim.state.proposals[0]!.id
+    const plaza = sim.state.places.find((p) => p.kind === 'plaza')!
+    const mind = sim.state.agents.find((a) => a.id === 'agent-1')!
+    mind.x = plaza.x + 12
+    mind.y = plaza.y + 12
+    expect(inPlazaRadius(mind.x, mind.y, plaza)).toBe(false)
+    expect(sim.vote('agent-1', id, 'yes')).toBe(true)
+    expect(sim.state.proposals[0]!.votes['agent-1']).toBe('yes')
   })
 })

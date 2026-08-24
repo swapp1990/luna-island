@@ -18,6 +18,18 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   spring: 0.4,
 }
 
+/** Euclidean plaza footprint — the physical "standing at the plaza" predicate. */
+export function inPlazaRadius(
+  x: number,
+  y: number,
+  plaza: { x: number; y: number },
+): boolean {
+  const r = PLACE_RADIUS.plaza
+  const dx = x - plaza.x
+  const dy = y - plaza.y
+  return dx * dx + dy * dy <= r * r
+}
+
 /**
  * Actions that occupy a place slot (restore, forage, work, buy).
  * Eat no longer uses places — food is consumed from inventory anywhere.

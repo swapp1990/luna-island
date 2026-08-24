@@ -199,6 +199,31 @@ export interface Rule {
   active: boolean
 }
 
+/**
+ * A convened world event at a place and time. Generic so festivals/markets
+ * can reuse the slot; only `assembly` ships now.
+ */
+export type GatheringKind = 'assembly'
+
+export interface Gathering {
+  id: string
+  kind: GatheringKind
+  placeId: string
+  startTick: Tick
+  endTick: Tick
+  /** Proposal id for an assembly; other kinds may point at a place or rule. */
+  subjectId: string
+  /**
+   * Distinct agent ids who stood in the place radius during the window.
+   * Missing ⇒ none yet. Additive.
+   */
+  attended?: string[]
+  /**
+   * True after `gathering:started` has been emitted. Missing ⇒ not started.
+   */
+  started?: boolean
+}
+
 /** Mid-work haul phases (mechanical, not a brain script). */
 export type WorkPhase = 'tend' | 'hauling' | 'returning'
 
@@ -377,6 +402,11 @@ export interface WorldState {
    * by action mechanics.
    */
   rules: Rule[]
+  /**
+   * Convened gatherings (v5 additive). Missing on older saves ⇒ none scheduled.
+   * The next `propose` schedules one assembly per proposal.
+   */
+  gatherings?: Gathering[]
   /**
    * Per-agent tick until the next commission attempt is accepted (v5 additive).
    * Missing on older saves → treat as none.

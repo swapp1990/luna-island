@@ -6,6 +6,7 @@ import {
   pickSocialSlot,
   placeHasCapacity,
 } from './spots'
+import { isLunaAgent } from './lunaRoster'
 import { toSimTime } from './time'
 
 /** Mirror of sim.marketPriceFromStock — keep pure (no sim import cycle). */
@@ -227,6 +228,17 @@ function drinkReason(energy: number): string {
 
 function socialReason(social: number): string {
   return `Feeling lonely (social ${pct(social)}%) — joining the plaza crowd`
+}
+
+/** Sheep plaza-draw while an assembly is gathered. Below survival, above wander. */
+const ASSEMBLY_DRAW = 0.4
+
+function hasOngoingAssembly(world: WorldState): boolean {
+  const tick = world.tick
+  for (const g of world.gatherings ?? []) {
+    if (g.kind === 'assembly' && tick >= g.startTick && tick < g.endTick) return true
+  }
+  return false
 }
 
 function wanderReason(): string {
@@ -489,6 +501,30 @@ export class UtilityBrain implements Brain {
       }
     }
 
+    // Sheep assembly draw — physics, not a suggestion. Minds never get this.
+    if (
+      !isLunaAgent(self.id) &&
+      !self.collapsed &&
+      !urgentNeedy(self) &&
+      hasOngoingAssembly(world)
+    ) {
+      const plaza = world.places.find((p) => p.kind === 'plaza')
+      if (plaza) {
+        const { place: slotted } = pickPlaceForAgent(world, self, 'plaza')
+        const slot = slotted ? pickSocialSlot(world, self, slotted, rng) : null
+        candidates.push({
+          score: ASSEMBLY_DRAW,
+          intent: {
+            kind: 'socialize',
+            targetPlaceId: plaza.id,
+            targetX: slot?.x ?? Math.round(plaza.x),
+            targetY: slot?.y ?? Math.round(plaza.y),
+            reason: 'An assembly is gathered at the plaza',
+          },
+        })
+      }
+    }
+
     // Crowded shared home + solvent → commission a private house (instant world rule)
     if (
       !self.collapsed &&
@@ -625,6 +661,14 @@ export function scoreCurrentAction(obs: Observation, kind: ActionKind): number {
     case 'socialize': {
       let s = (1 - self.needs.social) * 0.9
       if (hour >= 10 && hour < 20) s *= 1.3
+      if (
+        !isLunaAgent(self.id) &&
+        !self.collapsed &&
+        !urgentNeedy(self) &&
+        hasOngoingAssembly(world)
+      ) {
+        s = Math.max(s, ASSEMBLY_DRAW)
+      }
       return s
     }
     case 'wander':

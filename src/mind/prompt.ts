@@ -11,6 +11,8 @@ import {
   proposalTally,
 } from '../sim/sim'
 import { coinPhrase, publicWorksRuleLine } from '../sim/costs'
+import { PLACE_VIEW_RADIUS, villageCensusLine } from '../sim/examine'
+import { inPlazaRadius } from '../sim/spots'
 import { REFLECT_MARKER, SLACK_MARKER } from './promptMarkers'
 import { personaFor } from './personas'
 import {
@@ -214,10 +216,9 @@ function civicObservationLines(
       const tally = proposalTally(p)
       const left = Math.max(0, p.closesTick - world.tick)
       const proposer = world.agents.find((a) => a.id === p.proposerId)?.name ?? p.proposerId
-      // Without this a mind cannot tell it already voted — the 18:00
-      // electorate sweep casts a vote on its behalf — so it spends decisions
-      // re-voting and gets refused. Measured: 30 already-voted refusals in a
-      // 5-day soak, ~3% of every decision the island made.
+      // Without this a mind cannot tell it already voted, so it spends
+      // decisions re-voting and gets refused. Measured: 30 already-voted
+      // refusals in a 5-day soak, ~3% of every decision the island made.
       const mine = p.votes?.[agent.id]
       const yours = mine ? ` · you voted ${mine}` : ''
       // Show the deciding count first. The village tally is dominated by
@@ -243,6 +244,36 @@ function civicObservationLines(
         ? `Open proposals: none posted (anyone may post one, ${coinPhrase(PROPOSE_COST)})`
         : 'Open proposals: none posted (anyone may post one, free)',
     )
+  }
+  const plaza = world.places.find((p) => p.kind === 'plaza')
+  const now = toSimTime(world.tick)
+  for (const g of world.gatherings ?? []) {
+    if (g.kind !== 'assembly') continue
+    const proposal = (world.proposals ?? []).find((p) => p.id === g.subjectId)
+    const text = clipObs(proposal?.text ?? '', 80)
+    const ongoing = world.tick >= g.startTick && world.tick < g.endTick
+    const today = toSimTime(g.startTick).day === now.day
+    if (ongoing) {
+      const n = plaza
+        ? world.agents.filter((a) => inPlazaRadius(a.x, a.y, plaza)).length
+        : 0
+      lines.push(
+        `The assembly is gathered at the plaza NOW (${n} villagers) — "${text}" is being weighed`,
+      )
+    } else if (today && world.tick < g.startTick) {
+      lines.push(`An assembly gathers at the plaza at 18:00 to weigh "${text}"`)
+    }
+  }
+  const r2 = PLACE_VIEW_RADIUS * PLACE_VIEW_RADIUS
+  const nearBoard = world.places.some((p) => {
+    if (p.kind !== 'notice-board') return false
+    const dx = p.x - agent.x
+    const dy = p.y - agent.y
+    return dx * dx + dy * dy <= r2
+  })
+  if (nearBoard) {
+    const census = villageCensusLine(world.places)
+    if (census) lines.push(census)
   }
   const active = (world.rules ?? []).filter((r) => r.active).slice(0, 5)
   if (active.length > 0) {

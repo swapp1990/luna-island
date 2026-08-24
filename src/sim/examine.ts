@@ -22,7 +22,7 @@ export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, st
   // Generated from the fee constants so the menu can never drift from what the
   // sim actually charges — the drift that produced the accidental propose/vote
   // asymmetry in the first place.
-  'notice-board': `Anyone may propose (${coinPhrase(PROPOSE_COST)}) — posts your words here for a day. Vote yes or no on an open proposal (${coinPhrase(VOTE_COST)}); every villager's vote is recorded, but a proposal is decided by the votes of those who weigh it themselves. Sanction (${coinPhrase(SANCTION_COST)}) posts a public censure. Claim (${coinPhrase(CLAIM_COST)}) takes a commons place as yours. Posted rules may be followed or broken. ${publicWorksRuleLine()}`,
+  'notice-board': `Anyone may propose (${coinPhrase(PROPOSE_COST)}) — posts your words here for a day. Vote yes or no on an open proposal (${coinPhrase(VOTE_COST)}); every villager's vote is recorded, but a proposal is decided by the votes of those who weigh it themselves. Sanction (${coinPhrase(SANCTION_COST)}) posts a public censure. Claim (${coinPhrase(CLAIM_COST)}) takes a commons place as yours. Posted rules may be followed or broken. ${publicWorksRuleLine()} Proposals are weighed at a plaza assembly on their closing eve.`,
   'berry-bush': 'Berries grow here, sparser in lean times.',
   well: 'Cool water here — drinking left me a little more awake.',
   farm: 'People tend the soil here and food grows if they stay with it.',
@@ -39,6 +39,48 @@ export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, st
 export interface ExamineContext {
   owners?: WorldState['owners']
   agents?: ReadonlyArray<{ id: string; name: string }>
+  places?: ReadonlyArray<Place>
+}
+
+/** Building kinds counted in the village census — example order, 0 omitted. */
+const CENSUS_KINDS = [
+  'home',
+  'farm',
+  'well',
+  'notice-board',
+  'stall',
+  'storehouse',
+  'forestry',
+  'quarry',
+] as const
+
+function censusKindLabel(kind: (typeof CENSUS_KINDS)[number], n: number): string {
+  if (kind === 'home') return n === 1 ? 'home' : 'homes'
+  return n === 1 ? kind : `${kind}s`
+}
+
+/**
+ * Compact building-stock line derived from `places`. Counts only; kinds at 0
+ * are omitted. Empty when the village holds none of the counted kinds.
+ */
+export function villageCensusLine(places: readonly Place[]): string | null {
+  const counts = new Map<(typeof CENSUS_KINDS)[number], number>()
+  for (const p of places) {
+    for (const kind of CENSUS_KINDS) {
+      if (p.kind === kind) {
+        counts.set(kind, (counts.get(kind) ?? 0) + 1)
+        break
+      }
+    }
+  }
+  const parts: string[] = []
+  for (const kind of CENSUS_KINDS) {
+    const n = counts.get(kind) ?? 0
+    if (n === 0) continue
+    parts.push(`${n} ${censusKindLabel(kind, n)}`)
+  }
+  if (parts.length === 0) return null
+  return `The village holds: ${parts.join(', ')}.`
 }
 
 function ownerPossessive(
@@ -85,11 +127,18 @@ export function examineKnowledgeFor(place: Place, ctx?: ExamineContext): string 
   const lv = place.level ?? 1
   const lvTag = lv > 1 ? ` (lv ${lv})` : ''
   const whose = ownerPossessive(place.id, ctx)
-  if (!whose) return `${base}${lvTag}`
-  if (place.kind === 'home') {
-    return `A bed under a roof — ${whose}${lvTag}. Sleeping here left me deeply rested.`
+  let out: string
+  if (!whose) out = `${base}${lvTag}`
+  else if (place.kind === 'home') {
+    out = `A bed under a roof — ${whose}${lvTag}. Sleeping here left me deeply rested.`
+  } else {
+    out = `${base} Belongs to ${whose.replace(/'s$/, '')}${lvTag}.`
   }
-  return `${base} Belongs to ${whose.replace(/'s$/, '')}${lvTag}.`
+  if (place.kind === 'notice-board') {
+    const census = villageCensusLine(ctx?.places ?? [])
+    if (census) out = `${out} ${census}`
+  }
+  return out
 }
 
 export function placeKindLabel(kind: PlaceKind | string): string {

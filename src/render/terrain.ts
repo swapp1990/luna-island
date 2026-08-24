@@ -36,6 +36,8 @@ export interface TerrainHandle {
   syncCommissionCeremonies: (
     rows: Array<{ placeId: string; ageTicks: number; seq: number }>,
   ) => void
+  /** Show/hide plaza assembly pennants from live gathering state. */
+  syncAssemblyDressing: (world: WorldState) => void
   /** Invisible hit volumes for building selection. */
   getPlacePickables: () => THREE.Object3D[]
   /** Resolve raycast hit to place id. */
@@ -217,6 +219,15 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     disposables.push(obj)
     return obj
   }
+
+  const assemblyDressing = new THREE.Group()
+  assemblyDressing.name = 'assembly-dressing'
+  assemblyDressing.visible = false
+  const plaza0 = world.places.find((p) => p.kind === 'plaza')
+  if (plaza0) assemblyDressing.position.set(plaza0.x, 0, plaza0.y)
+  addPennant(assemblyDressing, track, 2.15, 0.55)
+  addPennant(assemblyDressing, track, -2.15, 0.55)
+  root.add(assemblyDressing)
 
   // Water: deep base plane (extends past fog far so horizon is seamless) + shallow shoreline quads
   {
@@ -1003,6 +1014,16 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     }
   }
 
+  const syncAssemblyDressing = (live: WorldState) => {
+    const tick = live.tick
+    const plaza = live.places.find((p) => p.kind === 'plaza')
+    const ongoing = (live.gatherings ?? []).some(
+      (g) => g.kind === 'assembly' && tick >= g.startTick && tick < g.endTick,
+    )
+    assemblyDressing.visible = ongoing && !!plaza
+    if (plaza) assemblyDressing.position.set(plaza.x, 0, plaza.y)
+  }
+
   const dispose = () => {
     scene.remove(root)
     root.traverse(() => {
@@ -1030,6 +1051,7 @@ export function buildTerrain(scene: THREE.Scene, world: WorldState): TerrainHand
     popHome,
     getPlaceWorldPos,
     syncCommissionCeremonies,
+    syncAssemblyDressing,
     getPlacePickables,
     placeIdFromObject,
     dispose,

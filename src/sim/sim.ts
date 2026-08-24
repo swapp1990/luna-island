@@ -1,7 +1,7 @@
 import { createRng } from './rng'
 import { EventTrace } from './events'
 import { findNoticeBoardSpot, generateWorld, presetFacts } from './worldgen'
-import { dayStartTick, toSimTime } from './time'
+import { dayStartTick, MINUTES_AT_TICK0, TICKS_PER_DAY, toSimTime } from './time'
 import { fnv1aHex, stableStringify } from './stableStringify'
 import { spawnAgents } from './spawn'
 import { findPath, isWalkable, pathStillValid } from './pathfind'
@@ -20,6 +20,7 @@ import {
   reserveSpot,
   occupantsOfPlace,
   SOCIAL_PROXIMITY_SQ,
+  inPlazaRadius,
   workplaceHasOpenJob,
 } from './spots'
 import {
@@ -37,6 +38,7 @@ import type {
   EconomyStat,
   ExternalIntentMeta,
   ExternalIntentRecord,
+  Gathering,
   Good,
   Intent,
   Inventory,
@@ -148,6 +150,41 @@ import {
 import { LUNA_AGENT_ID_SET } from './lunaRoster'
 /** Proposal stays open this many ticks (one sim day). */
 export const PROPOSAL_WINDOW_TICKS = 1440
+/** Assembly window: 18:00–20:00 (120 sim minutes). */
+const ASSEMBLY_START_HOUR = 18
+const ASSEMBLY_END_HOUR = 20
+export const ASSEMBLY_DURATION_TICKS = (ASSEMBLY_END_HOUR - ASSEMBLY_START_HOUR) * 60
+
+/** First tick of 18:00 on calendar `day` (Day 1 18:00 = 720). */
+export function eveningStartTick(day: number): Tick {
+  return (day - 1) * TICKS_PER_DAY + ASSEMBLY_START_HOUR * 60 - MINUTES_AT_TICK0
+}
+
+/**
+ * Last 18:00–20:00 window that starts strictly before `closesTick`.
+ * If that evening does not exist, the first 18:00 at or after `createdTick`.
+ */
+export function assemblyWindowFor(
+  createdTick: Tick,
+  closesTick: Tick,
+): { startTick: Tick; endTick: Tick } {
+  const close = toSimTime(closesTick)
+  let start = eveningStartTick(close.day)
+  if (start >= closesTick) start = eveningStartTick(close.day - 1)
+  if (start < 0 || start >= closesTick) {
+    const created = toSimTime(createdTick)
+    if (created.hour < ASSEMBLY_START_HOUR) {
+      start = eveningStartTick(created.day)
+    } else if (created.hour === ASSEMBLY_START_HOUR && created.minute === 0) {
+      start = eveningStartTick(created.day)
+    } else {
+      start = eveningStartTick(created.day + 1)
+    }
+    if (start < createdTick) start = eveningStartTick(toSimTime(start).day + 1)
+    if (start < 0) start = eveningStartTick(1)
+  }
+  return { startTick: start, endTick: start + ASSEMBLY_DURATION_TICKS }
+}
 /** Mechanical island-wide cap on simultaneous open proposals. */
 export const MAX_OPEN_PROPOSALS = 2
 /**
@@ -391,6 +428,24 @@ function cloneRules(list: Rule[] | undefined): Rule[] {
   return list.map(cloneRule)
 }
 
+function cloneGathering(g: Gathering): Gathering {
+  return {
+    id: g.id,
+    kind: g.kind,
+    placeId: g.placeId,
+    startTick: g.startTick,
+    endTick: g.endTick,
+    subjectId: g.subjectId,
+    ...(g.attended ? { attended: g.attended.slice() } : {}),
+    ...(g.started ? { started: true } : {}),
+  }
+}
+
+function cloneGatherings(list: Gathering[] | undefined): Gathering[] | undefined {
+  if (!list) return undefined
+  return list.map(cloneGathering)
+}
+
 export function proposalTally(p: Proposal): { yes: number; no: number; total: number } {
   let yes = 0
   let no = 0
@@ -525,6 +580,9 @@ function deepCloneWorld(state: WorldState): WorldState {
     mindStats: cloneMindStats(state.mindStats),
     proposals: cloneProposals(state.proposals),
     rules: cloneRules(state.rules),
+    ...(state.gatherings !== undefined
+      ? { gatherings: cloneGatherings(state.gatherings) }
+      : {}),
     commissionCooldownUntil: { ...(state.commissionCooldownUntil ?? {}) },
     commissionFeeCoins:
       typeof state.commissionFeeCoins === 'number'
@@ -1299,6 +1357,7 @@ export class Simulation {
       },
       reason: `A founding notice was posted: "${FOUNDING_PROPOSAL_TEXT}"`,
     })
+    this.scheduleAssemblyFor(proposal)
     for (const agent of this.state.agents) {
       if (isSheepAgent(agent.id)) continue
       this.events.append({
@@ -1477,6 +1536,7 @@ export class Simulation {
         ? `${agent.name} proposed: "${clipped}" (founding a ${storedBuild.kind})`
         : `${agent.name} proposed: "${clipped}"`,
     })
+    this.scheduleAssemblyFor(proposal)
     return true
   }
 
@@ -1752,18 +1812,153 @@ export class Simulation {
   }
 
   /**
-   * Sheep electorate: at 18:00, every sheep votes on each open proposal
-   * they have not voted on. yes if sympathy toward proposer ≥ 0.25.
-   * Agent-index order, then proposal array order.
+   * Institutional physics: one plaza assembly per proposal, last evening
+   * before close (18:00–20:00). Same kind of world rule as closesTick.
    */
-  private stepSheepElectorate(): void {
+  private scheduleAssemblyFor(proposal: Proposal): void {
+    const plaza = this.state.places.find((p) => p.kind === 'plaza')
+    if (!plaza) return
+    const { startTick, endTick } = assemblyWindowFor(
+      proposal.createdTick,
+      proposal.closesTick,
+    )
+    const gathering: Gathering = {
+      id: `asm-${proposal.id}`,
+      kind: 'assembly',
+      placeId: plaza.id,
+      startTick,
+      endTick,
+      subjectId: proposal.id,
+      attended: [],
+    }
+    if (!this.state.gatherings) this.state.gatherings = []
+    this.state.gatherings.push(gathering)
+    const when = toSimTime(startTick)
+    const hh = String(when.hour).padStart(2, '0')
+    this.events.append({
+      tick: this.state.tick,
+      type: 'gathering:scheduled',
+      data: {
+        gatheringId: gathering.id,
+        kind: 'assembly',
+        placeId: plaza.id,
+        startTick,
+        endTick,
+        subjectId: proposal.id,
+        proposalId: proposal.id,
+      },
+      reason: `An assembly is scheduled at the plaza on day ${when.day} at ${hh}:00 to weigh "${proposal.text}"`,
+    })
+    if (this.state.tick >= startTick && this.state.tick < endTick) {
+      this.emitGatheringStarted(gathering)
+    }
+  }
+
+  private gatheringProposal(g: Gathering): Proposal | undefined {
+    return this.state.proposals.find((p) => p.id === g.subjectId)
+  }
+
+  private emitGatheringStarted(g: Gathering): void {
+    if (g.started) return
+    g.started = true
+    const proposal = this.gatheringProposal(g)
+    const text = proposal?.text ?? g.subjectId
+    this.events.append({
+      tick: this.state.tick,
+      type: 'gathering:started',
+      data: {
+        gatheringId: g.id,
+        kind: g.kind,
+        placeId: g.placeId,
+        subjectId: g.subjectId,
+        proposalId: g.subjectId,
+      },
+      reason: `The assembly has gathered at the plaza to weigh "${text}"`,
+    })
+  }
+
+  private emitGatheringEnded(g: Gathering): void {
+    const n = g.attended?.length ?? 0
+    const proposal = this.gatheringProposal(g)
+    const text = proposal?.text ?? g.subjectId
+    this.events.append({
+      tick: this.state.tick,
+      type: 'gathering:ended',
+      data: {
+        gatheringId: g.id,
+        kind: g.kind,
+        placeId: g.placeId,
+        subjectId: g.subjectId,
+        proposalId: g.subjectId,
+        attendance: n,
+      },
+      reason: `The assembly has ended (${n} villagers attended) — "${text}" was weighed`,
+    })
+  }
+
+  private recordGatheringAttendance(g: Gathering): void {
+    const place = this.state.places.find((p) => p.id === g.placeId)
+    if (!place) return
+    if (!g.attended) g.attended = []
+    for (const a of this.state.agents) {
+      if (!inPlazaRadius(a.x, a.y, place)) continue
+      if (!g.attended.includes(a.id)) g.attended.push(a.id)
+    }
+  }
+
+  private ongoingAssemblies(): Gathering[] {
+    const tick = this.state.tick
+    const list = this.state.gatherings
+    if (!list || list.length === 0) return []
+    return list.filter(
+      (g) => g.kind === 'assembly' && tick >= g.startTick && tick < g.endTick,
+    )
+  }
+
+  /** Start / attend / expire gatherings. Runs at the beginning of each tick. */
+  private stepGatherings(): void {
+    const list = this.state.gatherings
+    if (!list || list.length === 0) return
+    const tick = this.state.tick
+    const remaining: Gathering[] = []
+    for (const g of list) {
+      if (tick >= g.endTick) {
+        if (tick >= g.startTick && !g.started) this.emitGatheringStarted(g)
+        this.recordGatheringAttendance(g)
+        this.emitGatheringEnded(g)
+        continue
+      }
+      if (tick >= g.startTick) {
+        this.emitGatheringStarted(g)
+        this.recordGatheringAttendance(g)
+      }
+      remaining.push(g)
+    }
+    this.state.gatherings = remaining
+  }
+
+  private recordOngoingAssemblyAttendance(): void {
+    for (const g of this.ongoingAssemblies()) {
+      this.recordGatheringAttendance(g)
+    }
+  }
+
+  /**
+   * Sheep electorate: during an assembly window, a sheep standing in the
+   * plaza radius casts its sympathy vote. Agent-index order, then gathering
+   * array order. Minds are never auto-voted.
+   */
+  private stepSheepAssemblyVotes(): void {
     ensureMindFields(this.state)
-    const open = this.openProposals()
-    if (open.length === 0) return
+    const ongoing = this.ongoingAssemblies()
+    if (ongoing.length === 0) return
     for (const agent of this.state.agents) {
       if (!isSheepAgent(agent.id)) continue
-      for (const proposal of open) {
-        if (proposal.status !== 'open') continue
+      for (const g of ongoing) {
+        const place = this.state.places.find((p) => p.id === g.placeId)
+        if (!place || !inPlazaRadius(agent.x, agent.y, place)) continue
+        const proposal = this.gatheringProposal(g)
+        if (!proposal || proposal.status !== 'open') continue
         if (proposal.votes[agent.id] !== undefined) continue
         const sympathy = agent.sympathy?.[proposal.proposerId] ?? 0
         const choice: VoteChoice = sympathy >= SHEEP_SYMPATHY_YES ? 'yes' : 'no'
@@ -2904,6 +3099,7 @@ export class Simulation {
     const knowledge = examineKnowledgeFor(place, {
       owners: this.state.owners,
       agents: this.state.agents,
+      places: this.state.places,
     })
     const label = placeKindLabel(place.kind)
     this.events.append({
@@ -3479,11 +3675,11 @@ export class Simulation {
       })
     }
 
+    this.stepGatherings()
+
     // Wage day at 18:00: treasury → employees (partial if insolvent)
     if (prev.hour === 17 && next.hour === 18) {
       this.stepWagePayments()
-      // Sheep electorate: same 18:00 world-process beat (not a brain decision)
-      this.stepSheepElectorate()
     }
 
     // Hourly: recompute stall price + append economy stats
@@ -3501,6 +3697,8 @@ export class Simulation {
     this.closeExpiredProposals()
 
     this.stepAgents()
+    this.recordOngoingAssemblyAttendance()
+    this.stepSheepAssemblyVotes()
     this.stepSympathy()
     this.stepBushRegrowth()
     this.stepTerrainRegrowth()

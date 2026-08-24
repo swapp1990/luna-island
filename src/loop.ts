@@ -433,6 +433,7 @@ export function createLoop(live: Simulation, scene: SceneHandle): LoopController
       events,
     )
     scene.updateEconomyVisuals(sim.state.places, now, sim.state.tiles)
+    scene.syncAssemblyDressing(sim.state)
   }
 
   const setSpeed = (n: number) => {

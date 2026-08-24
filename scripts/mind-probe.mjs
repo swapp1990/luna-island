@@ -102,6 +102,7 @@ function baseWorld(places, agents, extra = {}) {
     proposals: extra.proposals ?? [],
     rules: extra.rules ?? [],
     commissionCooldownUntil: {},
+    ...(extra.gatherings ? { gatherings: extra.gatherings } : {}),
   }
 }
 
@@ -1020,6 +1021,129 @@ function w9bSpringClaimedAndItHurtsFixture(boardKnowledge, springKnowledge) {
  * blocks), a peer names the same problem, board verbs present, propose free.
  * Built at the G9S pre-slack clock (tick 240, hunger 18%) so slackify applies.
  */
+/**
+ * G14: slack, an open proposal the agent has NOT voted on, assembly ONGOING,
+ * agent 3 tiles from the plaza. Facts only — no attendance advice.
+ */
+function assemblyNowFixture(boardKnowledge) {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const board = {
+    id: 'notice-board-0',
+    kind: 'notice-board',
+    x: 13,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const places = [
+    plaza,
+    board,
+    { id: 'home-0', kind: 'home', x: 8, y: 10, slots: 4, inventory: emptyInv() },
+    { id: 'home-1', kind: 'home', x: 8, y: 12, slots: 4, inventory: emptyInv() },
+    { id: 'farm-0', kind: 'farm', x: 18, y: 10, slots: 2, inventory: emptyInv() },
+    { id: 'well-0', kind: 'well', x: 14, y: 10, slots: 2, inventory: emptyInv() },
+    { id: 'stall-0', kind: 'stall', x: 12, y: 12, slots: 4, inventory: emptyInv() },
+    { id: 'storehouse-0', kind: 'storehouse', x: 16, y: 12, slots: 2, inventory: emptyInv() },
+    { id: 'forestry-0', kind: 'forestry', x: 20, y: 8, slots: 2, inventory: emptyInv() },
+    { id: 'quarry-0', kind: 'quarry', x: 20, y: 14, slots: 2, inventory: emptyInv() },
+  ]
+  const mira = baseAgent('agent-0', 'Mira', 9, 10, {
+    wallet: 20,
+    homeId: 'home-0',
+    needs: emptyNeeds(0.85),
+  })
+  const ren = baseAgent('agent-3', 'Ren', 12, 10, {
+    wallet: 12,
+    homeId: 'home-1',
+    needs: emptyNeeds(0.85),
+    action: {
+      kind: 'socialize',
+      targetPlaceId: 'plaza-0',
+      targetX: 12,
+      targetY: 10,
+      reason: 'standing at the plaza',
+    },
+  })
+  const ode = baseAgent('agent-4', 'Ode', 12, 11, {
+    wallet: 12,
+    homeId: 'home-1',
+    needs: emptyNeeds(0.85),
+    action: {
+      kind: 'socialize',
+      targetPlaceId: 'plaza-0',
+      targetX: 12,
+      targetY: 11,
+      reason: 'standing at the plaza',
+    },
+  })
+  return {
+    agent: mira,
+    world: baseWorld(places, [mira, ren, ode], {
+      tick: 720,
+      proposals: [
+        {
+          id: 'prop-agent-3-100',
+          proposerId: 'agent-3',
+          text: 'Raise a second well by the east homes.',
+          createdTick: 100,
+          closesTick: 1540,
+          votes: {},
+          status: 'open',
+        },
+      ],
+      gatherings: [
+        {
+          id: 'asm-prop-agent-3-100',
+          kind: 'assembly',
+          placeId: 'plaza-0',
+          startTick: 720,
+          endTick: 840,
+          subjectId: 'prop-agent-3-100',
+          attended: ['agent-3', 'agent-4'],
+          started: true,
+        },
+      ],
+      owners: {
+        'plaza-0': 'commons',
+        'notice-board-0': 'commons',
+        'home-0': 'commons',
+        'home-1': 'commons',
+        'farm-0': 'commons',
+        'well-0': 'commons',
+        'stall-0': 'commons',
+        'storehouse-0': 'commons',
+        'forestry-0': 'commons',
+        'quarry-0': 'commons',
+      },
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'plaza-0', 8),
+      boardExamineEvent('agent-0', 'Mira', 'notice-board-0', boardKnowledge, 60),
+      {
+        seq: 100,
+        tick: 100,
+        type: 'institution:proposed',
+        agentId: 'agent-3',
+        data: {
+          proposalId: 'prop-agent-3-100',
+          text: 'Raise a second well by the east homes.',
+          proposerId: 'agent-3',
+          agentName: 'Ren',
+          closesTick: 1540,
+        },
+        reason: 'Ren proposed: "Raise a second well by the east homes."',
+      },
+    ],
+  }
+}
+
 function publicWorksSlackFixture(boardKnowledge, wellKnowledge) {
   const plaza = {
     id: 'plaza-0',
@@ -1512,6 +1636,27 @@ async function main() {
     if (!userG13.includes('Open proposals: none posted (anyone may post one, free)')) {
       throw new Error('G13 missing free-propose affordance')
     }
+
+    const g14fix = assemblyNowFixture(boardKnowledge)
+    const userG14 = buildUserPrompt(g14fix.agent, g14fix.world, g14fix.events)
+    if (!userG14.includes('Your needs are comfortable; nothing is urgent.')) {
+      throw new Error('G14 missing slack marker')
+    }
+    if (!userG14.includes('The assembly is gathered at the plaza NOW')) {
+      throw new Error('G14 missing ongoing assembly line')
+    }
+    if (!userG14.includes('"Raise a second well by the east homes." is being weighed')) {
+      throw new Error('G14 missing weighed-proposal fact')
+    }
+    if (/you voted/.test(userG14)) {
+      throw new Error('G14 agent must not have voted yet')
+    }
+    if (/you could go|you should attend|consider walking|you ought to/i.test(userG14)) {
+      throw new Error('G14 fixture contains attendance advice')
+    }
+    if (!userG14.includes('The village holds:')) {
+      throw new Error('G14 missing census line')
+    }
     if (!sysNew.includes('A passed proposal may found a commons building')) {
       throw new Error('WORLD_RULES missing public-works sentence')
     }
@@ -1649,6 +1794,7 @@ async function main() {
       { id: 'G9F', label: 'slack-grievance-no-fee', system: sysNew, user: userG9F },
       { id: 'G12S', label: 'organizer-persona', system: sysHale, user: userG12S },
       { id: 'G13', label: 'public-works', system: sysNew, user: userG13 },
+      { id: 'G14', label: 'assembly-now', system: sysNew, user: userG14 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -1877,12 +2023,25 @@ async function main() {
           return /"build"\s*:/.test(String(r.raw ?? ''))
         }).length
         const proposeWithoutBuildN = proposeN - proposeWithBuildN
+        const plazaBlob = (r) => `${r.target ?? ''} ${r.reasoning ?? ''} ${r.raw ?? ''}`
+        const socializePlazaN = rows.filter(
+          (r) => r.action === 'socialize' && /plaza/i.test(plazaBlob(r)),
+        ).length
+        const walkPlazaN = rows.filter(
+          (r) =>
+            (r.action === 'walk' || r.action === 'wander') &&
+            /plaza/i.test(plazaBlob(r)),
+        ).length
+        const otherN = N - voteN - socializePlazaN - walkPlazaN
         if (sc.id === 'G0') {
           pass = forageSpringN >= 7
           expectation = `forage/walk-spring ${forageSpringN}/${N} (≥7 perception gate); target=spring ${forageSpringTargetN}/${N}; forage-bush ${forageBushN}/${N}`
           if (!pass) g0Failed = true
         } else if (sc.id === 'G13') {
           expectation = `propose ${proposeN}/${N} (with-build ${proposeWithBuildN}, without-build ${proposeWithoutBuildN}); sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; on-ramp ${onRampN}/${N}; civic/rule-talk ${civicN}/${N} (measurement — 0 civic is a finding)`
+          pass = true
+        } else if (sc.id === 'G14') {
+          expectation = `vote ${voteN}/${N}; socialize-at-plaza ${socializePlazaN}/${N}; walk-toward-plaza ${walkPlazaN}/${N}; else ${otherN}/${N} (measurement)`
           pass = true
         } else {
           expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; on-ramp ${onRampN}/${N}; civic/rule-talk ${civicN}/${N}; forage-spring ${forageSpringN}/${N}; forage-bush ${forageBushN}/${N} (measurement — 0 civic is a finding)`
@@ -1901,6 +2060,7 @@ async function main() {
           forageSpringN,
           forageSpringTargetN,
           forageBushN,
+          ...(sc.id === 'G14' ? { socializePlazaN, walkPlazaN, otherN } : {}),
         }
       }
 

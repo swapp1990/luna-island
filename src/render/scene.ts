@@ -91,6 +91,8 @@ export interface SceneHandle {
     now?: number,
     tiles?: WorldState['tiles'],
   ) => void
+  /** Plaza pennants while an assembly is gathered. */
+  syncAssemblyDressing: (world: WorldState) => void
   /** Live-only celebration FX from events. */
   celebrateConstruction: (placeId: string | null, now: number) => void
   celebrateHarvest: (placeId: string | null, now: number) => void
@@ -487,6 +489,9 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
   ) => {
     hoverPlaces = places
     terrain.updateEconomyVisuals(places, now, tiles)
+  }
+  const syncAssemblyDressing = (world: WorldState) => {
+    terrain.syncAssemblyDressing(world)
   }
 
   const celebrateConstruction = (placeId: string | null, now: number) => {
@@ -1130,6 +1135,7 @@ export function createScene(container: HTMLElement, world: WorldState): SceneHan
     updateOverlays,
     updateBushStock,
     updateEconomyVisuals,
+    syncAssemblyDressing,
     celebrateConstruction,
     celebrateHarvest,
     celebrateClose,
