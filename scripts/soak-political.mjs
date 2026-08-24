@@ -196,6 +196,22 @@ try {
     } catch {
       /* window gone — the snapshot below will surface it */
     }
+    // Replay guard: the soak window is headed, so a stray click on the timeline
+    // scrubs into replay and PAUSES the live sim — one click cost a run 76 of
+    // its 120 minutes (frozen at speed 0 while the harness kept sampling the
+    // fork). A soak's job is to run the live world; snap it back and say so.
+    try {
+      const recovered = await page.evaluate(() => {
+        const s = window.__simState
+        if (s.mode !== 'replay' && s.speed !== 0) return false
+        window.__simControl.goLive?.()
+        window.__simControl.setSpeed(1)
+        return true
+      })
+      if (recovered) log('RECOVERED: view was in replay/paused (stray click?) — snapped back to live at 1x')
+    } catch {
+      /* same failure surface as the snapshot below */
+    }
     const snap = await page.evaluate((civic) => {
       const s = window.__simState
       const counts = window.__simControl.countEventTypes(civic)
