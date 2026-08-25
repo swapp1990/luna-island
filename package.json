@@ -9,7 +9,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 5175",
     "test": "vitest run",
     "check": "npm run build && npm run test",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "runs:fixture": "node scripts/make-run-fixture.mjs"
   },
   "dependencies": {
     "react": "^19.0.0",

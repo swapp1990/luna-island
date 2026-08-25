@@ -121,6 +121,59 @@ export interface HighlightMomentBridge {
   subtitle?: string
 }
 
+/** One recorded soak run as the Run Theater API lists it. */
+export interface RunIndexBridge {
+  id: string
+  label: string
+  hasWorld: boolean
+  hasJournal: boolean
+  params: Record<string, unknown> | null
+}
+
+/** One chapter of a recorded run (story moment or harness ops flag). */
+export interface RunMomentBridge {
+  id: string
+  kind: 'story' | 'ops'
+  type: string
+  tick: number
+  day: number
+  hour: number
+  minute: number
+  priority: number
+  caption: string
+  subtitle?: string
+  agentIds: string[]
+  placeId?: string
+  wallMin?: number
+}
+
+/**
+ * Additive: Run Theater. Lists recorded soak runs, mounts one for viewing,
+ * and seeks to the moments that run itself recorded as important.
+ */
+export interface RunsBridge {
+  list: () => Promise<RunIndexBridge[]>
+  refresh: () => void
+  /** Mount a run for viewing; resolves false when it could not be loaded. */
+  load: (id: string) => Promise<boolean>
+  moments: () => RunMomentBridge[]
+  changelog: () => unknown
+  /** Seek by moment id, `tick:N`, or a raw tick number. */
+  jumpTo: (idOrTick: string | number) => boolean
+  step: (delta: 1 | -1) => void
+  /** Continuous playback of the loaded run (chains across day boundaries). */
+  play: (on: boolean) => void
+  state: () => {
+    loadedRunId: string | null
+    momentCount: number
+    activeMomentId: string | null
+    activeTick: number | null
+    playing: boolean
+    loading: boolean
+    error: string | null
+  }
+}
+
 export interface SimControlBridge {
   setSpeed: (n: number) => void
   pause: () => void
@@ -151,6 +204,8 @@ export interface SimControlBridge {
   exportStoryJson: () => string
   /** Additive: cinematic photo mode (HUD off, caption card, framed subject). */
   photo: PhotoModeBridge
+  /** Additive: Run Theater (recorded soak browsing + chapter seek). */
+  runs?: RunsBridge
   /**
    * Additive: scored highlight moments from the live event trace (pure selection).
    */

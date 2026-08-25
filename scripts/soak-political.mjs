@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { chromium } from '@playwright/test'
+import { gitStamp } from './run-stamp.mjs'
 
 const arg = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`)
@@ -32,7 +33,13 @@ const SEED_BOARD = process.argv.includes('--seed-board')
 const JOURNAL = path.resolve('artifacts', `soak-political-${Date.now()}.jsonl`)
 fs.mkdirSync('artifacts', { recursive: true })
 
+// Captured at boot, not at export: the tree can move while a soak runs.
+const RUN_GIT = gitStamp()
+
 const log = (msg) => console.log(`[soak] ${msg}`)
+if (RUN_GIT) {
+  log(`build ${RUN_GIT.shortSha}${RUN_GIT.dirty ? '+dirty' : ''} (${RUN_GIT.branch}) ${RUN_GIT.subject ?? ''}`)
+}
 
 // 1. Own vite instance with raised budget caps (sidecar reads env at boot).
 log(`starting vite :${PORT} (budget ${BUDGET_HOUR}/h, ${BUDGET_DAY}/day, concurrency=${CONCURRENCY})`)
@@ -334,6 +341,9 @@ try {
     const ticksSoFar = Math.max(0, (finaleMind.tick ?? 0) - (boot.tick ?? 0))
     const breathePct = lastLine?.breathePct ?? (wallMin > 0 ? 100 * (1 - ticksSoFar / (60 * wallMin)) : 0)
     const summary = {
+      // Which build produced this run — a soak's numbers only compare against
+      // another run if you can see the code each ran.
+      git: RUN_GIT,
       params: {
         seed: SEED,
         preset: PRESET,

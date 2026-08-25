@@ -17,6 +17,17 @@ import { createScene, type FrameSubjectOpts, type SceneHandle } from './render/s
 import { createLoop, type LoopController } from './loop'
 import { initBridge, type PhotoModeOpts, type SimStateBridge } from './bridge'
 import { pickHighlights } from './replay/highlights'
+import { buildRunMoments, type RunMoment } from './replay/runMoments'
+import { diffRun, type RunChangelog } from './replay/runDiff'
+import {
+  budgetMaxHourOf,
+  fetchRunHighlights,
+  fetchRunJournal,
+  fetchRunWorldText,
+  fetchRuns,
+  runParamsLabel,
+  type RunIndexEntry,
+} from './replay/runsApi'
 import {
   describeAgent,
   describeCommissionCeremonies,
@@ -33,6 +44,7 @@ import { Ticker } from './ui/Ticker'
 import { Charts } from './ui/Charts'
 import { TownBoard } from './ui/TownBoard'
 import { PortraitDock } from './ui/PortraitDock'
+import { RunTheater } from './ui/RunTheater'
 import {
   brainModeFromLocation,
   LunaBrainService,
@@ -50,10 +62,13 @@ import type {
   Rule,
   SimEvent,
   WorldPreset,
+  WorldState,
 } from './sim/types'
 
 const DEFAULT_SEED = 42
 const HUD_HZ = 4
+/** Default speed for continuous run playback — a sim day in ~3 wall minutes. */
+const WATCH_SPEED = 8
 /** Wall-clock autosave interval (ms). */
 const AUTOSAVE_WALL_MS = 60_000
 
@@ -177,6 +192,27 @@ function clonePlace(p: Place): Place {
   }
 }
 
+/**
+ * Earliest world state a recorded run still carries. A save keeps pinned
+ * day-start snapshots plus a fine ring; the oldest of those is the honest
+ * "before" for a run changelog. Never re-sims — a long soak would stall the UI.
+ */
+function earliestSavedState(raw: unknown): WorldState | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const rec = raw as Record<string, unknown>
+  let best: WorldState | null = null
+  for (const key of ['pinnedDayStartSnapshots', 'fineSnapshotRing']) {
+    const arr = rec[key]
+    if (!Array.isArray(arr)) continue
+    for (const snap of arr) {
+      const state = (snap as { state?: WorldState } | null)?.state
+      if (!state || typeof state.tick !== 'number') continue
+      if (!best || state.tick < best.tick) best = state
+    }
+  }
+  return best
+}
+
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null)
   const loopRef = useRef<LoopController | null>(null)
@@ -226,6 +262,46 @@ export function App() {
     caption: string
     subtitle?: string
     kicker: string
+  } | null>(null)
+
+  // ---- Run Theater: watch a recorded soak, skip to what mattered ----
+  const [runs, setRuns] = useState<RunIndexEntry[]>([])
+  const [loadedRun, setLoadedRun] = useState<RunIndexEntry | null>(null)
+  const [runLoading, setRunLoading] = useState(false)
+  const [runError, setRunError] = useState<string | null>(null)
+  const [runMoments, setRunMoments] = useState<RunMoment[]>([])
+  const [activeMomentId, setActiveMomentId] = useState<string | null>(null)
+  const [runChangelog, setRunChangelog] = useState<RunChangelog | null>(null)
+  const [playingRun, setPlayingRun] = useState(false)
+  /** Speed to resume at when continuous playback crosses a day boundary. */
+  const watchSpeedRef = useRef(WATCH_SPEED)
+  /** Mirrors of theater state so the bridge reads fresh values without re-init. */
+  const runMomentsRef = useRef<RunMoment[]>([])
+  const runChangelogRef = useRef<RunChangelog | null>(null)
+  const runStateRef = useRef<{
+    loadedRunId: string | null
+    momentCount: number
+    activeMomentId: string | null
+    activeTick: number | null
+    playing: boolean
+    loading: boolean
+    error: string | null
+  }>({
+    loadedRunId: null,
+    momentCount: 0,
+    activeMomentId: null,
+    activeTick: null,
+    playing: false,
+    loading: false,
+    error: null,
+  })
+  /** Latest theater actions, for the window bridge (rebuilt every render). */
+  const runsRef = useRef<{
+    refresh: () => void
+    load: (id: string) => Promise<boolean>
+    jumpTo: (idOrTick: string | number) => boolean
+    step: (delta: 1 | -1) => void
+    play: (on: boolean) => void
   } | null>(null)
 
   const viewDayStart = useMemo(() => dayStartTick(hud.viewDay), [hud.viewDay])
@@ -697,6 +773,18 @@ export function App() {
               sceneRef.current?.overlays.setPhotoSubject(null)
             },
           },
+          runs: {
+            list: () => fetchRuns(),
+            refresh: () => runsRef.current?.refresh(),
+            load: (id: string) => runsRef.current?.load(id) ?? Promise.resolve(false),
+            moments: () => runMomentsRef.current,
+            changelog: () => runChangelogRef.current,
+            jumpTo: (idOrTick: string | number) =>
+              runsRef.current?.jumpTo(idOrTick) ?? false,
+            step: (delta: 1 | -1) => runsRef.current?.step(delta),
+            play: (on: boolean) => runsRef.current?.play(on),
+            state: () => ({ ...runStateRef.current }),
+          },
           listHighlightMoments: (max = 12) => {
             const live = liveRef.current
             if (!live) return []
@@ -973,6 +1061,211 @@ export function App() {
     },
   }
 
+  // ---- Run Theater actions (rebuilt each render so they see fresh state) ----
+
+  const refreshRuns = () => {
+    setRunLoading(true)
+    setRunError(null)
+    void fetchRuns()
+      .then((list) => setRuns(list))
+      .catch((err) => setRunError(`Could not list runs: ${String(err).slice(0, 120)}`))
+      .finally(() => setRunLoading(false))
+  }
+
+  /**
+   * Mount a recorded run for viewing. The run replaces the live world in the
+   * scene but is deliberately NOT autosaved — a refresh returns to your own
+   * island unless you go live and let the usual autosave run.
+   */
+  const loadRun = async (id: string): Promise<boolean> => {
+    setRunLoading(true)
+    setRunError(null)
+    setPlayingRun(false)
+    try {
+      // Resolve the index entry even when nothing has listed runs yet (bridge
+      // callers load by id directly) — it carries the params and headline.
+      let entry = runs.find((r) => r.id === id) ?? null
+      if (!entry) {
+        const listed = await fetchRuns()
+        if (listed.length > 0) setRuns(listed)
+        entry = listed.find((r) => r.id === id) ?? null
+      }
+      const [text, journal, shots] = await Promise.all([
+        fetchRunWorldText(id),
+        fetchRunJournal(id),
+        fetchRunHighlights(id),
+      ])
+      const raw = JSON.parse(text) as unknown
+      const live = restoreSave(raw)
+      apiRef.current?.mountWorld(live)
+
+      const events = live.getEvents()
+      const label = runParamsLabel(entry)
+      const moments = buildRunMoments({
+        events,
+        world: live.state,
+        journal,
+        shots,
+        budgetMaxHour: budgetMaxHourOf(entry),
+        runLabel: label || undefined,
+      })
+      const before = earliestSavedState(raw)
+      const changelog = before ? diffRun(before, live.state, events) : null
+      // Publish to the bridge mirrors now — a caller awaiting load() must not
+      // have to wait for React's next render to read moments/changelog.
+      runMomentsRef.current = moments
+      runChangelogRef.current = changelog
+      runStateRef.current = {
+        ...runStateRef.current,
+        loadedRunId: id,
+        momentCount: moments.length,
+        activeMomentId: null,
+        activeTick: null,
+        playing: false,
+        loading: false,
+        error: null,
+      }
+      setRunMoments(moments)
+      setRunChangelog(changelog)
+      setLoadedRun(
+        entry ?? {
+          id,
+          label: `run ${id}`,
+          exportTs: null,
+          startTs: null,
+          hasWorld: true,
+          hasJournal: journal.length > 0,
+          hasHighlights: shots.length > 0,
+          worldBytes: text.length,
+          params: null,
+          git: null,
+          headline: null,
+        },
+      )
+      setActiveMomentId(null)
+      // Park at the top of the run so it can be watched from the beginning.
+      loopRef.current?.scrubTo(0)
+      loopRef.current?.pause()
+      apiRef.current?.syncFromLoop()
+      return true
+    } catch (err) {
+      const msg =
+        err instanceof SaveFormatError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : 'Load failed'
+      setRunError(`Could not load run: ${msg}`)
+      return false
+    } finally {
+      setRunLoading(false)
+    }
+  }
+
+  /** Seek to a moment by id, or to a raw tick via `tick:N` / a number. */
+  const jumpToMoment = (idOrTick: string | number): boolean => {
+    let tick: number | null = null
+    if (typeof idOrTick === 'number') {
+      tick = idOrTick
+    } else if (idOrTick.startsWith('tick:')) {
+      tick = Number(idOrTick.slice(5))
+    } else {
+      const m = runMomentsRef.current.find((x) => x.id === idOrTick)
+      if (!m) return false
+      tick = m.tick
+      runStateRef.current = {
+        ...runStateRef.current,
+        activeMomentId: m.id,
+        activeTick: m.tick,
+      }
+      setActiveMomentId(m.id)
+    }
+    if (tick == null || !Number.isFinite(tick)) return false
+    loopRef.current?.scrubTo(Math.max(0, Math.floor(tick)))
+    apiRef.current?.syncFromLoop()
+    return true
+  }
+
+  const stepMoment = (delta: 1 | -1) => {
+    const list = runMomentsRef.current
+    if (list.length === 0) return
+    const activeId = runStateRef.current.activeMomentId
+    const cur = activeId ? list.findIndex((m) => m.id === activeId) : -1
+    let idx: number
+    if (cur >= 0) {
+      idx = cur + delta
+    } else {
+      // No active chapter yet — step from wherever the view is parked.
+      const viewTick = loopRef.current?.getState().tick ?? hud.tick
+      const after = list.findIndex((m) => m.tick > viewTick)
+      if (delta > 0) idx = after === -1 ? list.length - 1 : after
+      else idx = after === -1 ? list.length - 1 : after - 1
+    }
+    idx = Math.max(0, Math.min(list.length - 1, idx))
+    const next = list[idx]
+    if (next) jumpToMoment(next.id)
+  }
+
+  const playRun = (on: boolean) => {
+    setPlayingRun(on)
+    runStateRef.current = { ...runStateRef.current, playing: on }
+    const loop = loopRef.current
+    if (!loop) return
+    if (on) {
+      if (hud.mode !== 'replay' && liveHeadTick > 0) loop.scrubTo(0)
+      const speed = hud.userSpeed && hud.userSpeed > 0 ? hud.userSpeed : WATCH_SPEED
+      watchSpeedRef.current = speed
+      loop.setSpeed(speed)
+    } else {
+      loop.pause()
+    }
+    apiRef.current?.syncFromLoop()
+  }
+
+  runsRef.current = {
+    refresh: refreshRuns,
+    load: loadRun,
+    jumpTo: jumpToMoment,
+    step: stepMoment,
+    play: playRun,
+  }
+  runMomentsRef.current = runMoments
+  runChangelogRef.current = runChangelog
+  runStateRef.current = {
+    loadedRunId: loadedRun?.id ?? null,
+    momentCount: runMoments.length,
+    activeMomentId,
+    activeTick: activeMomentId
+      ? (runMoments.find((m) => m.id === activeMomentId)?.tick ?? null)
+      : null,
+    playing: playingRun,
+    loading: runLoading,
+    error: runError,
+  }
+
+  /**
+   * Continuous playback. Replay auto-pauses at each day's end (loop.ts); while
+   * watching a run, step across the boundary and keep rolling so a recorded
+   * run plays end to end without babysitting the day chips.
+   */
+  useEffect(() => {
+    if (!playingRun) return
+    if (hud.mode !== 'replay') {
+      // The fork caught up with the run's head — the run is over.
+      setPlayingRun(false)
+      return
+    }
+    if (hud.speed !== 0) {
+      if (hud.userSpeed && hud.userSpeed > 0) watchSpeedRef.current = hud.userSpeed
+      return
+    }
+    const atDayEnd = (hud.tick + 1) % 1440 === 0
+    if (!atDayEnd || hud.tick >= liveHeadTick) return
+    loopRef.current?.scrubTo(hud.tick + 1)
+    loopRef.current?.setSpeed(watchSpeedRef.current || WATCH_SPEED)
+    apiRef.current?.syncFromLoop()
+  }, [playingRun, hud.mode, hud.speed, hud.tick, hud.userSpeed, liveHeadTick])
+
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -1177,6 +1470,27 @@ export function App() {
           setAgentEvents(sim.getEvents())
           setHud(loop.getState())
         }}
+      />
+      <RunTheater
+        state={hud}
+        runs={runs}
+        loadedRun={loadedRun}
+        loading={runLoading}
+        error={runError}
+        moments={runMoments}
+        activeMomentId={activeMomentId}
+        changelog={runChangelog}
+        playingRun={playingRun}
+        inspectorOpen={selectedAgent !== null || selectedPlace !== null}
+        onRefresh={refreshRuns}
+        onLoadRun={(id) => {
+          void loadRun(id)
+        }}
+        onJumpToMoment={(id) => {
+          jumpToMoment(id)
+        }}
+        onStepMoment={stepMoment}
+        onTogglePlayRun={() => playRun(!playingRun)}
       />
       <TownBoard
         proposals={proposals}

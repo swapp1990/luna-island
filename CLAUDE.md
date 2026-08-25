@@ -20,6 +20,27 @@ npm install && npm run dev   # port 5175, host 127.0.0.1
 8. **Window bridges are load-bearing for E2E** — keep shapes stable:
    - `window.__simState = { ready, mode: 'live'|'replay', day, hour, minute, tick, speed, agentCount, selectedAgentId, eventCount }`
    - `window.__simControl = { setSpeed(n), pause(), scrubTo(tick), goLive(), selectAgent(id|null) }`
+   - `window.__simControl.runs = { list(), load(id), moments(), jumpTo(idOrTick), step(±1), play(on), changelog(), state() }` (Run Theater)
+
+## Run Theater — watching recorded soaks
+
+Spec: `specs/phase5-6-run-theater.md`. The 🎞 panel (top-right, next to 📜) lists
+every run in `artifacts/`, mounts one for replay, and gives it chapters.
+
+- **Runs come from `artifacts/`** via a read-only dev API (`scripts/luna-runs.ts`,
+  `GET /api/runs[/:id/{world,summary,story,journal}]`). Set `LUNA_RUNS_DIR` to
+  point it elsewhere. It never writes.
+- **"Important" is the run's own verdict, not a view-time re-score.** When the
+  run shot a reel (`artifacts/highlights/<world>/highlights.json`), those shots
+  ARE the chapters and each carries its still; otherwise the same selector is
+  re-run over the trace. First-of-type is always kept. Ops chapters come from
+  the soak's JSONL journal (wedges, fallbacks, stale intents, budget
+  saturation). See `src/replay/runMoments.ts`.
+- **Loading a run replaces the live world but is not autosaved** — refresh and
+  you are back on your own island unless you go live and let autosave run.
+- **No soak handy?** `npm run runs:fixture -- --seed 42 --days 3` writes a real
+  (UtilityBrain, `brain: 'fixture'`) recorded run into `artifacts/`. E2E generates
+  one automatically when none exists.
 
 ## E2E testing
 

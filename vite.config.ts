@@ -2,9 +2,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { lunaSidecarPlugin } from './scripts/luna-sidecar'
+import { lunaRunsPlugin } from './scripts/luna-runs'
 
 export default defineConfig({
-  plugins: [react(), lunaSidecarPlugin()],
+  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin()],
   server: {
     host: '127.0.0.1',
     port: 5175,
