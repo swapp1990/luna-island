@@ -1,5 +1,6 @@
 // @ts-expect-error tsconfig types is vite/client only — vitest still runs in Node
 import { readFileSync } from 'node:fs'
+import { NO_RECORDED_WORLDS, recordedWorldPaths } from './recordedWorlds'
 // @ts-expect-error tsconfig types is vite/client only — vitest still runs in Node
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -413,12 +414,14 @@ describe('P5-3 public works', () => {
     expect(fork.state.owners[`site-commons-${id}`]).toBe('commons')
   })
 
-  it('recorded soak worlds still import', () => {
-    for (const file of [
+  it('recorded soak worlds still import', (ctx) => {
+    const files = recordedWorldPaths([
       'artifacts/soak-1787430602479-world.json',
       'artifacts/soak-1787452399090-world.json',
-    ]) {
-      const raw = JSON.parse(readFileSync(resolve(file), 'utf8')) as {
+    ])
+    if (files.length === 0) return ctx.skip(NO_RECORDED_WORLDS)
+    for (const file of files) {
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as {
         tick: number
         seed: number
       }
