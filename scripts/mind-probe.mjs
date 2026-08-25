@@ -103,6 +103,7 @@ function baseWorld(places, agents, extra = {}) {
     rules: extra.rules ?? [],
     commissionCooldownUntil: {},
     ...(extra.gatherings ? { gatherings: extra.gatherings } : {}),
+    ...(extra.placeBlockedToday ? { placeBlockedToday: extra.placeBlockedToday } : {}),
   }
 }
 
@@ -1144,6 +1145,84 @@ function assemblyNowFixture(boardKnowledge) {
   }
 }
 
+/**
+ * G15: slack, owns a level-1 home, materials in hand, two nights of
+ * floor-sleep felt, a busy workplace nearby. Facts only — no upgrade advice.
+ */
+function crowdedHomeFixture() {
+  const plaza = {
+    id: 'plaza-0',
+    kind: 'plaza',
+    x: 12,
+    y: 10,
+    slots: 8,
+    inventory: emptyInv(),
+  }
+  const home = {
+    id: 'home-mira',
+    kind: 'home',
+    x: 10,
+    y: 10,
+    slots: 1,
+    inventory: emptyInv(),
+  }
+  const forestry = {
+    id: 'forestry-0',
+    kind: 'forestry',
+    x: 14,
+    y: 10,
+    slots: 2,
+    inventory: emptyInv(),
+  }
+  const mira = baseAgent('agent-0', 'Mira', 12, 10, {
+    wallet: 40,
+    homeId: 'home-mira',
+    inventory: { food: 2, wood: 8, stone: 6 },
+    needs: emptyNeeds(0.85),
+  })
+  const floorFelt = (seq, tick) => ({
+    seq,
+    tick,
+    type: 'action:end',
+    agentId: 'agent-0',
+    data: {
+      kind: 'sleep',
+      felt: 'the beds at home were full — slept on the floor',
+      floorSleep: true,
+      shelter: 'ground',
+      placeId: 'home-mira',
+    },
+    reason: 'the beds at home were full — slept on the floor',
+  })
+  return {
+    agent: mira,
+    world: baseWorld([plaza, home, forestry], [mira], {
+      tick: 720,
+      owners: {
+        'plaza-0': 'commons',
+        'home-mira': 'agent-0',
+        'forestry-0': 'commons',
+      },
+      placeBlockedToday: { 'forestry-0': 3 },
+    }),
+    events: [
+      usedPlaceEvent('agent-0', 'home-mira', 8),
+      usedPlaceEvent('agent-0', 'forestry-0', 12),
+      usedPlaceEvent('agent-0', 'plaza-0', 16),
+      {
+        seq: 20,
+        tick: 20,
+        type: 'ownership:transfer',
+        agentId: 'agent-0',
+        data: { placeId: 'home-mira', from: 'commons', to: 'agent-0', firstPrivate: true },
+        reason: 'built and paid for it',
+      },
+      floorFelt(100, 100),
+      floorFelt(400, 400),
+    ],
+  }
+}
+
 function publicWorksSlackFixture(boardKnowledge, wellKnowledge) {
   const plaza = {
     id: 'plaza-0',
@@ -1657,6 +1736,28 @@ async function main() {
     if (!userG14.includes('The village holds:')) {
       throw new Error('G14 missing census line')
     }
+
+    const g15fix = crowdedHomeFixture()
+    const userG15 = buildUserPrompt(g15fix.agent, g15fix.world, g15fix.events)
+    if (!userG15.includes('Your needs are comfortable; nothing is urgent.')) {
+      throw new Error('G15 missing slack marker')
+    }
+    if (!userG15.includes('Owns: home (home-mira)')) {
+      throw new Error('G15 standing facts missing owned home')
+    }
+    const floorHits = userG15.split('the beds at home were full — slept on the floor').length - 1
+    if (floorHits < 2) {
+      throw new Error(`G15 Recently-felt missing two floor-sleep lines (got ${floorHits})`)
+    }
+    if (!userG15.includes('forestry (empty, busy)')) {
+      throw new Error('G15 nearby places missing busy workplace')
+    }
+    if (!/Inventory: food 2 wood 8 stone 6/.test(userG15)) {
+      throw new Error('G15 missing wood/stone inventory')
+    }
+    if (/could be upgraded|needs more room|you should upgrade/i.test(userG15)) {
+      throw new Error('G15 fixture contains upgrade advice')
+    }
     if (!sysNew.includes('A passed proposal may found a commons building')) {
       throw new Error('WORLD_RULES missing public-works sentence')
     }
@@ -1795,6 +1896,7 @@ async function main() {
       { id: 'G12S', label: 'organizer-persona', system: sysHale, user: userG12S },
       { id: 'G13', label: 'public-works', system: sysNew, user: userG13 },
       { id: 'G14', label: 'assembly-now', system: sysNew, user: userG14 },
+      { id: 'G15', label: 'crowded-home', system: sysNew, user: userG15 },
     ]
     const scenarios =
       ONLY.length > 0 ? allScenarios.filter((s) => ONLY.includes(s.id)) : allScenarios
@@ -2033,6 +2135,15 @@ async function main() {
             /plaza/i.test(plazaBlob(r)),
         ).length
         const otherN = N - voteN - socializePlazaN - walkPlazaN
+        const homeBlob = (r) => `${r.target ?? ''} ${r.reasoning ?? ''} ${r.raw ?? ''}`
+        const commissionHomeN = rows.filter(
+          (r) => r.action === 'commission' && /\b(home|house)\b/i.test(homeBlob(r)),
+        ).length
+        const gatherN = rows.filter((r) => {
+          if (r.action !== 'gather' && r.action !== 'deliver') return false
+          return /\b(wood|stone|forest|rock|home|house|material)\b/i.test(homeBlob(r))
+        }).length
+        const elseN = N - commissionHomeN - gatherN - civicN
         if (sc.id === 'G0') {
           pass = forageSpringN >= 7
           expectation = `forage/walk-spring ${forageSpringN}/${N} (≥7 perception gate); target=spring ${forageSpringTargetN}/${N}; forage-bush ${forageBushN}/${N}`
@@ -2042,6 +2153,9 @@ async function main() {
           pass = true
         } else if (sc.id === 'G14') {
           expectation = `vote ${voteN}/${N}; socialize-at-plaza ${socializePlazaN}/${N}; walk-toward-plaza ${walkPlazaN}/${N}; else ${otherN}/${N} (measurement)`
+          pass = true
+        } else if (sc.id === 'G15') {
+          expectation = `commission-home ${commissionHomeN}/${N}; gather-materials ${gatherN}/${N}; civic ${civicN}/${N}; else ${elseN}/${N} (measurement)`
           pass = true
         } else {
           expectation = `propose ${proposeN}/${N}; sanction ${sanctionN}/${N}; claim ${claimN}/${N}; vote ${voteN}/${N}; on-ramp ${onRampN}/${N}; civic/rule-talk ${civicN}/${N}; forage-spring ${forageSpringN}/${N}; forage-bush ${forageBushN}/${N} (measurement — 0 civic is a finding)`
@@ -2061,6 +2175,7 @@ async function main() {
           forageSpringTargetN,
           forageBushN,
           ...(sc.id === 'G14' ? { socializePlazaN, walkPlazaN, otherN } : {}),
+          ...(sc.id === 'G15' ? { commissionHomeN, gatherN, civicN, elseN } : {}),
         }
       }
 

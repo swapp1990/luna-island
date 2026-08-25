@@ -1,6 +1,11 @@
 /** Per-agent world-model — derived only from felt history, examines, and heard says. */
 
-import { blockedFeltLine, PLACE_VIEW_RADIUS, placeKindLabel } from '../sim/examine'
+import {
+  blockedFeltLine,
+  PLACE_VIEW_RADIUS,
+  placeIsBusyToday,
+  placeKindLabel,
+} from '../sim/examine'
 import type { AgentState, MindNoteRecord, Place, SimEvent, WorldState } from '../sim/types'
 
 /** Last ~12 sim-hours. */
@@ -259,6 +264,8 @@ export interface NearbyPlaceLine {
   dist2: number
   /** Private owner's display name when the place is not commons. */
   ownerName?: string | null
+  /** True when this place turned people away ≥ PLACE_BUSY_THRESHOLD times today. */
+  busy?: boolean
 }
 
 /** P4-7 private-place name; null for commons or unknown owner. */
@@ -288,6 +295,7 @@ export function nearbyPlacesForObservation(
       unfamiliar: !known.has(p.id),
       dist2: d,
       ownerName: privateOwnerName(p.id, world),
+      busy: placeIsBusyToday(p.id, world.placeBlockedToday),
     })
   }
   out.sort((a, b) => {
@@ -326,7 +334,8 @@ function nearbyPlaceInner(place: Place, ownerName?: string | null): string {
 export function formatNearbyPlaceLine(row: NearbyPlaceLine): string {
   const label = placeKindLabel(row.place.kind)
   const inner = nearbyPlaceInner(row.place, row.ownerName)
-  const base = `${label} (${inner})`
+  const withBusy = row.busy ? `${inner}, busy` : inner
+  const base = `${label} (${withBusy})`
   return row.unfamiliar ? `${base} (unfamiliar)` : base
 }
 

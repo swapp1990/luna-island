@@ -428,6 +428,11 @@ export interface WorldState {
    * Missing → none.
    */
   placeBlockLast?: Record<string, string>
+  /**
+   * Per-place place:blocked counts for the current calendar day (v5 additive).
+   * Incremented at the emission point; reset to {} at day:start. Missing → none.
+   */
+  placeBlockedToday?: Record<string, number>
 }
 
 export interface SimEvent {
