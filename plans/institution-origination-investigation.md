@@ -304,6 +304,39 @@ Raw: journals `capstone-truncated-journal.jsonl` / `capstone-full-journal.jsonl`
 
 ---
 
+## Addendum 7 (2026-08-24): assemblies break the turnout bottleneck — and the village legislates its own procedure
+
+Two rungs landed after Addendum 6. **P5-4 assemblies + census** (`f99fb61`): posting a proposal schedules a plaza assembly on its closing eve; the sheep electorate's invisible anywhere-sweep is replaced by physical attendance (sheep walk to the plaza and vote only while standing there); minds get facts only — never an instruction to attend; and the notice-board carries a census of the village's building stock, fixing the redundancy blindness that had let the village vote 4-0 for a second notice-board proposed by an agent who had plausibly never seen the first. **P5-5 crowding facts** (`c37edf5`, built in a parallel worktree during the soak): floor-sleeping in a full home becomes a felt line; chronically blocked places read as `busy` with a derived turned-away count; and bed occupancy now honors `place.slots` (previously a 1-slot home granted bed-rate sleep to any number of sleepers).
+
+**Probe measurements (codex, facts-only fixtures, zero instructions):**
+
+- G14 (assembly gathered NOW, unvoted proposal, 3 tiles away): **vote 9/10** — against 1-3-of-8 turnout in every prior live soak.
+- G15 (two nights of floor-sleep, busy workplace, owns a level-1 home, materials in hand): **commission 9/10** — construction becomes the dominant act (vs ~0 ambient baseline) — but 8 of 9 founded a STALL, the persona's stated dream, not the crowded home (home upgrade 1/10, the first organically motivated upgrade-commission on record). **Crowding facts make building wanted; identity picks the target.** The lever for upgrades specifically is heavier felt pressure or domestic personas, not prompting.
+
+**The assemblies soak** (same seed 42 / 120 min / 8 minds as all prior runs):
+
+| run | proposals | binding turnout | rules bound |
+| --- | --- | --- | --- |
+| soak 1 (fixes) | 5 | 2-3 of 8 | 0 |
+| soak 2 (binding votes) | 3 | 2-3 of 8 | 1 |
+| capstone A (truncated 43 min) | 2 | 4 of 8 | 1 (with build) |
+| capstone B (full) | 4 | 1-2 of 8 | 0 |
+| **assemblies** | 3 | **6, 5, 5 of 8** | **3 of 3** |
+
+Assembly attendance: 17, 20, 19 of 24 villagers — the plaza physically fills on proposal evenings. Every proposal passed and bound. The turnout bottleneck that survived four soaks is broken, by giving votes a time and a place and telling minds nothing but facts.
+
+And the rules the village wrote for itself:
+
+1. *"Every villager should be able to use the commons well and notice-board without being claimed by one person."*
+2. *"At every plaza assembly, each villager may speak once before anyone speaks twice."*
+3. *"Food placed in the storehouse should be available to any villager who needs it."*
+
+Rule 2 deserves its own sentence: **eight days after this investigation began with "these agents never originate institutions," the village legislated a procedural rule governing its own assemblies** — a rule about how rules get discussed, Ostrom's constitutional layer, authored by a mind that was told only that an assembly exists. Nobody prompted for it; the mechanism it regulates was four sim-days old.
+
+Still open, honestly: no sanctions in any soak (the schema fix remains live-unexercised); no build payloads or organic upgrades in this run (G15 says the facts arrived — the ambient island hasn't yet produced the fixture's pressure); and everything remains n=1 per configuration — the variance study from Addendum 6 is still the right next investment before further mechanisms.
+
+---
+
 ## Appendix: source index
 
 **Human institutional origination.** Ostrom, *Governing the Commons* (1990) — Törbel 1483; Valencia huerta/Tribunal de las Aguas; design principle 3. Ostrom, Walker & Gardner, "Covenants with and without a Sword," *APSR* 1992. Heckathorn, "Collective Action and the Second-Order Free-Rider Problem," *Rationality & Society* 1989. Sunstein, "Social Norms and Social Roles," *Colum. L. Rev.* 1996. Finnemore & Sikkink, "International Norm Dynamics," *IO* 1998. Centola et al., *Science* 2018 (25% tipping). Nielsen, participation inequality (90-9-1); Wikipedia policy authorship (Forte & Bruckman, HICSS 2008). Change.org ratios (Chartio); UK e-petitions (Commons Library CBP-8620); Pew civic engagement 2013/2026. Kingdon, *Agendas, Alternatives, and Public Policies* (1984). Olson, *Logic of Collective Action* (1965). Marwell & Oliver, *The Critical Mass in Collective Action* (1993). Schelling, *The Strategy of Conflict* (1960). Ault, *Open-Field Farming in Medieval England* (1972). Lansing on Balinese subak, *Am. Anthropologist* 1987. Bryan, *Real Democracy* (2004); 17 V.S.A. §2642. McCarthy & Zald, *AJS* 1977. Benford & Snow, framing (2000). Birkland, *After Disaster* (1997). "Copy-paste legislation," Center for Public Integrity.
