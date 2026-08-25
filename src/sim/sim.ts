@@ -63,6 +63,7 @@ import {
   blockedFeltLine,
   EXAMINE_BY_KIND,
   examineKnowledgeFor,
+  FLOOR_SLEEP_FELT,
   PLACE_VIEW_RADIUS,
   placeKindLabel,
   SLEEP_BED_ENERGY,
@@ -594,6 +595,9 @@ function deepCloneWorld(state: WorldState): WorldState {
       ? { commissionLastRefusal: { ...state.commissionLastRefusal } }
       : {}),
     ...(state.placeBlockLast ? { placeBlockLast: { ...state.placeBlockLast } } : {}),
+    ...(state.placeBlockedToday
+      ? { placeBlockedToday: { ...state.placeBlockedToday } }
+      : {}),
   }
 }
 
@@ -849,6 +853,8 @@ export class Simulation {
    * Set each tick by LunaBrain; empty when no active conversations.
    */
   private conversationHold = new Set<string>()
+  /** Sleepers on the floor of a full home this tick, captured before anyone wakes. */
+  private floorSleepHomeIds = new Map<string, string>()
 
   constructor(seed: number)
   constructor(
@@ -2087,6 +2093,7 @@ export class Simulation {
 
     // Snapshot agent positions for proximity social regen
     const positions = world.agents.map((a) => ({ id: a.id, x: a.x, y: a.y }))
+    this.captureFloorSleepers()
 
     for (const agent of world.agents) {
       this.stepNeeds(agent, positions)
@@ -2440,15 +2447,20 @@ export class Simulation {
         const before = agent.actionStartNeeds.energy
         const after = agent.needs.energy
         const onBed = this.isSleepingOnBed(agent)
-        const felt = onBed
-          ? `slept in your bed: energy ${pct(before)}%→${pct(after)}%`
-          : `slept on the ground: energy ${pct(before)}%→${pct(after)}%`
+        const floorHomeId = this.floorSleepHomeIds.get(agent.id)
+        const floorSleep = !!floorHomeId && !this.alreadyFeltFloorSleepThisNight(agent.id)
+        const felt = floorSleep
+          ? FLOOR_SLEEP_FELT
+          : onBed
+            ? `slept in your bed: energy ${pct(before)}%→${pct(after)}%`
+            : `slept on the ground: energy ${pct(before)}%→${pct(after)}%`
         this.endAction(agent, felt, {
           need: 'energy',
           before,
           after,
           shelter: onBed ? 'bed' : 'ground',
           felt,
+          ...(floorSleep ? { floorSleep: true, placeId: floorHomeId } : {}),
         })
         agent.action = { kind: 'idle', reason: 'Rested and ready' }
         agent.actionTicks = 0
@@ -3022,6 +3034,9 @@ export class Simulation {
       },
       reason,
     })
+    if (!this.state.placeBlockedToday) this.state.placeBlockedToday = {}
+    this.state.placeBlockedToday[place.id] =
+      (this.state.placeBlockedToday[place.id] ?? 0) + 1
   }
 
   private hireAgent(agent: AgentState, place: Place): boolean {
@@ -3084,15 +3099,82 @@ export class Simulation {
     })
   }
 
-  /** True when this sleeper is standing on a home bed slot. */
+  /**
+   * True when this sleeper occupies one of the home's concurrent bed slots
+   * (`place.slots` restorers, same cap as every other place). Footprint
+   * membership alone is not a bed — extras in a full home rest at ground rate.
+   */
   private isSleepingOnBed(agent: AgentState): boolean {
     if (agent.action.kind !== 'sleep') return false
     const place = agent.action.targetPlaceId
       ? this.state.places.find((p) => p.id === agent.action.targetPlaceId)
       : undefined
     if (!place || place.kind !== 'home') return false
-    if (!isStanding(agent)) return false
-    return isSlotTile(this.state, place, agent.x, agent.y)
+    return canRestoreThisTick(this.state, agent, place)
+  }
+
+  /** Calendar night id: 21:00 starts a new night; morning wakes belong to the previous. */
+  private sleepNightId(tick: Tick): number {
+    const t = toSimTime(tick)
+    return t.hour >= 21 ? t.day : t.day - 1
+  }
+
+  private alreadyFeltFloorSleepThisNight(agentId: string): boolean {
+    const night = this.sleepNightId(this.state.tick)
+    for (const e of this.events.getAll()) {
+      if (e.agentId !== agentId) continue
+      if (e.data?.floorSleep !== true && e.data?.felt !== FLOOR_SLEEP_FELT) continue
+      if (this.sleepNightId(e.tick) === night) return true
+    }
+    return false
+  }
+
+  /** Snapshot floor-sleepers before any sleeper wakes this tick. */
+  private captureFloorSleepers(): void {
+    this.floorSleepHomeIds.clear()
+    for (const agent of this.state.agents) {
+      if (agent.action.kind !== 'sleep') continue
+      const onBed = this.isSleepingOnBed(agent)
+      const home = this.floorSleepHome(agent, onBed)
+      if (home) this.floorSleepHomeIds.set(agent.id, home.id)
+    }
+  }
+
+  /**
+   * Home whose beds were taken, if this sleeper has arrived and is resting
+   * off a bed slot there. Null for bed sleepers and for rough sleep outside.
+   */
+  private floorSleepHome(agent: AgentState, onBed: boolean): Place | undefined {
+    if (onBed) return undefined
+    if (agent.action.kind !== 'sleep') return undefined
+    if (!this.isPerforming(agent)) return undefined
+    const targeted = agent.action.targetPlaceId
+      ? this.state.places.find((p) => p.id === agent.action.targetPlaceId)
+      : undefined
+    const home =
+      targeted?.kind === 'home'
+        ? targeted
+        : this.state.places.find(
+            (p) => p.kind === 'home' && isSlotTile(this.state, p, agent.x, agent.y),
+          )
+    if (!home) return undefined
+    if (!this.homeBedsOccupied(home, agent)) return undefined
+    return home
+  }
+
+  /** Other standing sleepers already on this home's slot tiles fill `place.slots`. */
+  private homeBedsOccupied(home: Place, sleeper: AgentState): boolean {
+    let onBeds = 0
+    for (const a of this.state.agents) {
+      if (a.id === sleeper.id) continue
+      if (a.action.kind !== 'sleep') continue
+      if (a.action.targetPlaceId !== home.id) continue
+      if (!isStanding(a)) continue
+      if (!isSlotTile(this.state, home, a.x, a.y)) continue
+      onBeds++
+      if (onBeds >= home.slots) return true
+    }
+    return onBeds >= home.slots
   }
 
   private completeExamine(agent: AgentState, place: Place): void {
@@ -3100,6 +3182,7 @@ export class Simulation {
       owners: this.state.owners,
       agents: this.state.agents,
       places: this.state.places,
+      placeBlockedToday: this.state.placeBlockedToday,
     })
     const label = placeKindLabel(place.kind)
     this.events.append({
@@ -3667,6 +3750,7 @@ export class Simulation {
       // Decay pairs that never met on the day that just ended
       this.stepSympathyDecay()
       this.state.sympathyMet = {}
+      if (this.state.placeBlockedToday) this.state.placeBlockedToday = {}
       this.archiveCompletedDay(prev.day, prevTick)
       this.events.append({
         tick: this.state.tick,

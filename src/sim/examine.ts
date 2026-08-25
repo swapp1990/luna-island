@@ -40,6 +40,36 @@ export interface ExamineContext {
   owners?: WorldState['owners']
   agents?: ReadonlyArray<{ id: string; name: string }>
   places?: ReadonlyArray<Place>
+  /** Current-day place:blocked counts (missing ⇒ none). */
+  placeBlockedToday?: Record<string, number>
+}
+
+/** Felt line when a sleeper rests off a bed in a home whose beds were taken. */
+export const FLOOR_SLEEP_FELT =
+  'the beds at home were full — slept on the floor'
+
+/** A place reads as busy once it has turned people away this many times today. */
+export const PLACE_BUSY_THRESHOLD = 3
+
+export function placeBlockedCountToday(
+  placeId: string,
+  counts: Record<string, number> | undefined,
+): number {
+  const n = counts?.[placeId]
+  return typeof n === 'number' && n > 0 ? n : 0
+}
+
+export function placeIsBusyToday(
+  placeId: string,
+  counts: Record<string, number> | undefined,
+): boolean {
+  return placeBlockedCountToday(placeId, counts) >= PLACE_BUSY_THRESHOLD
+}
+
+/** Examine addendum when a place is busy today. Null below the threshold. */
+export function crowdedTodayExamineLine(n: number): string | null {
+  if (n < PLACE_BUSY_THRESHOLD) return null
+  return `It was crowded today — turned people away ${n} times.`
 }
 
 /** Building kinds counted in the village census — example order, 0 omitted. */
@@ -138,6 +168,9 @@ export function examineKnowledgeFor(place: Place, ctx?: ExamineContext): string 
     const census = villageCensusLine(ctx?.places ?? [])
     if (census) out = `${out} ${census}`
   }
+  const blocked = placeBlockedCountToday(place.id, ctx?.placeBlockedToday)
+  const crowded = crowdedTodayExamineLine(blocked)
+  if (crowded) out = `${out} ${crowded}`
   return out
 }
 
