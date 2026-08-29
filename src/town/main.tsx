@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { createRoot } from 'react-dom/client'
-import { summarizeStructure } from '../sim/blueprints'
+import { listStructureCellDetail, summarizeStructure } from '../sim/blueprints'
 import { Simulation } from '../sim/sim'
 import { toSimTime } from '../sim/time'
 import { createAgents } from './agents'
@@ -77,9 +77,23 @@ async function boot(): Promise<void> {
   const cache = createAssetCache()
   const fx = createCompletionFx(scene)
   const places = await createPlaces(scene, world, cache, filesForPlaces(world.places), fx)
+  const hideStructureMatTokens = (activeWorld: typeof world) => {
+    for (const place of activeWorld.places) {
+      if (!place.structure) continue
+      const obj = places.objectFor(place.id)
+      const marker = obj?.getObjectByName('actionable-status') as { visible?: boolean; userData?: { statusKey?: string } } | undefined
+      if (marker && marker.userData?.statusKey === 'materials') marker.visible = false
+    }
+  }
+  const placesUpdate = places.update.bind(places)
+  places.update = (activeWorld) => {
+    placesUpdate(activeWorld)
+    hideStructureMatTokens(activeWorld)
+  }
+  hideStructureMatTokens(world)
   const placementGhost = createPlacementGhost(scene)
   const trees = await createTrees(scene, world, cache)
-  const agents = createAgents(scene, world.agents)
+  const agents = createAgents(scene, world.agents, () => sim.state)
   const overlays = createWorldOverlays(scene, agents)
 
   const validateTownBuild = (kind: Parameters<typeof sim.validateBuildPlacement>[0], x: number, y: number) => {
@@ -329,6 +343,31 @@ async function boot(): Promise<void> {
         if (row) rows.push(row)
       }
       return rows
+    },
+    actionableStatusKey: (placeId) => {
+      const obj = places.objectFor(placeId)
+      const marker = obj?.getObjectByName('actionable-status') as
+        | { visible?: boolean; userData?: { statusKey?: string } }
+        | undefined
+      if (!marker?.visible) return null
+      return typeof marker.userData?.statusKey === 'string' ? marker.userData.statusKey : null
+    },
+    listCellDetail: (placeId) => {
+      const place = sim.state.places.find((p) => p.id === placeId)
+      if (!place) return null
+      const rows = listStructureCellDetail(place)
+      if (!rows) return null
+      return rows.map((row) => {
+        const agent = row.claimedBy
+          ? sim.state.agents.find((candidate) => candidate.id === row.claimedBy)
+          : undefined
+        return {
+          ...row,
+          ...(agent
+            ? { claimantX: agent.x, claimantY: agent.y }
+            : {}),
+        }
+      })
     },
     stockSite: (placeId) => {
       const result = sim.issuePlayerCommand({ type: 'debug-stock-site', placeId })

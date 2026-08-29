@@ -25,6 +25,8 @@ describe('structure HUD summary', () => {
       remaining: { wood: 90, stone: 20 },
       stages: countBuiltStages(SCHOOL_BLUEPRINT, structure.cells),
       phase: 'foundation',
+      claims: [],
+      piles: 0,
     })
   })
 })

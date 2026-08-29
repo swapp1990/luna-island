@@ -1,5 +1,12 @@
 import * as THREE from 'three'
-import type { AgentState } from '../sim/types'
+import {
+  BLUEPRINTS,
+  cellPipeline,
+  cellWorldTile,
+  isOrthogonalWorkStance,
+  stageAllowsOnCell,
+} from '../sim/blueprints'
+import type { AgentState, WorldState } from '../sim/types'
 import { tileToWorld } from './coords'
 import { clamp } from './feel'
 
@@ -27,11 +34,67 @@ export function capturePositions(agents: readonly AgentState[]): Map<string, { x
   return m
 }
 
-export function createAgents(scene: THREE.Scene, agents: readonly AgentState[]): AgentsHandle {
+function claimedBuildTarget(
+  world: WorldState | undefined,
+  agent: AgentState,
+): { x: number; y: number } | null {
+  if (!world) return null
+  if (agent.action.kind !== 'work') return null
+  if (agent.workPhase === 'hauling' || agent.workPhase === 'returning') return null
+  const path = agent.action.path
+  if (path && agent.pathIndex < path.length) return null
+  for (const place of world.places) {
+    const structure = place.structure
+    if (!structure) continue
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) continue
+    for (let i = 0; i < structure.cells.length; i++) {
+      const rec = structure.cells[i]
+      if (!rec || rec.claimedBy !== agent.id) continue
+      const stage = cellPipeline(bp, i)[rec.stageIndex]
+      const at = cellWorldTile(structure.originX, structure.originY, bp.width, i)
+      if (
+        !isOrthogonalWorkStance(
+          Math.round(agent.x),
+          Math.round(agent.y),
+          at.x,
+          at.y,
+          stageAllowsOnCell(stage),
+        )
+      ) {
+        return null
+      }
+      return at
+    }
+  }
+  return null
+}
+
+function buildHammer(): THREE.Group {
+  const g = new THREE.Group()
+  const stickMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.9 })
+  const headMat = new THREE.MeshStandardMaterial({ color: 0x6a7078, roughness: 0.55, metalness: 0.3 })
+  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.028, 0.42, 6), stickMat)
+  stick.position.y = 0.18
+  g.add(stick)
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.08, 0.08), headMat)
+  head.position.set(0, 0.38, 0)
+  g.add(head)
+  g.position.set(0.34, 0.55, 0.1)
+  g.visible = false
+  return g
+}
+
+export function createAgents(
+  scene: THREE.Scene,
+  agents: readonly AgentState[],
+  getWorld?: () => WorldState,
+): AgentsHandle {
   const root = new THREE.Group()
   root.name = 'residents'
   const geo = new THREE.CapsuleGeometry(CAPSULE_R, CAPSULE_LEN, 4, 8)
   const meshes = new Map<string, THREE.Mesh>()
+  const hammers = new Map<string, THREE.Group>()
   const mats = new Map<string, THREE.MeshStandardMaterial>()
   const markers = new Map<string, THREE.Sprite>()
   const markerTextures = new Map<string, THREE.CanvasTexture>()
@@ -118,6 +181,9 @@ export function createAgents(scene: THREE.Scene, agents: readonly AgentState[]):
     mesh.receiveShadow = true
     mesh.position.y = CAPSULE_Y
     mesh.userData.agentId = a.id
+    const hammer = buildHammer()
+    mesh.add(hammer)
+    hammers.set(a.id, hammer)
     meshes.set(a.id, mesh)
     root.add(mesh)
     updateMarker(a, mesh)
@@ -145,20 +211,40 @@ export function createAgents(scene: THREE.Scene, agents: readonly AgentState[]):
         if (wanted.has(id)) continue
         root.remove(mesh)
         meshes.delete(id)
+        hammers.delete(id)
         markers.delete(id)
         mats.get(id)?.dispose()
         mats.delete(id)
       }
       const t = clamp(alpha, 0, 1)
+      const world = getWorld?.()
+      const bob = Math.abs(Math.sin(performance.now() / 160))
       for (const a of next) {
         const mesh = meshes.get(a.id) ?? addAgent(a)
         updateMarker(a, mesh)
         const p = prev.get(a.id)
-        if (!p) {
-          place(mesh, a.x, a.y, width, height)
-          continue
+        const ix = p ? p.x + (a.x - p.x) * t : a.x
+        const iy = p ? p.y + (a.y - p.y) * t : a.y
+        place(mesh, ix, iy, width, height)
+        const hammer = hammers.get(a.id)
+        const target = claimedBuildTarget(world, a)
+        if (target && hammer) {
+          hammer.visible = true
+          hammer.rotation.x = -0.25 + bob * 0.95
+          const from = tileToWorld(ix, iy, width, height)
+          const to = tileToWorld(target.x, target.y, width, height)
+          mesh.rotation.y = Math.atan2(to.x - from.x, to.z - from.z)
+        } else {
+          if (hammer) {
+            hammer.visible = false
+            hammer.rotation.x = 0
+          }
+          if (p && (Math.abs(a.x - p.x) > 1e-4 || Math.abs(a.y - p.y) > 1e-4)) {
+            const from = tileToWorld(p.x, p.y, width, height)
+            const to = tileToWorld(a.x, a.y, width, height)
+            mesh.rotation.y = Math.atan2(to.x - from.x, to.z - from.z)
+          }
         }
-        place(mesh, p.x + (a.x - p.x) * t, p.y + (a.y - p.y) * t, width, height)
       }
     },
     dispose: () => {

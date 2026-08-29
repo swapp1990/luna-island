@@ -132,6 +132,22 @@ describe('blueprint stage model', () => {
     expect(derivedCellState(migrated.cells[2]!)).toBe('built')
   })
 
+  it('loads 7-2b cells without claimedBy or staged', () => {
+    const raw = { stageIndex: 1, stageState: 'stocked' as const, workedTicks: 3 }
+    const migrated = migrateStructureCell(raw, SCHOOL_BLUEPRINT, 0)
+    expect(migrated).toEqual({ stageIndex: 1, stageState: 'stocked', workedTicks: 3 })
+    expect(migrated?.claimedBy).toBeUndefined()
+    expect(migrated?.staged).toBeUndefined()
+    const kept = migrateStructureCell(
+      { ...raw, claimedBy: 'a1', claimTick: 9, staged: { wood: 1 } },
+      SCHOOL_BLUEPRINT,
+      0,
+    )
+    expect(kept?.claimedBy).toBe('a1')
+    expect(kept?.claimTick).toBe(9)
+    expect(kept?.staged).toEqual({ wood: 1 })
+  })
+
   it('counts progress as built stages over total stages', () => {
     const structure = makePlannedStructure(SCHOOL_BLUEPRINT, 0, 0)
     const total = countBuiltStages(SCHOOL_BLUEPRINT, structure.cells)

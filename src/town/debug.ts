@@ -29,6 +29,22 @@ export interface StructureListItem {
   remaining: Partial<Record<'wood' | 'stone', number>>
   stages: { built: number; total: number }
   phase: 'foundation' | 'frame' | 'walls' | 'roofing' | 'done'
+  claims: Array<{ agentId: string; cellIndex: number }>
+  piles: number
+}
+
+export interface StructureCellDetailItem {
+  index: number
+  kind: string | null
+  stageIndex: number
+  stageState: string
+  workedTicks: number
+  claimedBy?: string
+  staged: Partial<Record<'wood' | 'stone' | 'food', number>>
+  x: number
+  y: number
+  claimantX?: number
+  claimantY?: number
 }
 
 export interface TownState {
@@ -105,6 +121,10 @@ export interface TownControl {
   }
   placeBlueprint: (id: string, x: number, y: number) => { ok: boolean; reason?: string }
   listStructures: () => StructureListItem[]
+  /** Per-cell claim / stage / pile snapshot for tests. */
+  listCellDetail: (placeId: string) => StructureCellDetailItem[] | null
+  /** Visible actionable-status key (`builders` / `materials` / `workers`), or null if hidden/absent. */
+  actionableStatusKey: (placeId: string) => string | null
   /** DEV sandbox: inject remaining materials into a blueprint site. */
   stockSite: (placeId: string) => { ok: boolean; reason?: string }
   /** Synchronously step the sim N ticks, no render between. Capped at 20000/call. */

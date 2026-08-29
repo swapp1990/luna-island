@@ -8,6 +8,7 @@ import { findPath, isWalkable, pathStillValid } from './pathfind'
 import {
   adjacentToWater,
   bedSlotForAgent,
+  buildBlockedTiles,
   canRestoreThisTick,
   extendPathTo,
   gatherResourceAt,
@@ -48,6 +49,7 @@ import type {
   OwnerId,
   Place,
   PlaceKind,
+  PlaceStructure,
   PlayerCommand,
   PlayerCommandRecord,
   Proposal,
@@ -56,6 +58,7 @@ import type {
   ScenarioKind,
   SayRecord,
   SimEvent,
+  StructureCell,
   Tick,
   VoteChoice,
   WorldPreset,
@@ -73,10 +76,12 @@ import {
 } from './playerCommands'
 import {
   BLUEPRINTS,
+  CLAIM_STALE_TICKS,
   STAGE_COSTS,
   blueprintBill,
   cellDone,
   cellPipeline,
+  cellStandCandidates,
   cellWorldTile,
   chebyshev,
   clearanceTiles,
@@ -85,13 +90,19 @@ import {
   countStructureStates,
   interiorFloorTiles,
   inventoryCovers,
+  isOrthogonalWorkStance,
+  isWorkEligibleCell,
   makePlannedStructure,
   migrateWorldStructures,
   nextStockableIndex,
+  pickNearestClaimableIndex,
   plannedCellsBill,
+  workEligibleIndices,
   placeOccupiedTiles,
   remainingNeedsFromBill,
   roofUnlocked,
+  stageAllowsOnCell,
+  stageCoversCost,
   structureCenter,
   totalStructureCells,
 } from './blueprints'
@@ -1214,6 +1225,8 @@ export class Simulation {
   private conversationHold = new Set<string>()
   /** Sleepers on the floor of a full home this tick, captured before anyone wakes. */
   private floorSleepHomeIds = new Map<string, string>()
+  /** Sites that already moved one staged unit this tick (porter fiction). */
+  private structureStockedThisTick = new Set<string>()
 
   constructor(seed: number)
   constructor(
@@ -3593,6 +3606,7 @@ export class Simulation {
     if (kind === 'work') {
       // Work uses footprint occupancy (isSlotTile), not restore-slot ranking —
       // job seats are separate from place.slots concurrent capacity.
+      // Blueprint sites additionally tend from claim-adjacent stand tiles.
       const onWorkSlot =
         !!place &&
         isStanding(agent) &&
@@ -3656,12 +3670,16 @@ export class Simulation {
 
     const time = toSimTime(this.state.tick)
     const workHours = time.hour >= 8 && time.hour < 17
+    const structureSite = !!(workplace.structure && workplace.construction)
 
-    // Accrue workedTicks only on workplace slot during work hours (tend only)
+    // Accrue workedTicks only on workplace slot during work hours (tend only).
+    // Blueprint builders accrue only in claim-adjacent stance, never the 3×3 pad.
     const onWorkplaceSlot =
       isStanding(agent) && isSlotTile(this.state, workplace, agent.x, agent.y)
+    const onStructureStance =
+      structureSite && this.isAgentInClaimStance(agent, workplace)
     if (
-      onWorkplaceSlot &&
+      (structureSite ? onStructureStance : onWorkplaceSlot) &&
       workHours &&
       (agent.workPhase === null || agent.workPhase === 'tend')
     ) {
@@ -3683,22 +3701,34 @@ export class Simulation {
     }
 
     if (agent.workPhase === 'returning') {
-      if (onWorkplaceSlot) {
+      if (structureSite) {
+        if (this.isOnLegalStructureStand(agent, workplace)) {
+          agent.workPhase = 'tend'
+          agent.action.targetPlaceId = workplace.id
+          agent.action.reason = `Working at ${workplace.id}`
+        } else {
+          this.retargetToClaimStand(agent, workplace)
+        }
+      } else if (onWorkplaceSlot) {
         agent.workPhase = 'tend'
         agent.action.targetPlaceId = workplace.id
         agent.action.reason = `Working at ${workplace.id}`
       } else if (agent.action.targetPlaceId !== workplace.id) {
         this.retargetToPlace(agent, workplace, 'Returning to work after hauling')
       }
-      return
+      if (agent.workPhase !== 'tend') return
     }
 
     // --- Tend phase ---
-    if (agent.workPhase === 'tend' && onWorkplaceSlot) {
-      if (workplace.construction) {
+    if (agent.workPhase === 'tend') {
+      if (structureSite) {
         this.performConstructionTend(agent, workplace)
-      } else if (workplace.production) {
-        this.performProductionTend(agent, workplace)
+      } else if (onWorkplaceSlot) {
+        if (workplace.construction) {
+          this.performConstructionTend(agent, workplace)
+        } else if (workplace.production) {
+          this.performProductionTend(agent, workplace)
+        }
       }
     }
     void place
@@ -3886,7 +3916,9 @@ export class Simulation {
 
   private stepStructureSites(): void {
     for (const place of this.state.places) {
-      if (place.kind !== 'construction-site' || !place.structure) continue
+      if (!place.structure) continue
+      this.sweepStructureClaims(place)
+      if (place.kind !== 'construction-site') continue
       this.stockStructureCells(place)
       this.refreshStructureProgress(place)
     }
@@ -3909,6 +3941,7 @@ export class Simulation {
       )
       const available = store ? (store.inventory[shortGood] ?? 0) : 0
       if (store && available > 0 && need > 0) {
+        this.releaseAgentStructureClaims(agent.id, 'left the site to haul')
         agent.haulAmount = 0
         agent.haulGood = shortGood
         agent.haulSourceId = store.id
@@ -3924,14 +3957,6 @@ export class Simulation {
     }
 
     if (!this.hasStockedUnbuiltCell(workplace)) {
-      this.endAction(agent, 'waiting on materials at the build site')
-      agent.action = {
-        kind: 'idle',
-        reason: 'Build site idle — materials not ready',
-      }
-      agent.actionTicks = 0
-      agent.workPhase = 'tend'
-      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
       return
     }
 
@@ -3948,36 +3973,39 @@ export class Simulation {
     if (!structure || !c) return
     const bp = BLUEPRINTS[structure.blueprintId]
     if (!bp) return
-    while (true) {
+    if (!this.structureStockedThisTick.has(site.id)) {
       const idx = nextStockableIndex(structure, bp)
-      if (idx < 0) break
-      const spec = bp.cells[idx]
-      const rec = structure.cells[idx]
-      if (!spec || !rec) break
-      const stage = cellPipeline(bp, idx)[rec.stageIndex]
-      if (!stage) break
-      const cost = STAGE_COSTS[stage]
-      if (!inventoryCovers(site.inventory, cost)) break
-      if (cost.wood > 0) {
-        const ok = this.consumeGoods(
-          { kind: 'place', id: site.id },
-          'wood',
-          cost.wood,
-          `stocked ${spec.kind} ${stage} at cell ${idx} with ${cost.wood} wood at ${site.id}`,
-        )
-        if (!ok) break
+      if (idx >= 0) {
+        const spec = bp.cells[idx]
+        const rec = structure.cells[idx]
+        const stage = rec ? cellPipeline(bp, idx)[rec.stageIndex] : undefined
+        if (spec && rec && stage) {
+          const cost = STAGE_COSTS[stage]
+          const needWood = Math.max(0, cost.wood - (rec.staged?.wood ?? 0))
+          const needStone = Math.max(0, cost.stone - (rec.staged?.stone ?? 0))
+          let moved: Good | null = null
+          if (needWood > 0 && (site.inventory.wood ?? 0) >= 1) moved = 'wood'
+          else if (needStone > 0 && (site.inventory.stone ?? 0) >= 1) moved = 'stone'
+          if (moved) {
+            const ok = this.consumeGoods(
+              { kind: 'place', id: site.id },
+              moved,
+              1,
+              `staged 1 ${moved} at cell ${idx} (${spec.kind} ${stage}) at ${site.id}`,
+            )
+            if (ok) {
+              if (!rec.staged) rec.staged = {}
+              rec.staged[moved] = (rec.staged[moved] ?? 0) + 1
+              this.structureStockedThisTick.add(site.id)
+              if (stageCoversCost(rec, cost)) {
+                rec.stageState = 'stocked'
+                rec.workedTicks = rec.workedTicks ?? 0
+                delete rec.staged
+              }
+            }
+          }
+        }
       }
-      if (cost.stone > 0) {
-        const ok = this.consumeGoods(
-          { kind: 'place', id: site.id },
-          'stone',
-          cost.stone,
-          `stocked ${spec.kind} ${stage} at cell ${idx} with ${cost.stone} stone at ${site.id}`,
-        )
-        if (!ok) break
-      }
-      rec.stageState = 'stocked'
-      rec.workedTicks = rec.workedTicks ?? 0
     }
     const bill = plannedCellsBill(bp, structure.cells)
     c.needs = remainingNeedsFromBill(bill)
@@ -4018,35 +4046,27 @@ export class Simulation {
     if (!structure) return
     const bp = BLUEPRINTS[structure.blueprintId]
     if (!bp) return
-    const ax = Math.round(agent.x)
-    const ay = Math.round(agent.y)
-    const unlocked = roofUnlocked(structure, bp)
-    let best = -1
-    let bestD = Infinity
-    for (let i = 0; i < structure.cells.length; i++) {
-      const rec = structure.cells[i]
-      if (!rec || rec.stageState !== 'stocked') continue
-      const stage = cellPipeline(bp, i)[rec.stageIndex]
-      if (stage === 'roof' && !unlocked) continue
-      const at = cellWorldTile(structure.originX, structure.originY, bp.width, i)
-      const d = chebyshev(ax, ay, at.x, at.y)
-      if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && (best < 0 || i < best))) {
-        bestD = d
-        best = i
-      }
+    const idx = this.ensureStructureClaim(agent, site)
+    if (idx < 0) {
+      this.retargetToClaimStand(agent, site)
+      return
     }
-    if (best < 0) return
-    const rec = structure.cells[best]!
-    const spec = bp.cells[best]
+    const rec = structure.cells[idx]!
+    const spec = bp.cells[idx]
     if (!spec) return
-    const pipe = cellPipeline(bp, best)
+    const pipe = cellPipeline(bp, idx)
     const stage = pipe[rec.stageIndex]
     if (!stage) return
+    if (!this.isAgentInClaimStance(agent, site)) {
+      this.retargetToClaimStand(agent, site)
+      return
+    }
     rec.workedTicks += 1
+    rec.claimTick = this.state.tick
     this.recordSiteContributor(site, agent.id)
     const labour = STAGE_COSTS[stage].labourTicks
     if (rec.workedTicks < labour) return
-    const at = cellWorldTile(structure.originX, structure.originY, bp.width, best)
+    const at = cellWorldTile(structure.originX, structure.originY, bp.width, idx)
     const occupied = this.tileOccupiedByAgent(at.x, at.y)
     if (spec.kind === 'wall' && stage === 'frame' && occupied) {
       rec.workedTicks = labour - 1
@@ -4065,7 +4085,8 @@ export class Simulation {
       data: {
         placeId: site.id,
         blueprintId: structure.blueprintId,
-        index: best,
+        index: idx,
+        cellIndex: idx,
         cellKind: spec.kind,
         stage,
         x: at.x,
@@ -4074,6 +4095,9 @@ export class Simulation {
       },
       reason: `${spec.kind} ${stage} raised at (${at.x},${at.y})`,
     })
+    delete rec.claimedBy
+    delete rec.claimTick
+    delete rec.staged
     if (rec.stageIndex < pipe.length - 1) {
       rec.stageIndex += 1
       rec.stageState = 'pending'
@@ -4086,6 +4110,305 @@ export class Simulation {
       if (Math.round(agent.x) === x && Math.round(agent.y) === y) return true
     }
     return false
+  }
+
+  private isBesideStructure(agent: AgentState, site: Place): boolean {
+    const structure = site.structure
+    if (!structure) return false
+    const bp = BLUEPRINTS[structure.blueprintId]
+    const width = bp?.width ?? Math.max(1, Math.round(Math.sqrt(structure.cells.length)))
+    const ax = Math.round(agent.x)
+    const ay = Math.round(agent.y)
+    for (let i = 0; i < structure.cells.length; i++) {
+      if (!structure.cells[i]) continue
+      const at = cellWorldTile(structure.originX, structure.originY, width, i)
+      if (chebyshev(ax, ay, at.x, at.y) <= 1) return true
+    }
+    return false
+  }
+
+  private agentClaimIndex(structure: PlaceStructure, agentId: string): number {
+    for (let i = 0; i < structure.cells.length; i++) {
+      if (structure.cells[i]?.claimedBy === agentId) return i
+    }
+    return -1
+  }
+
+  private ensureStructureClaim(agent: AgentState, site: Place): number {
+    const structure = site.structure
+    if (!structure) return -1
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) return -1
+    const existing = this.agentClaimIndex(structure, agent.id)
+    if (existing >= 0) {
+      if (isWorkEligibleCell(structure, bp, existing)) return existing
+      this.clearCellClaim(structure.cells[existing]!, false)
+    }
+    const ax = Math.round(agent.x)
+    const ay = Math.round(agent.y)
+    const idx = pickNearestClaimableIndex(structure, bp, ax, ay, agent.id)
+    if (idx < 0) return -1
+    const rec = structure.cells[idx]!
+    rec.claimedBy = agent.id
+    rec.claimTick = this.state.tick
+    return idx
+  }
+
+  private isAgentInClaimStance(agent: AgentState, site: Place): boolean {
+    const structure = site.structure
+    if (!structure) return false
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) return false
+    if (!isStanding(agent)) return false
+    const idx = this.agentClaimIndex(structure, agent.id)
+    if (idx < 0) return false
+    const rec = structure.cells[idx]!
+    const stage = cellPipeline(bp, idx)[rec.stageIndex]
+    const at = cellWorldTile(structure.originX, structure.originY, bp.width, idx)
+    return isOrthogonalWorkStance(
+      Math.round(agent.x),
+      Math.round(agent.y),
+      at.x,
+      at.y,
+      stageAllowsOnCell(stage),
+    )
+  }
+
+  private structureStandFree(
+    x: number,
+    y: number,
+    blocked: Set<string>,
+  ): boolean {
+    if (!isWalkable(this.state, x, y)) return false
+    if (blocked.has(`${x},${y}`)) return false
+    return true
+  }
+
+  private structureWorkCellIndices(
+    structure: PlaceStructure,
+    bp: NonNullable<typeof BLUEPRINTS[string]>,
+    agentId: string,
+    cellIndex?: number,
+  ): number[] {
+    if (cellIndex !== undefined && cellIndex >= 0) {
+      return isWorkEligibleCell(structure, bp, cellIndex) ? [cellIndex] : []
+    }
+    const claimed = this.agentClaimIndex(structure, agentId)
+    if (claimed >= 0 && isWorkEligibleCell(structure, bp, claimed)) return [claimed]
+    return workEligibleIndices(structure, bp).filter((i) => {
+      const rec = structure.cells[i]
+      return !rec?.claimedBy || rec.claimedBy === agentId
+    })
+  }
+
+  private pickStructureStandTile(
+    agent: AgentState,
+    site: Place,
+    cellIndex?: number,
+  ): { x: number; y: number } | null {
+    const structure = site.structure
+    if (!structure) return null
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) return null
+    const blocked = buildBlockedTiles(this.state, agent.id)
+    const ax = Math.round(agent.x)
+    const ay = Math.round(agent.y)
+    const consider = this.structureWorkCellIndices(structure, bp, agent.id, cellIndex)
+    let best: { x: number; y: number; d: number } | null = null
+    for (const idx of consider) {
+      const rec = structure.cells[idx]
+      if (!rec) continue
+      const stage = cellPipeline(bp, idx)[rec.stageIndex]
+      for (const [x, y] of cellStandCandidates(
+        structure.originX,
+        structure.originY,
+        bp.width,
+        idx,
+        stageAllowsOnCell(stage),
+      )) {
+        if (!this.structureStandFree(x, y, blocked)) continue
+        const d = (x - ax) * (x - ax) + (y - ay) * (y - ay)
+        if (
+          !best ||
+          d < best.d - 1e-12 ||
+          (Math.abs(d - best.d) <= 1e-12 && (x < best.x || (x === best.x && y < best.y)))
+        ) {
+          best = { x, y, d }
+        }
+      }
+    }
+    return best ? { x: best.x, y: best.y } : null
+  }
+
+  private isOnLegalStructureStand(agent: AgentState, site: Place): boolean {
+    const structure = site.structure
+    if (!structure) return false
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) return false
+    if (!isStanding(agent)) return false
+    const ax = Math.round(agent.x)
+    const ay = Math.round(agent.y)
+    const blocked = buildBlockedTiles(this.state, agent.id)
+    for (const idx of this.structureWorkCellIndices(structure, bp, agent.id)) {
+      const rec = structure.cells[idx]
+      if (!rec) continue
+      const stage = cellPipeline(bp, idx)[rec.stageIndex]
+      for (const [x, y] of cellStandCandidates(
+        structure.originX,
+        structure.originY,
+        bp.width,
+        idx,
+        stageAllowsOnCell(stage),
+      )) {
+        if (x === ax && y === ay && isWalkable(this.state, x, y)) {
+          if (!blocked.has(`${x},${y}`)) return true
+        }
+      }
+    }
+    return false
+  }
+
+  private retargetToTile(agent: AgentState, x: number, y: number, reason: string): void {
+    const tx = Math.round(x)
+    const ty = Math.round(y)
+    if (
+      agent.action.targetX === tx &&
+      agent.action.targetY === ty &&
+      isWalking(agent)
+    ) {
+      agent.action.reason = reason
+      return
+    }
+    if (Math.round(agent.x) === tx && Math.round(agent.y) === ty && isStanding(agent)) {
+      agent.action.targetX = tx
+      agent.action.targetY = ty
+      agent.action.reason = reason
+      agent.action.path = []
+      agent.pathIndex = 0
+      return
+    }
+    this.clearPlaceBlockStreak(agent.id)
+    agent.action.targetX = tx
+    agent.action.targetY = ty
+    agent.action.reason = reason
+    agent.action.path = findPath(this.state, agent.x, agent.y, tx, ty) ?? []
+    agent.pathIndex = 0
+  }
+
+  private retargetToClaimStand(agent: AgentState, site: Place): void {
+    const claimed = site.structure ? this.agentClaimIndex(site.structure, agent.id) : -1
+    const stand = this.pickStructureStandTile(agent, site, claimed >= 0 ? claimed : undefined)
+    if (stand) {
+      this.retargetToTile(agent, stand.x, stand.y, `Working a cell at ${site.id}`)
+      agent.action.targetPlaceId = site.id
+    }
+  }
+
+  private retargetToWorkStand(agent: AgentState, place: Place, reason: string): void {
+    if (place.structure && place.construction) {
+      this.retargetToClaimStand(agent, place)
+      agent.action.reason = reason
+      agent.action.targetPlaceId = place.id
+      return
+    }
+    this.retargetToPlace(agent, place, reason)
+  }
+
+  private clearCellClaim(cell: StructureCell, emit: boolean, reason?: string, agentId?: string): void {
+    if (!cell.claimedBy) return
+    const who = agentId ?? cell.claimedBy
+    delete cell.claimedBy
+    delete cell.claimTick
+    if (!emit) return
+    this.events.append({
+      tick: this.state.tick,
+      type: 'structure:claim-released',
+      agentId: who,
+      data: { agentId: who },
+      reason: reason ?? 'claim released',
+    })
+  }
+
+  private releaseAgentStructureClaims(agentId: string, reason: string): void {
+    for (const place of this.state.places) {
+      const structure = place.structure
+      if (!structure) continue
+      for (let i = 0; i < structure.cells.length; i++) {
+        const rec = structure.cells[i]
+        if (!rec || rec.claimedBy !== agentId) continue
+        this.events.append({
+          tick: this.state.tick,
+          type: 'structure:claim-released',
+          agentId,
+          data: {
+            placeId: place.id,
+            cellIndex: i,
+            agentId,
+          },
+          reason,
+        })
+        delete rec.claimedBy
+        delete rec.claimTick
+      }
+    }
+  }
+
+  private sweepStructureClaims(site: Place): void {
+    const structure = site.structure
+    if (!structure) return
+    const bp = BLUEPRINTS[structure.blueprintId]
+    const alive = new Set(this.state.agents.map((a) => a.id))
+    for (let i = 0; i < structure.cells.length; i++) {
+      const rec = structure.cells[i]
+      if (!rec?.claimedBy) continue
+      const who = rec.claimedBy
+      if (!alive.has(who)) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'structure:claim-released',
+          agentId: who,
+          data: { placeId: site.id, cellIndex: i, agentId: who },
+          reason: 'agent gone',
+        })
+        delete rec.claimedBy
+        delete rec.claimTick
+        continue
+      }
+      const agent = this.state.agents.find((a) => a.id === who)
+      if (
+        !agent ||
+        agent.action.kind !== 'work' ||
+        agent.action.targetPlaceId !== site.id
+      ) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'structure:claim-released',
+          agentId: who,
+          data: { placeId: site.id, cellIndex: i, agentId: who },
+          reason: 'action ended',
+        })
+        delete rec.claimedBy
+        delete rec.claimTick
+        continue
+      }
+      const staleAt = rec.claimTick ?? this.state.tick
+      if (this.state.tick - staleAt >= CLAIM_STALE_TICKS) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'structure:claim-released',
+          agentId: who,
+          data: { placeId: site.id, cellIndex: i, agentId: who },
+          reason: 'stale claim',
+        })
+        delete rec.claimedBy
+        delete rec.claimTick
+        continue
+      }
+      if (bp && !isWorkEligibleCell(structure, bp, i)) {
+        delete rec.claimedBy
+        delete rec.claimTick
+      }
+    }
   }
 
   private refreshStructureProgress(site: Place): void {
@@ -4141,7 +4464,7 @@ export class Simulation {
           // Nothing to pick up — return to workplace
           this.clearHaul(agent)
           agent.workPhase = 'returning'
-          this.retargetToPlace(agent, workplace, 'Nothing to haul — returning')
+          this.retargetToWorkStand(agent, workplace, 'Nothing to haul — returning')
           return
         }
         const ok = this.transferGoods(
@@ -4202,14 +4525,16 @@ export class Simulation {
           }
         }
         this.clearHaul(agent)
-        // If dropoff is the workplace (construction inbound), resume tend
+        // If dropoff is the workplace (construction inbound), resume tend.
+        // Delivery used the place slot; structure work then retargets to a claim stand.
         if (dropoff.id === workplace.id) {
           agent.workPhase = 'tend'
           agent.action.targetPlaceId = workplace.id
           agent.action.reason = `Working at ${workplace.id}`
+          if (workplace.structure) this.retargetToClaimStand(agent, workplace)
         } else {
           agent.workPhase = 'returning'
-          this.retargetToPlace(
+          this.retargetToWorkStand(
             agent,
             workplace,
             `Returning to ${workplace.kind} after hauling`,
@@ -4413,6 +4738,7 @@ export class Simulation {
     if (!agent.employedAt) return
     const placeId = agent.employedAt
     const place = this.state.places.find((p) => p.id === placeId)
+    this.releaseAgentStructureClaims(agent.id, reason)
     if (agent.haulAmount > 0) this.returnHaulCargo(agent)
     agent.employedAt = null
     agent.workedTicks = 0
@@ -4702,7 +5028,14 @@ export class Simulation {
     }
     // Leaving work: return undelivered haul cargo to the farm (no free food)
     if (currentKind === 'work' && intent.kind !== 'work') {
+      this.releaseAgentStructureClaims(agent.id, 'action ended')
       this.returnHaulCargo(agent)
+    } else if (
+      currentKind === 'work' &&
+      intent.kind === 'work' &&
+      (intent.targetPlaceId ?? agent.employedAt) !== agent.action.targetPlaceId
+    ) {
+      this.releaseAgentStructureClaims(agent.id, 'action ended')
     }
 
     this.startAction(agent, intent)
@@ -5007,24 +5340,37 @@ export class Simulation {
       tx = stand.x
       ty = stand.y
     } else if (place && kind !== 'wander') {
-      // Slot reservation: free tile within footprint only (no ring-widening)
-      const preferred =
-        tx !== undefined && ty !== undefined ? { x: tx, y: ty } : undefined
-      const spot = reserveSpot(this.state, place, agent, this.rng, preferred)
-      if (spot) {
-        tx = spot.x
-        ty = spot.y
-        this.clearPlaceBlockStreak(agent.id)
+      if (kind === 'work' && place.structure) {
+        const structureStand = this.pickStructureStandTile(agent, place)
+        if (structureStand) {
+          tx = structureStand.x
+          ty = structureStand.y
+          this.clearPlaceBlockStreak(agent.id)
+        } else {
+          this.notePlaceBlocked(agent, place)
+          tx = Math.round(agent.x)
+          ty = Math.round(agent.y)
+        }
       } else {
-        // Place full — name who is in the way, then a short wander (no waiting state)
-        this.notePlaceBlocked(agent, place)
-        kind = 'wander'
-        targetPlaceId = undefined
-        reason = 'Place was full — wandering nearby'
-        tx = Math.round(agent.x)
-        ty = Math.round(agent.y)
-        if (intent.kind === 'work') {
-          agent.workPhase = null
+        // Slot reservation: free tile within footprint only (no ring-widening)
+        const preferred =
+          tx !== undefined && ty !== undefined ? { x: tx, y: ty } : undefined
+        const spot = reserveSpot(this.state, place, agent, this.rng, preferred)
+        if (spot) {
+          tx = spot.x
+          ty = spot.y
+          this.clearPlaceBlockStreak(agent.id)
+        } else {
+          // Place full — name who is in the way, then a short wander (no waiting state)
+          this.notePlaceBlocked(agent, place)
+          kind = 'wander'
+          targetPlaceId = undefined
+          reason = 'Place was full — wandering nearby'
+          tx = Math.round(agent.x)
+          ty = Math.round(agent.y)
+          if (intent.kind === 'work') {
+            agent.workPhase = null
+          }
         }
       }
     } else if ((tx === undefined || ty === undefined) && place) {
@@ -5089,6 +5435,7 @@ export class Simulation {
     const prevTick = this.state.tick
     this.state.tick = prevTick + 1
     this.externalAppliedThisTick.clear()
+    this.structureStockedThisTick.clear()
     ensureMindFields(this.state)
 
     // Day start when crossing into a new calendar day at 00:00
@@ -6679,7 +7026,8 @@ export class Simulation {
   private depositInventoryToSite(agent: AgentState, site: Place): number {
     if (site.kind !== 'construction-site' || !site.construction) return 0
     if (!isStanding(agent)) return 0
-    if (!isSlotTile(this.state, site, agent.x, agent.y)) return 0
+    const onSlot = isSlotTile(this.state, site, agent.x, agent.y)
+    if (!onSlot && !this.isBesideStructure(agent, site)) return 0
     const c = site.construction
     let moved = 0
     for (const g of ['wood', 'stone'] as Good[]) {

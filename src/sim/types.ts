@@ -126,6 +126,12 @@ export interface StructureCell {
   stageState: StageState
   /** Labour ticks applied to the current stocked stage. Missing ⇒ 0. */
   workedTicks: number
+  /** Agent currently claiming this cell. Missing ⇒ unclaimed. Additive. */
+  claimedBy?: string
+  /** Tick the claim was taken or last received a work tick. Missing ⇒ none. */
+  claimTick?: number
+  /** Per-cell staging pile. Missing / empty ⇒ no pile. Additive. */
+  staged?: Partial<Record<Good, number>>
 }
 
 /**

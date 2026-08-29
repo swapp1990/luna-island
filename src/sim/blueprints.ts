@@ -260,6 +260,11 @@ export function blueprintBill(bp: Blueprint): { wood: number; stone: number; lab
   return { wood, stone, labourTicks }
 }
 
+function stagedAmount(cell: StructureCell | null | undefined, good: Good): number {
+  const n = cell?.staged?.[good]
+  return typeof n === 'number' && n > 0 ? n : 0
+}
+
 export function unstockedStagesBill(
   bp: Blueprint,
   cells: Array<StructureCell | null>,
@@ -277,6 +282,10 @@ export function unstockedStagesBill(
       const cost = STAGE_COSTS[pipe[s]!]
       wood += cost.wood
       stone += cost.stone
+      if (s === rec.stageIndex && rec.stageState === 'pending') {
+        wood -= Math.min(cost.wood, stagedAmount(rec, 'wood'))
+        stone -= Math.min(cost.stone, stagedAmount(rec, 'stone'))
+      }
     }
   }
   return { wood, stone }
@@ -472,6 +481,170 @@ export function nextStockableIndex(structure: PlaceStructure, bp: Blueprint): nu
   return -1
 }
 
+/** Ticks without an applied work tick after which a claim is released. */
+export const CLAIM_STALE_TICKS = 60
+
+export function stageAllowsOnCell(stage: StageKind | null | undefined): boolean {
+  return stage === 'foundation' || stage === 'floor'
+}
+
+export function stagedUnits(cell: StructureCell | null | undefined): Partial<Record<Good, number>> {
+  const wood = stagedAmount(cell, 'wood')
+  const stone = stagedAmount(cell, 'stone')
+  const out: Partial<Record<Good, number>> = {}
+  if (wood > 0) out.wood = wood
+  if (stone > 0) out.stone = stone
+  return out
+}
+
+export function cellHasStagedPile(cell: StructureCell | null | undefined): boolean {
+  return stagedAmount(cell, 'wood') > 0 || stagedAmount(cell, 'stone') > 0
+}
+
+export function stageCoversCost(cell: StructureCell, cost: { wood: number; stone: number }): boolean {
+  return stagedAmount(cell, 'wood') >= cost.wood && stagedAmount(cell, 'stone') >= cost.stone
+}
+
+export function cloneStaged(
+  staged: Partial<Record<Good, number>> | undefined,
+): Partial<Record<Good, number>> | undefined {
+  if (!staged) return undefined
+  const out: Partial<Record<Good, number>> = {}
+  if ((staged.wood ?? 0) > 0) out.wood = staged.wood
+  if ((staged.stone ?? 0) > 0) out.stone = staged.stone
+  if ((staged.food ?? 0) > 0) out.food = staged.food
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+export function isWorkEligibleCell(
+  structure: PlaceStructure,
+  bp: Blueprint,
+  index: number,
+): boolean {
+  const rec = structure.cells[index]
+  const spec = bp.cells[index]
+  if (!rec || !spec) return false
+  if (rec.stageState !== 'stocked') return false
+  if (cellDone(bp, index, rec)) return false
+  const stage = cellPipeline(bp, index)[rec.stageIndex]
+  if (!stage) return false
+  if (stage === 'roof' && !roofUnlocked(structure, bp)) return false
+  return true
+}
+
+export function workEligibleIndices(structure: PlaceStructure, bp: Blueprint): number[] {
+  const n = Math.min(bp.cells.length, structure.cells.length)
+  const out: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (isWorkEligibleCell(structure, bp, i)) out.push(i)
+  }
+  return out
+}
+
+export function isOrthogonalWorkStance(
+  ax: number,
+  ay: number,
+  cx: number,
+  cy: number,
+  allowOnCell: boolean,
+): boolean {
+  if (ax === cx && ay === cy) return allowOnCell
+  const dx = Math.abs(ax - cx)
+  const dy = Math.abs(ay - cy)
+  return (dx === 1 && dy === 0) || (dx === 0 && dy === 1)
+}
+
+/** Stand tiles for a cell: on-cell (floor/foundation) then cardinal neighbors. */
+export function cellStandCandidates(
+  originX: number,
+  originY: number,
+  width: number,
+  index: number,
+  allowOnCell: boolean,
+): Array<[number, number]> {
+  const at = cellWorldTile(originX, originY, width, index)
+  const out: Array<[number, number]> = []
+  if (allowOnCell) out.push([at.x, at.y])
+  for (const [dx, dy] of CARDINAL) out.push([at.x + dx, at.y + dy])
+  return out
+}
+
+export function pickNearestClaimableIndex(
+  structure: PlaceStructure,
+  bp: Blueprint,
+  ax: number,
+  ay: number,
+  agentId: string,
+): number {
+  let best = -1
+  let bestD = Infinity
+  for (const i of workEligibleIndices(structure, bp)) {
+    const rec = structure.cells[i]!
+    if (rec.claimedBy && rec.claimedBy !== agentId) continue
+    const at = cellWorldTile(structure.originX, structure.originY, bp.width, i)
+    const d = chebyshev(ax, ay, at.x, at.y)
+    if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && (best < 0 || i < best))) {
+      bestD = d
+      best = i
+    }
+  }
+  return best
+}
+
+export function structureClaims(
+  structure: PlaceStructure,
+): Array<{ agentId: string; cellIndex: number }> {
+  const out: Array<{ agentId: string; cellIndex: number }> = []
+  for (let i = 0; i < structure.cells.length; i++) {
+    const rec = structure.cells[i]
+    if (rec?.claimedBy) out.push({ agentId: rec.claimedBy, cellIndex: i })
+  }
+  return out
+}
+
+export function countStagedPiles(cells: Array<StructureCell | null>): number {
+  let n = 0
+  for (const cell of cells) if (cellHasStagedPile(cell)) n += 1
+  return n
+}
+
+export interface StructureCellDetail {
+  index: number
+  kind: CellKind | null
+  stageIndex: number
+  stageState: StageState
+  workedTicks: number
+  claimedBy?: string
+  staged: Partial<Record<Good, number>>
+  x: number
+  y: number
+}
+
+export function listStructureCellDetail(place: Place): StructureCellDetail[] | null {
+  const structure = place.structure
+  if (!structure) return null
+  const bp = BLUEPRINTS[structure.blueprintId]
+  const out: StructureCellDetail[] = []
+  for (let i = 0; i < structure.cells.length; i++) {
+    const rec = structure.cells[i]
+    if (!rec) continue
+    const at = cellWorldTile(structure.originX, structure.originY, bp?.width ?? 1, i)
+    const row: StructureCellDetail = {
+      index: i,
+      kind: bp?.cells[i]?.kind ?? null,
+      stageIndex: rec.stageIndex,
+      stageState: rec.stageState,
+      workedTicks: rec.workedTicks,
+      staged: stagedUnits(rec),
+      x: at.x,
+      y: at.y,
+    }
+    if (rec.claimedBy) row.claimedBy = rec.claimedBy
+    out.push(row)
+  }
+  return out
+}
+
 export function inventoryCovers(
   inv: Inventory | undefined,
   cost: { wood: number; stone: number },
@@ -573,12 +746,26 @@ export type LegacyStructureCell = {
   stageState?: StageState
   workedTicks?: number
   state?: StructureCellState
+  claimedBy?: string
+  claimTick?: number
+  staged?: Partial<Record<Good, number>>
 }
 
 function pipelineForMigration(bp: Blueprint | undefined, index: number, fallbackKind: CellKind): StageKind[] {
   if (bp && bp.cells[index]) return cellPipeline(bp, index)
   const base = CELL_STAGE_PIPELINES[fallbackKind]
   return [...base, 'roof']
+}
+
+function withClaimAndStaged(
+  cell: StructureCell,
+  raw: LegacyStructureCell | StructureCell,
+): StructureCell {
+  if (raw.claimedBy) cell.claimedBy = raw.claimedBy
+  if (typeof raw.claimTick === 'number') cell.claimTick = raw.claimTick
+  const staged = cloneStaged(raw.staged)
+  if (staged) cell.staged = staged
+  return cell
 }
 
 export function migrateStructureCell(
@@ -594,20 +781,32 @@ export function migrateStructureCell(
     typeof raw.stageIndex === 'number' &&
     (raw.stageState === 'pending' || raw.stageState === 'stocked' || raw.stageState === 'built')
   ) {
-    return {
-      stageIndex: raw.stageIndex,
-      stageState: raw.stageState,
-      workedTicks: raw.workedTicks ?? 0,
-    }
+    return withClaimAndStaged(
+      {
+        stageIndex: raw.stageIndex,
+        stageState: raw.stageState,
+        workedTicks: raw.workedTicks ?? 0,
+      },
+      raw,
+    )
   }
   const legacyState = (raw as LegacyStructureCell).state
   if (legacyState === 'built') {
-    return { stageIndex: last, stageState: 'built', workedTicks: lastLabour }
+    return withClaimAndStaged(
+      { stageIndex: last, stageState: 'built', workedTicks: lastLabour },
+      raw,
+    )
   }
   if (legacyState === 'stocked') {
-    return { stageIndex: 0, stageState: 'stocked', workedTicks: raw.workedTicks ?? 0 }
+    return withClaimAndStaged(
+      { stageIndex: 0, stageState: 'stocked', workedTicks: raw.workedTicks ?? 0 },
+      raw,
+    )
   }
-  return { stageIndex: 0, stageState: 'pending', workedTicks: raw.workedTicks ?? 0 }
+  return withClaimAndStaged(
+    { stageIndex: 0, stageState: 'pending', workedTicks: raw.workedTicks ?? 0 },
+    raw,
+  )
 }
 
 export function cloneStructure(structure: PlaceStructure | undefined): PlaceStructure | undefined {
@@ -644,6 +843,8 @@ export function summarizeStructure(place: Place): {
   remaining: Partial<Record<'wood' | 'stone', number>>
   stages: { built: number; total: number }
   phase: StructurePhase
+  claims: Array<{ agentId: string; cellIndex: number }>
+  piles: number
 } | null {
   const structure = place.structure
   if (!structure) return null
@@ -670,5 +871,7 @@ export function summarizeStructure(place: Place): {
     remaining,
     stages,
     phase,
+    claims: structureClaims(structure),
+    piles: countStagedPiles(structure.cells),
   }
 }

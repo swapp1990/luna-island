@@ -67,12 +67,14 @@ describe('blueprint construction engine', () => {
     site.inventory.stone = 1
     sim.advanceTicks(1)
     expect(site.structure!.cells[0]?.stageState).toBe('stocked')
+    expect(site.structure!.cells[0]?.staged?.stone).toBeUndefined()
     expect(site.structure!.cells[0]?.stageIndex).toBe(0)
     expect(site.structure!.cells[1]?.stageState).toBe('pending')
     site.inventory.stone = 1
     sim.advanceTicks(1)
     expect(site.structure!.cells[0]?.stageState).toBe('stocked')
     expect(site.structure!.cells[1]?.stageState).toBe('stocked')
+    expect(site.structure!.cells[1]?.staged?.stone).toBeUndefined()
     expect(site.structure!.cells[2]?.stageState).toBe('pending')
     expect(site.construction?.needs.wood).toBe(90)
     expect(site.construction?.needs.stone).toBe(18)
@@ -88,8 +90,8 @@ describe('blueprint construction engine', () => {
     site.construction!.needs = { wood: 88, stone: 18 }
     const a = sim.state.agents[0]!
     const b = sim.state.agents[1]!
-    pinWorker(a, site, originX + 2, originY + 1, sim.state.tick)
-    pinWorker(b, site, originX + 4, originY + 1, sim.state.tick)
+    pinWorker(a, site, originX, originY + 1, sim.state.tick)
+    pinWorker(b, site, originX + 6, originY + 1, sim.state.tick)
     parkOthers(sim, [a, b])
     sim.advanceTicks(1)
     expect(site.structure!.cells[0]!.workedTicks).toBeGreaterThan(0)
@@ -97,7 +99,7 @@ describe('blueprint construction engine', () => {
     expect(site.structure!.cells[0]!.workedTicks + site.structure!.cells[6]!.workedTicks).toBe(2)
 
     setCell(site.structure!.cells[6]!, 0, 'pending', 0)
-    pinWorker(a, site, site.x, site.y, sim.state.tick)
+    pinWorker(a, site, originX, originY + 1, sim.state.tick)
     parkOthers(sim, [a])
     setCell(site.structure!.cells[0]!, 1, 'stocked', STAGE_COSTS.frame.labourTicks - 1)
     sim.advanceTicks(1)
@@ -115,7 +117,7 @@ describe('blueprint construction engine', () => {
     setCell(site.structure!.cells[0]!, 1, 'stocked', STAGE_COSTS.frame.labourTicks - 1)
     const worker = sim.state.agents[0]!
     const blocker = sim.state.agents[1]!
-    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    pinWorker(worker, site, originX, originY + 1, sim.state.tick)
     pinWorker(blocker, site, originX, originY, sim.state.tick)
     parkOthers(sim, [worker, blocker])
     sim.advanceTicks(1)
@@ -124,7 +126,7 @@ describe('blueprint construction engine', () => {
     expect(site.structure!.cells[0]!.workedTicks).toBe(STAGE_COSTS.frame.labourTicks - 1)
     blocker.x = originX - 1
     blocker.y = originY - 1
-    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    pinWorker(worker, site, originX, originY + 1, sim.state.tick)
     sim.advanceTicks(1)
     expect(site.structure!.cells[0]!.stageIndex).toBe(2)
     expect(isWalkable(sim.state, originX, originY)).toBe(false)
@@ -137,7 +139,7 @@ describe('blueprint construction engine', () => {
     const originY = site.structure!.originY
     setCell(site.structure!.cells[3]!, 1, 'stocked', STAGE_COSTS.frame.labourTicks - 1)
     const worker = sim.state.agents[0]!
-    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    pinWorker(worker, site, originX + 3, originY + 1, sim.state.tick)
     parkOthers(sim, [worker])
     sim.advanceTicks(1)
     expect(site.structure!.cells[3]!.stageIndex).toBe(2)
@@ -174,7 +176,9 @@ describe('blueprint construction engine', () => {
     setCell(roofCell, 1, 'stocked', 3)
     setCell(site.structure!.cells[6]!, 0, 'stocked', 0)
     const worker = sim.state.agents[0]!
-    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    const originX = site.structure!.originX
+    const originY = site.structure!.originY
+    pinWorker(worker, site, originX + 6, originY + 1, sim.state.tick)
     parkOthers(sim, [worker])
     sim.advanceTicks(1)
     expect(roofCell.stageIndex).toBe(1)
@@ -221,7 +225,9 @@ describe('blueprint construction engine', () => {
     const site = placeSchool(sim)
     setCell(site.structure!.cells[0]!, 0, 'stocked', STAGE_COSTS.foundation.labourTicks - 1)
     const worker = sim.state.agents[0]!
-    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    const originX = site.structure!.originX
+    const originY = site.structure!.originY
+    pinWorker(worker, site, originX, originY, sim.state.tick)
     parkOthers(sim, [worker])
     sim.advanceTicks(1)
     expect(site.structure!.cells[0]!.stageIndex).toBe(1)

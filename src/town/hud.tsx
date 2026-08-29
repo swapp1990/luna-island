@@ -1,6 +1,13 @@
 import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
 import { firstStormObjectives, secureFood } from '../sim/firstStorm'
-import { BLUEPRINTS, STRUCTURE_PHASE_LABEL, blueprintBill, countBuiltByKind, summarizeStructure } from '../sim/blueprints'
+import {
+  BLUEPRINTS,
+  STRUCTURE_PHASE_LABEL,
+  blueprintBill,
+  cellWorldTile,
+  countBuiltByKind,
+  summarizeStructure,
+} from '../sim/blueprints'
 import { BUILD_RECIPES, MAX_PLACE_LEVEL, isBuildableKind, placeLevel } from '../sim/sim'
 import type {
   BuildableKind,
@@ -337,6 +344,21 @@ export function Hud(props: {
         Math.max(Math.abs(Math.round(agent.x) - selected.x), Math.abs(Math.round(agent.y) - selected.y)) <= 4,
       ).length
     : 0
+  const selectedClaimLines =
+    selected?.structure && selectedBlueprint
+      ? selected.structure.cells.flatMap((cell, index) => {
+          if (!cell?.claimedBy) return []
+          const agent = currentWorld.agents.find((row) => row.id === cell.claimedBy)
+          const at = cellWorldTile(
+            selected.structure!.originX,
+            selected.structure!.originY,
+            selectedBlueprint.width,
+            index,
+          )
+          const kind = selectedBlueprint.cells[index]?.kind ?? 'cell'
+          return [`${agent?.name ?? cell.claimedBy} — ${kind} (${at.x},${at.y})`]
+        })
+      : []
   const shortMaterials = selected?.kind === 'construction-site'
     ? (['wood', 'stone'] as const).filter(
         (good) =>
@@ -960,6 +982,15 @@ export function Hud(props: {
                     <span>Workers on site</span>
                     <strong>{selectedOnSite}</strong>
                   </div>
+                  {selectedClaimLines.length > 0 ? (
+                    <div data-testid="blueprint-workers">
+                      {selectedClaimLines.map((line) => (
+                        <div key={line} style={diagnosticRow}>
+                          <span>{line}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <div style={diagnosticBlock} data-testid="construction-diagnostics">

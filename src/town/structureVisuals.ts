@@ -6,10 +6,13 @@ import * as THREE from 'three'
 import {
   BLUEPRINTS,
   STAGE_COSTS,
+  cellDone,
+  cellHasStagedPile,
   cellPipeline,
   cellWorldTile,
   currentStageKind,
   derivedCellState,
+  stagedUnits,
 } from '../sim/blueprints'
 import type { CellKind, Place, PlaceStructure, StructureCell } from '../sim/types'
 import { TILE_METRES } from './constants'
@@ -22,6 +25,8 @@ const WALL_FILL = 0x8a8a8a
 const DOOR = 0x7a7a7a
 const FLOOR = 0x9b9b9b
 const ROOF = 0xb07a4a
+const PILE_WOOD = 0x6b5340
+const PILE_STONE = 0x8a8580
 
 const FRAME_H = 3
 const FOUNDATION_H = 0.3
@@ -99,7 +104,14 @@ export function structureVisualSignature(place: Place): string {
     const stage = bp ? currentStageKind(bp, i, cell) : null
     const labour = stage ? STAGE_COSTS[stage].labourTicks : 1
     const frac = cell.stageState === 'stocked' ? fracBucket(stageFraction(cell, cell.stageIndex, labour)) : 0
-    parts.push(`${cell.stageIndex}${cell.stageState[0]}${frac}`)
+    const pile = stagedUnits(cell)
+    const showPile =
+      (pile.wood ?? 0) > 0 ||
+      (pile.stone ?? 0) > 0 ||
+      (cell.stageState === 'stocked' && !(bp && cellDone(bp, i, cell)))
+        ? 1
+        : 0
+    parts.push(`${cell.stageIndex}${cell.stageState[0]}${frac}p${showPile}w${pile.wood ?? 0}s${pile.stone ?? 0}`)
   }
   return parts.join(':')
 }
@@ -165,7 +177,20 @@ export function buildStructureVisuals(
     depthWrite: true,
   })
   const roofMat = new THREE.MeshStandardMaterial({ color: ROOF, roughness: 0.78 })
-  matsOwned.push(plannedMat, outlineMat, foundationMat, frameMat, wallMat, doorMat, floorMat, roofMat)
+  const pileWoodMat = new THREE.MeshStandardMaterial({ color: PILE_WOOD, roughness: 0.9 })
+  const pileStoneMat = new THREE.MeshStandardMaterial({ color: PILE_STONE, roughness: 0.94 })
+  matsOwned.push(
+    plannedMat,
+    outlineMat,
+    foundationMat,
+    frameMat,
+    wallMat,
+    doorMat,
+    floorMat,
+    roofMat,
+    pileWoodMat,
+    pileStoneMat,
+  )
 
   const span = TILE_METRES * 0.92
   const outlineGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(span, 0.04, span))
@@ -236,6 +261,42 @@ export function buildStructureVisuals(
 
     if (!drew) {
       addBox(group, geosOwned, plannedMat, span, 0.04, span, loc.x, 0.03, loc.z)
+    }
+
+    const pile = stagedUnits(rec)
+    const showPile =
+      cellHasStagedPile(rec) ||
+      (rec.stageState === 'stocked' && !(bp && cellDone(bp, i, rec)))
+    if (showPile) {
+      const stage = bp ? currentStageKind(bp, i, rec) : null
+      const cost = stage ? STAGE_COSTS[stage] : { wood: 0, stone: 0 }
+      const woodN = Math.max(pile.wood ?? 0, rec.stageState === 'stocked' ? cost.wood : 0)
+      const stoneN = Math.max(pile.stone ?? 0, rec.stageState === 'stocked' ? cost.stone : 0)
+      const ox = loc.x + span * 0.28
+      const oz = loc.z + span * 0.28
+      for (let n = 0; n < Math.min(3, Math.max(1, woodN)); n++) {
+        const geo = new THREE.CylinderGeometry(0.07, 0.08, 0.55, 6)
+        geosOwned.push(geo)
+        const mesh = new THREE.Mesh(geo, pileWoodMat)
+        mesh.rotation.z = Math.PI / 2
+        mesh.rotation.y = n * 0.35
+        mesh.position.set(ox, 0.1 + n * 0.09, oz - n * 0.08)
+        mesh.castShadow = true
+        group.add(mesh)
+      }
+      for (let n = 0; n < Math.min(3, Math.max(0, stoneN)); n++) {
+        addBox(
+          group,
+          geosOwned,
+          pileStoneMat,
+          0.18 + n * 0.04,
+          0.12,
+          0.16,
+          ox - 0.22,
+          0.08 + n * 0.07,
+          oz + 0.16 - n * 0.1,
+        )
+      }
     }
   }
 
