@@ -3,6 +3,22 @@ export type Tick = number // 1 tick = 1 sim minute; 1440 ticks = 1 day
 /** World-gen intensity. Same rules; lean is a harsher fact sheet; wild is unbuilt. */
 export type WorldPreset = 'default' | 'lean' | 'wild'
 
+/** Opt-in authored scenario layered over the deterministic sandbox. */
+export type ScenarioKind = 'first-storm'
+
+export type FirstStormStatus = 'preparing' | 'storm' | 'survived' | 'failed'
+
+export interface FirstStormScenarioState {
+  kind: 'first-storm'
+  status: FirstStormStatus
+  stormStartTick: Tick
+  stormEndTick: Tick
+  /** Promises that were complete when the storm reached the island. */
+  preparedObjectiveIds: Array<'housing' | 'food' | 'water'>
+  /** Resident ids removed at the failed dawn evaluation, in stable order. */
+  departedAgentIds: string[]
+}
+
 export interface SimTime { day: number; hour: number; minute: number; tick: Tick }
 
 export type TerrainKind = 'water' | 'sand' | 'grass' | 'forest' | 'rock'
@@ -55,6 +71,9 @@ export type BuildableKind =
 /** Extensible goods union. */
 export type Good = 'food' | 'wood' | 'stone'
 
+export type WorkPriorityCategory = 'food' | 'build' | 'wood' | 'stone'
+export type WorkPriorityLevel = 0 | 1 | 2 | 3
+
 export type Inventory = Record<Good, number>
 
 /** Workplace production rule: progress while worked; mint yield on cycle. */
@@ -89,6 +108,8 @@ export interface ConstructionSpec {
    * Missing ⇒ none. Additive; used to split a public-works bounty.
    */
   contributors?: string[]
+  /** Player-facing site rank. Missing means normal (2). */
+  priority?: 1 | 2 | 3
 }
 
 /** Place owner: a villager id or the village commons. */
@@ -128,6 +149,8 @@ export interface Place {
    * Only BuildableKind places level (max 3).
    */
   level?: number
+  /** Storehouse intake switches. Missing keys accept that good. */
+  storageFilters?: Partial<Record<Good, boolean>>
 }
 
 /** Hourly economy sample (Dispatch L UI). */
@@ -286,6 +309,14 @@ export interface AgentState {
    * Only non-zero entries; observed world fact, never read by UtilityBrain.
    */
   sympathy: Record<string, number>
+  /** Recent player-authored town changes this resident has personally observed. */
+  observedFacts?: ResidentFact[]
+}
+
+export interface ResidentFact {
+  id: string
+  tick: Tick
+  text: string
 }
 
 /** Meta attached to a mind-sourced external intent (recorded for replay). */
@@ -342,6 +373,89 @@ export interface SayRecord {
   source?: 'luna' | 'template'
 }
 
+/** A command issued by the player (kept separate from mind intents). */
+export type PlayerCommand =
+  | PlayerBuildCommand
+  | PlayerCancelConstructionCommand
+  | PlayerDemolishCommand
+  | PlayerPaintPathCommand
+  | PlayerSetWorkPriorityCommand
+  | PlayerSetConstructionPriorityCommand
+  | PlayerSetStockpileFilterCommand
+  | PlayerUpgradePlaceCommand
+  | PlayerAcceptInvitationCommand
+
+export interface PlayerBuildCommand {
+  type: 'build'
+  placeKind: BuildableKind
+  x: number
+  y: number
+  /** Cardinal facing in degrees; simulation placement is otherwise orientation-free. */
+  rotation?: number
+}
+
+export interface PlayerCancelConstructionCommand {
+  type: 'cancel-construction'
+  placeId: string
+}
+
+export interface PlayerDemolishCommand {
+  type: 'demolish'
+  placeId: string
+}
+
+export interface PlayerPaintPathCommand {
+  type: 'paint-path'
+  x: number
+  y: number
+  enabled: boolean
+}
+
+export interface PlayerSetWorkPriorityCommand {
+  type: 'set-work-priority'
+  category: WorkPriorityCategory
+  level: WorkPriorityLevel
+}
+
+export interface PlayerSetConstructionPriorityCommand {
+  type: 'set-construction-priority'
+  placeId: string
+  priority: 1 | 2 | 3
+}
+
+export interface PlayerSetStockpileFilterCommand {
+  type: 'set-stockpile-filter'
+  placeId: string
+  good: Good
+  enabled: boolean
+}
+
+export interface PlayerUpgradePlaceCommand {
+  type: 'upgrade-place'
+  placeId: string
+}
+
+export interface PlayerAcceptInvitationCommand {
+  type: 'accept-invitation'
+  candidateId: string
+}
+
+export type TownMilestoneId = 'camp' | 'hamlet' | 'village' | 'town' | 'sanctuary'
+
+/** Persisted choices only; Appeal and available offers are derived from live town facts. */
+export interface TownGrowthState {
+  unlockedMilestoneIds: TownMilestoneId[]
+  resolvedInvitationTiers: number[]
+  acceptedAgentIds: string[]
+}
+
+/** Serializable command record, ordered by issue time and stable id. */
+export interface PlayerCommandRecord {
+  id: string
+  tick: Tick
+  command: PlayerCommand
+}
+
 /** Per-agent mind counters (snapshots / saves; not read by UtilityBrain). */
 export interface AgentMindStats {
   decisions: number
@@ -362,6 +476,12 @@ export interface WorldState {
    * World-gen preset (v5 additive). Missing on older saves → treat as 'default'.
    */
   preset?: WorldPreset
+  /** Authored player-facing scenario state. Missing means the open sandbox. */
+  scenario?: FirstStormScenarioState
+  /** Town-level labour direction. Missing keys use the default priority. */
+  workPriorities?: Record<WorkPriorityCategory, WorkPriorityLevel>
+  /** Town progression choices and permanently reached milestones. */
+  townGrowth?: TownGrowthState
   /** Village commons wallet. */
   treasury: number
   /** Ownership registry: every place → agent id or 'commons'. */
@@ -383,6 +503,8 @@ export interface WorldState {
    * Part of snapshots, saves, and the state hash.
    */
   externalIntentLog: ExternalIntentRecord[]
+  /** Applied player commands — live = record, re-sim = playback. */
+  playerCommandLog?: PlayerCommandRecord[]
   /**
    * Applied mind reflection notes — live = record, re-sim = playback.
    * Part of snapshots, saves, and the state hash (mirrors externalIntentLog).

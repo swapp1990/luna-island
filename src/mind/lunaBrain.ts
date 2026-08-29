@@ -101,6 +101,10 @@ export interface MindMeter {
   stales: number
   meanLatencyMs: number
   approxChars: number
+  /** Approximate prompt+response tokens consumed in this browser session. */
+  sessionTokensUsed: number
+  /** Hard session ceiling; no new provider work dispatches after it is reached. */
+  sessionTokenBudget: number
   provider: string
   /** Luna-backed agents in this world. Reported, never assumed — the soak
    *  harness used to print a hardcoded "minds=6" that no longer matched. */
@@ -158,6 +162,8 @@ export interface LunaBrainOptions {
    * Wins over `?mindMinGapTicks=`; clamped 5–120.
    */
   minGapTicks?: number
+  /** Hard approximate-token ceiling for this service instance. Default is unlimited. */
+  sessionTokenBudget?: number
 }
 
 interface PendingHold {
@@ -271,6 +277,7 @@ export class LunaBrainService {
   private totalLatency = 0
   private latencySamples = 0
   private totalApproxChars = 0
+  private readonly sessionTokenBudget: number
   private decisions = 0
   private fallbacks = 0
   private stales = 0
@@ -328,6 +335,7 @@ export class LunaBrainService {
           ? floorFromLoc
           : MIND_WALL_FLOOR_MS
     this.minGapTicks = resolveMinGapTicks(opts?.minGapTicks)
+    this.sessionTokenBudget = Math.max(1, Math.floor(opts?.sessionTokenBudget ?? Number.MAX_SAFE_INTEGER))
     this.nowFn = opts?.now ?? (() => Date.now())
     this.onPipelineChange = opts?.onPipelineChange ?? null
     const sweepDefault = typeof window !== 'undefined'
@@ -525,6 +533,8 @@ export class LunaBrainService {
           ? Math.round(this.totalLatency / this.latencySamples)
           : 0,
       approxChars: this.totalApproxChars,
+      sessionTokensUsed: Math.ceil(this.totalApproxChars / 4),
+      sessionTokenBudget: this.sessionTokenBudget,
       provider: this.provider?.name ?? 'off',
       lunaAgents: LUNA_AGENT_IDS.length,
       decideCalls: this.decideCallCount,
@@ -1086,6 +1096,7 @@ export class LunaBrainService {
    * Mind turns → provider (budgeted). Sheep turns → sheepTalk templates (0 calls).
    */
   private requestConversationTurn(sim: Simulation, c: ActiveConversation): void {
+    if (Math.ceil(this.totalApproxChars / 4) >= this.sessionTokenBudget) return
     if (!this.provider && isLunaAgent(c.nextSpeakerId)) return
     if (this.isBudgetCooldown() && isLunaAgent(c.nextSpeakerId)) return
     if (c.turnInFlight) return
@@ -1269,6 +1280,7 @@ export class LunaBrainService {
   }
 
   private requestDecision(sim: Simulation, agentId: string): void {
+    if (Math.ceil(this.totalApproxChars / 4) >= this.sessionTokenBudget) return
     if (!this.provider) return
     if (this.isBudgetCooldown()) return
     const agent = sim.state.agents.find((a) => a.id === agentId)
@@ -1305,6 +1317,7 @@ export class LunaBrainService {
     agentId: string,
     nightKey: number,
   ): void {
+    if (Math.ceil(this.totalApproxChars / 4) >= this.sessionTokenBudget) return
     if (!this.provider) return
     if (this.isBudgetCooldown()) return
 

@@ -48,9 +48,12 @@ import type {
   OwnerId,
   Place,
   PlaceKind,
+  PlayerCommand,
+  PlayerCommandRecord,
   Proposal,
   Rng,
   Rule,
+  ScenarioKind,
   SayRecord,
   SimEvent,
   Tick,
@@ -59,6 +62,15 @@ import type {
   WorldState,
 } from './types'
 import { emptyInventory } from './types'
+import {
+  clonePlayerCommand,
+  clonePlayerCommandLog,
+  normalizePlayerCommand,
+  type BuildPlacementValidation,
+  type PlayerCommandInput,
+  type PlayerCommandResult,
+  type PlayerCommandReason,
+} from './playerCommands'
 import {
   blockedFeltLine,
   EXAMINE_BY_KIND,
@@ -107,6 +119,10 @@ export const COMMISSION_COOLDOWN_TICKS = 240
 export const MAX_ACTIVE_SITES = 3
 /** Highest Place.level a BuildableKind structure can reach. Missing level ⇒ 1. */
 export const MAX_PLACE_LEVEL = 3
+/** Full build pad is always exactly 3×3 tiles. */
+export const BUILD_FOOTPRINT_RADIUS = 1
+/** Maximum elevation range permitted across a build pad. */
+export const BUILD_MAX_ELEVATION_SPREAD = 0.2
 
 /** Effective building tier. Missing / non-positive ⇒ 1. */
 export function placeLevel(place: Place | undefined | null): number {
@@ -149,6 +165,26 @@ import {
   VOTE_COST,
 } from './costs'
 import { LUNA_AGENT_ID_SET } from './lunaRoster'
+import {
+  FIRST_STORM_HOME_SLOTS,
+  cloneFirstStormScenario,
+  firstStormObjectives,
+  initializeFirstStorm,
+  isFirstStormWeather,
+  settleFirstStormHousing,
+} from './firstStorm'
+import {
+  DEFAULT_WORK_PRIORITIES,
+  isWorkplaceKind,
+} from './workPriorities'
+import {
+  acceptInvitation,
+  ensureTownGrowth,
+  isBuildUnlocked,
+  syncTownGrowth,
+  townAppeal,
+  upgradesUnlocked,
+} from './townGrowth'
 /** Proposal stays open this many ticks (one sim day). */
 export const PROPOSAL_WINDOW_TICKS = 1440
 /** Assembly window: 18:00–20:00 (120 sim minutes). */
@@ -255,6 +291,114 @@ export function isBuildableKind(kind: string): kind is BuildableKind {
   return Object.prototype.hasOwnProperty.call(BUILD_RECIPES, kind)
 }
 
+const NATURAL_PLACE_KINDS: ReadonlySet<PlaceKind> = new Set(['berry-bush', 'spring'])
+
+/**
+ * Pure placement rules shared by the town ghost and the player command seam.
+ * Material availability is deliberately a warning: sites can be supplied over time.
+ */
+export function validateBuildPlacement(
+  world: WorldState,
+  kind: BuildableKind | string,
+  x: number,
+  y: number,
+): BuildPlacementValidation {
+  const px = Number.isFinite(x) ? Math.round(x) : Number.NaN
+  const py = Number.isFinite(y) ? Math.round(y) : Number.NaN
+  const footprint: Array<[number, number]> = []
+  if (Number.isFinite(px) && Number.isFinite(py)) {
+    for (let dy = -BUILD_FOOTPRINT_RADIUS; dy <= BUILD_FOOTPRINT_RADIUS; dy++) {
+      for (let dx = -BUILD_FOOTPRINT_RADIUS; dx <= BUILD_FOOTPRINT_RADIUS; dx++) {
+        footprint.push([px + dx, py + dy])
+      }
+    }
+  }
+  const requiredMaterials = isBuildableKind(kind)
+    ? { wood: BUILD_RECIPES[kind].wood, stone: BUILD_RECIPES[kind].stone }
+    : { wood: 0, stone: 0 }
+  const storedMaterials = world.places
+    .filter((p) => p.kind === 'storehouse')
+    .reduce(
+      (sum, p) => ({
+        wood: sum.wood + (p.inventory?.wood ?? 0),
+        stone: sum.stone + (p.inventory?.stone ?? 0),
+      }),
+      { wood: 0, stone: 0 },
+    )
+  const missingStoredMaterials = {
+    wood: Math.max(0, requiredMaterials.wood - storedMaterials.wood),
+    stone: Math.max(0, requiredMaterials.stone - storedMaterials.stone),
+  }
+  const base = {
+    ok: false,
+    reason: 'unknown-kind' as PlayerCommandReason,
+    reasonCode: 'unknown-kind' as PlayerCommandReason,
+    x: px,
+    y: py,
+    footprint,
+    elevationSpread: 0,
+    requiredMaterials,
+    storedMaterials,
+    missingStoredMaterials,
+  }
+  if (!isBuildableKind(kind)) return base
+  if (!Number.isFinite(px) || !Number.isFinite(py)) {
+    return { ...base, reason: 'invalid-coordinate', reasonCode: 'invalid-coordinate' }
+  }
+  if (world.places.filter((p) => p.kind === 'construction-site').length >= MAX_ACTIVE_SITES) {
+    return { ...base, reason: 'site-cap', reasonCode: 'site-cap' }
+  }
+  for (const [tx, ty] of footprint) {
+    if (tx < 0 || ty < 0 || tx >= world.width || ty >= world.height) {
+      return { ...base, reason: 'out-of-bounds', reasonCode: 'out-of-bounds' }
+    }
+  }
+  const tiles = footprint.map(([tx, ty]) => world.tiles[ty * world.width + tx]!)
+  for (const tile of tiles) {
+    if (tile.kind === 'water') return { ...base, reason: 'water', reasonCode: 'water' }
+    if (tile.kind === 'rock') return { ...base, reason: 'rock', reasonCode: 'rock' }
+    if (!tile.walkable) return { ...base, reason: 'not-walkable', reasonCode: 'not-walkable' }
+  }
+  const elevations = tiles.map((t) => t.elevation)
+  const elevationSpread = Math.max(...elevations) - Math.min(...elevations)
+  if (elevationSpread > BUILD_MAX_ELEVATION_SPREAD) {
+    return {
+      ...base,
+      reason: 'slope',
+      reasonCode: 'slope',
+      elevationSpread,
+    }
+  }
+  for (const place of world.places) {
+    if (NATURAL_PLACE_KINDS.has(place.kind)) continue
+    const ox = Math.round(place.x)
+    const oy = Math.round(place.y)
+    const footprintHit = footprint.some(([tx, ty]) =>
+      Math.abs(tx - ox) <= BUILD_FOOTPRINT_RADIUS &&
+      Math.abs(ty - oy) <= BUILD_FOOTPRINT_RADIUS,
+    )
+    if (footprintHit) {
+      return {
+        ...base,
+        reason: 'collision',
+        reasonCode: 'collision',
+        elevationSpread,
+        blockingPlaceId: place.id,
+      }
+    }
+  }
+  return {
+    ...base,
+    ok: true,
+    reason: 'ok',
+    reasonCode: 'ok',
+    elevationSpread,
+    ...(missingStoredMaterials.wood > 0 || missingStoredMaterials.stone > 0
+      ? { warning: 'missing-materials' as const }
+      : {}),
+  }
+}
+
 /** Compact buildable menu — single source of truth for WORLD_RULES / refusals. */
 export function buildableMenuLine(): string {
   const parts = (Object.keys(BUILD_RECIPES) as BuildableKind[]).map((k) => {
@@ -334,6 +478,9 @@ function deepCloneAgent(a: AgentState): AgentState {
     haulSourceId: a.haulSourceId,
     haulDropoffId: a.haulDropoffId,
     sympathy: cloneSympathy(a.sympathy),
+    ...(a.observedFacts
+      ? { observedFacts: a.observedFacts.map((fact) => ({ ...fact })) }
+      : {}),
   }
 }
 
@@ -346,12 +493,14 @@ function deepClonePlace(p: Place): Place {
     wage: p.wage,
     price: p.price ? { ...p.price } : undefined,
     production: p.production ? { ...p.production } : undefined,
+    storageFilters: p.storageFilters ? { ...p.storageFilters } : undefined,
     construction: p.construction
       ? {
           needs: { ...p.construction.needs },
           progress: p.construction.progress,
           consumeTicks: p.construction.consumeTicks,
           targetKind: p.construction.targetKind,
+          priority: p.construction.priority,
           ...(p.construction.upgradeOf
             ? { upgradeOf: p.construction.upgradeOf }
             : {}),
@@ -570,12 +719,28 @@ function deepCloneWorld(state: WorldState): WorldState {
     places: state.places.map(deepClonePlace),
     agents: state.agents.map(deepCloneAgent),
     preset: state.preset ?? 'default',
+    ...(state.scenario
+      ? { scenario: cloneFirstStormScenario(state.scenario) }
+      : {}),
+    ...(state.workPriorities
+      ? { workPriorities: { ...state.workPriorities } }
+      : {}),
+    ...(state.townGrowth
+      ? {
+          townGrowth: {
+            unlockedMilestoneIds: [...state.townGrowth.unlockedMilestoneIds],
+            resolvedInvitationTiers: [...state.townGrowth.resolvedInvitationTiers],
+            acceptedAgentIds: [...state.townGrowth.acceptedAgentIds],
+          },
+        }
+      : {}),
     treasury: state.treasury,
     owners: { ...state.owners },
     stats: state.stats.map((s) => ({ ...s })),
     sympathyStreak: { ...(state.sympathyStreak ?? {}) },
     sympathyMet: { ...(state.sympathyMet ?? {}) },
     externalIntentLog: cloneExternalIntentLog(state.externalIntentLog),
+    playerCommandLog: clonePlayerCommandLog(state.playerCommandLog),
     mindNoteLog: cloneMindNoteLog(state.mindNoteLog),
     sayLog: cloneSayLog(state.sayLog),
     mindStats: cloneMindStats(state.mindStats),
@@ -604,13 +769,21 @@ function deepCloneWorld(state: WorldState): WorldState {
 /** Ensure older snapshots / v1–v4 saves have mind + institution fields. */
 export function ensureMindFields(state: WorldState): void {
   if (!state.externalIntentLog) state.externalIntentLog = []
+  if (!state.playerCommandLog) state.playerCommandLog = []
   if (!state.mindNoteLog) state.mindNoteLog = []
   if (!state.sayLog) state.sayLog = []
   if (!state.mindStats) state.mindStats = {}
   if (!state.proposals) state.proposals = []
   if (!state.rules) state.rules = []
   if (!state.preset) state.preset = 'default'
+  if (state.scenario?.kind === 'first-storm' || state.townGrowth) ensureTownGrowth(state)
   if (!state.commissionCooldownUntil) state.commissionCooldownUntil = {}
+  if (state.scenario?.kind === 'first-storm' && !state.scenario.departedAgentIds) {
+    state.scenario.departedAgentIds = []
+  }
+  if (state.scenario?.kind === 'first-storm' && !state.scenario.preparedObjectiveIds) {
+    state.scenario.preparedObjectiveIds = []
+  }
   if (typeof state.commissionFeeCoins !== 'number') {
     state.commissionFeeCoins = state.preset === 'wild' ? 0 : COMMISSION_COST
   }
@@ -845,6 +1018,8 @@ export class Simulation {
    * Full say log for re-sim playback (set on forks via stateAt).
    */
   private sayPlayback: SayRecord[] | null = null
+  /** Full player-command log for re-sim playback (set on forks via stateAt). */
+  private playerCommandPlayback: PlayerCommandRecord[] | null = null
   /** Agents who received an external intent this tick (skip brain redecide). */
   private externalAppliedThisTick = new Set<string>()
   /**
@@ -869,7 +1044,9 @@ export class Simulation {
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
+      playerCommandPlayback?: PlayerCommandRecord[] | null
       preset?: WorldPreset
+      scenario?: ScenarioKind
       seedFoundingBoard?: boolean
     },
   )
@@ -885,7 +1062,9 @@ export class Simulation {
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
+      playerCommandPlayback?: PlayerCommandRecord[] | null
       preset?: WorldPreset
+      scenario?: ScenarioKind
       seedFoundingBoard?: boolean
     },
   ) {
@@ -895,6 +1074,7 @@ export class Simulation {
     this.intentPlayback = opts?.intentPlayback ?? null
     this.notePlayback = opts?.notePlayback ?? null
     this.sayPlayback = opts?.sayPlayback ?? null
+    this.playerCommandPlayback = opts?.playerCommandPlayback ?? null
     if (opts?.dayArchives) {
       this.dayArchives = opts.dayArchives.map((a) => ({
         day: a.day,
@@ -913,6 +1093,8 @@ export class Simulation {
       this.rng = createRng(seed)
       spawnAgents(this.state, this.rng)
       ensureMindFields(this.state)
+      if (opts?.scenario === 'first-storm') initializeFirstStorm(this.state)
+      this.stepTownGrowthProgression()
       if (!opts?.skipInitEvents) {
         this.events.append({
           tick: 0,
@@ -922,6 +1104,7 @@ export class Simulation {
             width: this.state.width,
             height: this.state.height,
             preset: this.state.preset ?? 'default',
+            scenario: this.state.scenario?.kind,
           },
         })
         this.events.append({
@@ -929,6 +1112,19 @@ export class Simulation {
           type: 'day:start',
           data: { day: 1 },
         })
+        if (this.state.scenario?.kind === 'first-storm') {
+          this.events.append({
+            tick: 0,
+            type: 'scenario:started',
+            data: {
+              scenario: 'first-storm',
+              residents: this.state.agents.length,
+              stormStartTick: this.state.scenario.stormStartTick,
+              stormEndTick: this.state.scenario.stormEndTick,
+            },
+            reason: 'Seven settlers arrived before the first storm',
+          })
+        }
       }
       // Snapshot at tick 0 — permanently pinned as Day 1 start
       this.snapshots.add(this.makeSnapshot())
@@ -956,6 +1152,589 @@ export class Simulation {
       intent: cloneIntent(intent),
       meta: cloneExternalMeta(meta),
     })
+  }
+
+  /** Public placement validator used by the town ghost and command UI. */
+  validateBuildPlacement(
+    kind: BuildableKind | string,
+    x: number,
+    y: number,
+  ): BuildPlacementValidation {
+    return validateBuildPlacement(this.state, kind, x, y)
+  }
+
+  /** Single-tile path paint validation shared by the town preview and command seam. */
+  validatePathPlacement(
+    x: number,
+    y: number,
+  ): { ok: boolean; reason: PlayerCommandReason; x: number; y: number } {
+    const px = Number.isFinite(x) ? Math.round(x) : Number.NaN
+    const py = Number.isFinite(y) ? Math.round(y) : Number.NaN
+    if (!Number.isFinite(px) || !Number.isFinite(py)) {
+      return { ok: false, reason: 'invalid-coordinate', x: px, y: py }
+    }
+    if (px < 0 || py < 0 || px >= this.state.width || py >= this.state.height) {
+      return { ok: false, reason: 'out-of-bounds', x: px, y: py }
+    }
+    const tile = this.state.tiles[py * this.state.width + px]!
+    if (tile.kind === 'water') return { ok: false, reason: 'water', x: px, y: py }
+    if (tile.kind === 'rock') return { ok: false, reason: 'rock', x: px, y: py }
+    if (!tile.walkable) return { ok: false, reason: 'not-walkable', x: px, y: py }
+    const blocked = this.state.places.some((place) =>
+      place.kind !== 'plaza' &&
+      place.kind !== 'berry-bush' &&
+      place.kind !== 'spring' &&
+      Math.round(place.x) === px &&
+      Math.round(place.y) === py,
+    )
+    if (blocked) return { ok: false, reason: 'collision', x: px, y: py }
+    if (tile.path) return { ok: false, reason: 'already-set', x: px, y: py }
+    return { ok: true, reason: 'ok', x: px, y: py }
+  }
+
+  /** Read-only command history, suitable for timeline/debug UI. */
+  getPlayerCommandLog(): readonly PlayerCommandRecord[] {
+    ensureMindFields(this.state)
+    return this.state.playerCommandLog ?? []
+  }
+
+  /**
+   * Apply a player command synchronously at the current tick. This deliberately
+   * does not advance time, invoke a brain, or touch mind statistics.
+   */
+  issuePlayerCommand(input: PlayerCommandInput): PlayerCommandResult {
+    const command = normalizePlayerCommand(input)
+    if (!command) {
+      const result: PlayerCommandResult = {
+        ok: false,
+        reason: 'invalid-coordinate',
+        command: null,
+      }
+      this.recordPlayerCommand(null, result)
+      return result
+    }
+    return this.applyPlayerCommand(command, true)
+  }
+
+  /** Install full-log playback for re-sim (stateAt / forks). */
+  setPlayerCommandPlayback(log: PlayerCommandRecord[] | null): void {
+    this.playerCommandPlayback = log ? clonePlayerCommandLog(log) : null
+  }
+
+  private recordPlayerCommand(
+    command: PlayerCommand | null,
+    result: PlayerCommandResult,
+    id?: string,
+  ): PlayerCommandRecord {
+    ensureMindFields(this.state)
+    const record: PlayerCommandRecord = {
+      id: id ?? `player-${this.state.tick}-${(this.state.playerCommandLog ?? []).length}`,
+      tick: this.state.tick,
+      // Invalid input is represented as a deterministic no-op build-like entry
+      // only in the trace event; malformed values cannot be replayed safely.
+      command: command ?? {
+        type: 'demolish',
+        placeId: '',
+      },
+    }
+    ;(this.state.playerCommandLog ??= []).push({
+      id: record.id,
+      tick: record.tick,
+      command: clonePlayerCommand(record.command),
+    })
+    this.events.append({
+      tick: this.state.tick,
+      type: result.ok ? 'player:command' : 'player:command-rejected',
+      data: {
+        commandId: record.id,
+        commandType: command?.type ?? 'invalid',
+        ok: result.ok,
+        reason: result.reason,
+        ...(result.placeId ? { placeId: result.placeId } : {}),
+        ...(result.missingStoredMaterials
+          ? { missingStoredMaterials: { ...result.missingStoredMaterials } }
+          : {}),
+        source: 'player',
+      },
+      reason: result.ok
+        ? `player ${command?.type ?? 'command'} applied`
+        : `player command rejected: ${result.reason}`,
+    })
+    // Commands mutate state at the current tick, so replace periodic snapshots
+    // at this tick. This is essential for stateAt(T) when T is a command tick.
+    this.snapshots.add(this.makeSnapshot())
+    return record
+  }
+
+  private applyPlayerCommand(
+    command: PlayerCommand,
+    recordLog: boolean,
+    commandId?: string,
+  ): PlayerCommandResult {
+    let result: PlayerCommandResult
+    if (command.type === 'build') result = this.applyPlayerBuild(command)
+    else if (command.type === 'cancel-construction') result = this.applyPlayerCancel(command)
+    else if (command.type === 'demolish') result = this.applyPlayerDemolish(command)
+    else if (command.type === 'paint-path') result = this.applyPlayerPath(command)
+    else if (command.type === 'set-work-priority') result = this.applyPlayerWorkPriority(command)
+    else if (command.type === 'set-construction-priority') {
+      result = this.applyPlayerConstructionPriority(command)
+    } else if (command.type === 'set-stockpile-filter') {
+      result = this.applyPlayerStockpileFilter(command)
+    } else if (command.type === 'upgrade-place') {
+      result = this.applyPlayerUpgrade(command)
+    } else {
+      result = this.applyPlayerAcceptInvitation(command)
+    }
+    if (result.ok) {
+      this.recordPlayerFact(command)
+      this.stepTownGrowthProgression()
+    }
+    if (recordLog) this.recordPlayerCommand(command, result, commandId)
+    return result
+  }
+
+  private applyPlayerBuild(command: Extract<PlayerCommand, { type: 'build' }>): PlayerCommandResult {
+    if (!isBuildUnlocked(this.state, command.placeKind)) {
+      return { ok: false, reason: 'locked', command: clonePlayerCommand(command) }
+    }
+    const validation = validateBuildPlacement(this.state, command.placeKind, command.x, command.y)
+    if (!validation.ok) {
+      return {
+        ok: false,
+        reason: validation.reason,
+        command: clonePlayerCommand(command),
+        validation,
+      }
+    }
+    const recipe = BUILD_RECIPES[command.placeKind]
+    const siteId = `site-player-${this.state.tick}-${(this.state.playerCommandLog ?? []).length}`
+    const site: Place = {
+      id: siteId,
+      kind: 'construction-site',
+      x: validation.x,
+      y: validation.y,
+      slots: 2,
+      jobSlots: 2,
+      wage: 7,
+      inventory: emptyInventory(),
+      construction: {
+        needs: {
+          ...(recipe.wood > 0 ? { wood: recipe.wood } : {}),
+          ...(recipe.stone > 0 ? { stone: recipe.stone } : {}),
+        },
+        progress: 0,
+        consumeTicks: 0,
+        targetKind: command.placeKind,
+        priority: 2,
+      },
+    }
+    for (const [tx, ty] of validation.footprint) {
+      const tile = this.state.tiles[ty * this.state.width + tx]
+      if (tile) {
+        tile.kind = 'grass'
+        tile.walkable = true
+      }
+    }
+    this.state.places.push(site)
+    this.state.owners[siteId] = 'commons'
+    this.assignFirstStormBuilders(site)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:commissioned',
+      data: {
+        placeId: siteId,
+        kind: command.placeKind,
+        cost: 0,
+        x: validation.x,
+        y: validation.y,
+        owner: 'commons',
+        source: 'player',
+        rotation: command.rotation,
+      },
+      reason: `the player staked a ${command.placeKind === 'home' ? 'house' : command.placeKind} site`,
+    })
+    return {
+      ok: true,
+      reason: 'ok',
+      command: clonePlayerCommand(command),
+      placeId: siteId,
+      validation,
+      missingStoredMaterials: { ...validation.missingStoredMaterials },
+    }
+  }
+
+  /**
+   * The authored opening has only seven settlers and an immovable storm
+   * deadline. A player designation therefore forms a two-person emergency
+   * crew immediately instead of losing every worker to older industry jobs.
+   */
+  private assignFirstStormBuilders(site: Place): void {
+    if (this.state.scenario?.kind !== 'first-storm') return
+    const jobKind = (agent: AgentState): PlaceKind | undefined =>
+      this.state.places.find((place) => place.id === agent.employedAt)?.kind
+    const candidates = this.state.agents
+      .filter((agent) => jobKind(agent) !== 'construction-site')
+      .slice()
+      .sort((a, b) => {
+        const rank = (agent: AgentState) => {
+          const kind = jobKind(agent)
+          if (kind === 'forestry' || kind === 'quarry') return 0
+          if (!kind) return 1
+          if (kind === 'farm') return 2
+          if (kind === 'stall') return 3
+          return 1
+        }
+        return rank(a) - rank(b) || a.id.localeCompare(b.id)
+      })
+      .slice(0, site.jobSlots ?? 0)
+    for (const agent of candidates) {
+      if (agent.employedAt) {
+        this.vacateJob(agent, 'Reassigned to urgent first-storm construction')
+      }
+      if (!this.hireAgent(agent, site)) continue
+      agent.action = { kind: 'idle', reason: 'Assigned to the storm-preparation crew' }
+      agent.actionTicks = 0
+      agent.pathIndex = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+    }
+  }
+
+  private applyPlayerCancel(
+    command: Extract<PlayerCommand, { type: 'cancel-construction' }>,
+  ): PlayerCommandResult {
+    const site = this.state.places.find((p) => p.id === command.placeId)
+    if (!site) return { ok: false, reason: 'not-found', command: clonePlayerCommand(command) }
+    if (site.kind !== 'construction-site') {
+      return { ok: false, reason: 'not-construction-site', command: clonePlayerCommand(command) }
+    }
+    this.cleanupAgentsForRemovedPlace(site)
+    const store = this.nearestStorehouse(site.x, site.y, site.id)
+    for (const good of ['wood', 'stone'] as const) {
+      const amount = site.inventory[good] ?? 0
+      if (amount <= 0) continue
+      if (store) {
+        this.transferGoods(
+          { kind: 'place', id: site.id },
+          { kind: 'place', id: store.id },
+          good,
+          amount,
+          `returned ${amount} ${good} from cancelled construction to ${store.id}`,
+        )
+      } else {
+        this.consumeGoods(
+          { kind: 'place', id: site.id },
+          good,
+          amount,
+          `discarded ${amount} ${good}; no storehouse for cancelled construction`,
+        )
+      }
+    }
+    const wallet = this.coinBalance(site.id)
+    if (wallet > 0) {
+      this.transferCoins(site.id, 'treasury', wallet, 'returned cancelled construction stake to treasury', {
+        kind: 'construction-cancelled',
+        placeId: site.id,
+      })
+    }
+    this.removePlace(site)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:cancelled',
+      data: { placeId: site.id, source: 'player', returnedTo: store?.id },
+      reason: 'player cancelled the construction site',
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command), placeId: site.id }
+  }
+
+  private applyPlayerDemolish(
+    command: Extract<PlayerCommand, { type: 'demolish' }>,
+  ): PlayerCommandResult {
+    const place = this.state.places.find((p) => p.id === command.placeId)
+    if (!place) return { ok: false, reason: 'not-found', command: clonePlayerCommand(command) }
+    if (place.kind === 'construction-site') {
+      return { ok: false, reason: 'not-construction-site', command: clonePlayerCommand(command) }
+    }
+    if (!isBuildableKind(place.kind)) {
+      return {
+        ok: false,
+        reason: place.kind === 'plaza' || NATURAL_PLACE_KINDS.has(place.kind) ? 'protected' : 'not-buildable',
+        command: clonePlayerCommand(command),
+      }
+    }
+    this.cleanupAgentsForRemovedPlace(place)
+    for (const good of ['food', 'wood', 'stone'] as const) {
+      const amount = place.inventory[good] ?? 0
+      if (amount > 0) {
+        this.consumeGoods(
+          { kind: 'place', id: place.id },
+          good,
+          amount,
+          `consumed ${amount} ${good} when demolishing ${place.id}; no salvage`,
+        )
+      }
+    }
+    this.removePlace(place)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:demolished',
+      data: { placeId: place.id, kind: place.kind, source: 'player' },
+      reason: `player demolished the ${place.kind}`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command), placeId: place.id }
+  }
+
+  private applyPlayerPath(
+    command: Extract<PlayerCommand, { type: 'paint-path' }>,
+  ): PlayerCommandResult {
+    const check = this.validatePathPlacement(command.x, command.y)
+    if (!command.enabled) {
+      const x = Number.isFinite(command.x) ? Math.round(command.x) : Number.NaN
+      const y = Number.isFinite(command.y) ? Math.round(command.y) : Number.NaN
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        return { ok: false, reason: 'invalid-coordinate', command: clonePlayerCommand(command) }
+      }
+      const tile = this.state.tiles[y * this.state.width + x]
+      if (!tile) return { ok: false, reason: 'out-of-bounds', command: clonePlayerCommand(command) }
+      if (!tile.path) return { ok: false, reason: 'already-set', command: clonePlayerCommand(command) }
+      tile.path = false
+      this.events.append({
+        tick: this.state.tick,
+        type: 'path:painted',
+        data: { x, y, enabled: false, source: 'player' },
+        reason: `the player removed the path at ${x}, ${y}`,
+      })
+      return { ok: true, reason: 'ok', command: clonePlayerCommand(command) }
+    }
+    if (!check.ok) return { ok: false, reason: check.reason, command: clonePlayerCommand(command) }
+    this.state.tiles[check.y * this.state.width + check.x]!.path = true
+    this.events.append({
+      tick: this.state.tick,
+      type: 'path:painted',
+      data: { x: check.x, y: check.y, enabled: true, source: 'player' },
+      reason: `the player laid a path at ${check.x}, ${check.y}`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command) }
+  }
+
+  private applyPlayerWorkPriority(
+    command: Extract<PlayerCommand, { type: 'set-work-priority' }>,
+  ): PlayerCommandResult {
+    ensureMindFields(this.state)
+    this.state.workPriorities = {
+      ...DEFAULT_WORK_PRIORITIES,
+      ...(this.state.workPriorities ?? {}),
+      [command.category]: command.level,
+    }
+    for (const agent of this.state.agents) {
+      const workplace = this.state.places.find((place) => place.id === agent.employedAt)
+      if (!workplace || !isWorkplaceKind(workplace.kind)) continue
+      this.vacateJob(agent, `Town priority for ${command.category} changed`)
+      agent.action = { kind: 'idle', reason: 'Reviewing the town work priorities' }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'town:work-priority',
+      data: { category: command.category, level: command.level, source: 'player' },
+      reason: `the player set ${command.category} work to priority ${command.level}`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command) }
+  }
+
+  private applyPlayerConstructionPriority(
+    command: Extract<PlayerCommand, { type: 'set-construction-priority' }>,
+  ): PlayerCommandResult {
+    const site = this.state.places.find((place) => place.id === command.placeId)
+    if (!site) return { ok: false, reason: 'not-found', command: clonePlayerCommand(command) }
+    if (site.kind !== 'construction-site' || !site.construction) {
+      return { ok: false, reason: 'not-construction-site', command: clonePlayerCommand(command) }
+    }
+    site.construction.priority = command.priority
+    for (const agent of this.state.agents) {
+      const workplace = this.state.places.find((place) => place.id === agent.employedAt)
+      if (workplace?.kind !== 'construction-site') continue
+      this.vacateJob(agent, 'Construction priorities changed')
+      agent.action = { kind: 'idle', reason: 'Reviewing construction priorities' }
+      agent.actionTicks = 0
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:priority',
+      data: { placeId: site.id, priority: command.priority, source: 'player' },
+      reason: `the player set ${site.id} to construction priority ${command.priority}`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command), placeId: site.id }
+  }
+
+  private applyPlayerStockpileFilter(
+    command: Extract<PlayerCommand, { type: 'set-stockpile-filter' }>,
+  ): PlayerCommandResult {
+    const store = this.state.places.find((place) => place.id === command.placeId)
+    if (!store) return { ok: false, reason: 'not-found', command: clonePlayerCommand(command) }
+    if (store.kind !== 'storehouse') {
+      return { ok: false, reason: 'not-storehouse', command: clonePlayerCommand(command) }
+    }
+    store.storageFilters = { ...(store.storageFilters ?? {}), [command.good]: command.enabled }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'stockpile:filter',
+      data: {
+        placeId: store.id,
+        good: command.good,
+        enabled: command.enabled,
+        source: 'player',
+      },
+      reason: `the player ${command.enabled ? 'enabled' : 'disabled'} ${command.good} intake at ${store.id}`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command), placeId: store.id }
+  }
+
+  private applyPlayerUpgrade(
+    command: Extract<PlayerCommand, { type: 'upgrade-place' }>,
+  ): PlayerCommandResult {
+    const target = this.state.places.find((place) => place.id === command.placeId)
+    if (!target) return { ok: false, reason: 'not-found', command: clonePlayerCommand(command) }
+    if (!isBuildableKind(target.kind)) {
+      return { ok: false, reason: 'not-buildable', command: clonePlayerCommand(command) }
+    }
+    if (!upgradesUnlocked(this.state)) {
+      return { ok: false, reason: 'locked', command: clonePlayerCommand(command) }
+    }
+    const level = placeLevel(target)
+    if (level >= MAX_PLACE_LEVEL) {
+      return { ok: false, reason: 'max-level', command: clonePlayerCommand(command) }
+    }
+    const activeSites = this.state.places.filter((place) => place.kind === 'construction-site')
+    if (activeSites.some((site) => site.construction?.upgradeOf === target.id)) {
+      return { ok: false, reason: 'already-upgrading', command: clonePlayerCommand(command) }
+    }
+    if (activeSites.length >= MAX_ACTIVE_SITES) {
+      return { ok: false, reason: 'site-cap', command: clonePlayerCommand(command) }
+    }
+    const plot = this.findUpgradePlot(target)
+    if (!plot) return { ok: false, reason: 'no-upgrade-plot', command: clonePlayerCommand(command) }
+    const recipe = BUILD_RECIPES[target.kind]
+    const siteId = `site-player-upgrade-${this.state.tick}-${(this.state.playerCommandLog ?? []).length}`
+    const site: Place = {
+      id: siteId,
+      kind: 'construction-site',
+      x: plot.x,
+      y: plot.y,
+      slots: 2,
+      jobSlots: 2,
+      wage: 7,
+      inventory: emptyInventory(),
+      construction: {
+        needs: {
+          ...(recipe.wood > 0 ? { wood: recipe.wood * level } : {}),
+          ...(recipe.stone > 0 ? { stone: recipe.stone * level } : {}),
+        },
+        progress: 0,
+        consumeTicks: 0,
+        targetKind: target.kind,
+        upgradeOf: target.id,
+        priority: 2,
+      },
+    }
+    this.state.places.push(site)
+    this.state.owners[siteId] = 'commons'
+    this.assignFirstStormBuilders(site)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:commissioned',
+      data: {
+        placeId: siteId,
+        kind: target.kind,
+        upgradeOf: target.id,
+        level: level + 1,
+        source: 'player',
+      },
+      reason: `the player commissioned a level ${level + 1} ${target.kind === 'home' ? 'house' : target.kind}`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command), placeId: siteId }
+  }
+
+  private applyPlayerAcceptInvitation(
+    command: Extract<PlayerCommand, { type: 'accept-invitation' }>,
+  ): PlayerCommandResult {
+    const result = acceptInvitation(this.state, command.candidateId, this.rng)
+    if (!result.ok) {
+      return { ok: false, reason: result.reason, command: clonePlayerCommand(command) }
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'town:resident-arrived',
+      agentId: result.agent.id,
+      data: {
+        agentId: result.agent.id,
+        agentName: result.agent.name,
+        homeId: result.agent.homeId,
+        invitationTier: result.tier,
+        appeal: townAppeal(this.state),
+        source: 'player',
+      },
+      reason: `${result.agent.name} accepted the player's invitation and moved into town`,
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command) }
+  }
+
+  private recordPlayerFact(command: PlayerCommand): void {
+    let text: string
+    if (command.type === 'build') {
+      text = `The player designated a ${command.placeKind === 'home' ? 'house' : command.placeKind} at ${Math.round(command.x)},${Math.round(command.y)}.`
+    } else if (command.type === 'paint-path') {
+      text = `The player ${command.enabled ? 'laid' : 'removed'} a path at ${Math.round(command.x)},${Math.round(command.y)}.`
+    } else if (command.type === 'set-work-priority') {
+      text = `The player set ${command.category} work to ${command.level === 0 ? 'Off' : `priority ${command.level}`}.`
+    } else if (command.type === 'set-construction-priority') {
+      text = `The player set ${command.placeId} to construction priority ${command.priority}.`
+    } else if (command.type === 'set-stockpile-filter') {
+      text = `The player ${command.enabled ? 'opened' : 'blocked'} ${command.good} intake at ${command.placeId}.`
+    } else if (command.type === 'upgrade-place') {
+      const place = this.state.places.find((candidate) => candidate.id === command.placeId)
+      text = `The player commissioned an upgrade for the ${place?.kind === 'home' ? 'house' : place?.kind ?? command.placeId}.`
+    } else if (command.type === 'accept-invitation') {
+      const agent = this.state.agents.find((candidate) => candidate.id === command.candidateId)
+      text = `The player invited ${agent?.name ?? command.candidateId} to become a resident.`
+    } else if (command.type === 'cancel-construction') {
+      text = `The player cancelled construction at ${command.placeId}.`
+    } else {
+      text = `The player demolished ${command.placeId}.`
+    }
+    const id = `player-fact-${this.state.tick}-${(this.state.playerCommandLog ?? []).length}`
+    for (const agent of this.state.agents) {
+      const facts = agent.observedFacts ??= []
+      facts.push({ id, tick: this.state.tick, text })
+      if (facts.length > 6) facts.splice(0, facts.length - 6)
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'town:player-fact',
+      data: { factId: id, text, source: 'player' },
+      reason: text,
+    })
+  }
+
+  private stepTownGrowthProgression(): void {
+    if (this.state.scenario?.kind !== 'first-storm' && !this.state.townGrowth) return
+    const reached = syncTownGrowth(this.state)
+    for (const milestone of reached) {
+      this.events.append({
+        tick: this.state.tick,
+        type: 'town:milestone',
+        data: {
+          milestoneId: milestone.id,
+          label: milestone.label,
+          threshold: milestone.threshold,
+          appeal: townAppeal(this.state),
+          unlock: milestone.unlock,
+        },
+        reason: `${milestone.label} reached at ${townAppeal(this.state)} Appeal: ${milestone.unlock}`,
+      })
+    }
   }
 
   /**
@@ -1824,6 +2603,10 @@ export class Simulation {
   private scheduleAssemblyFor(proposal: Proposal): void {
     const plaza = this.state.places.find((p) => p.kind === 'plaza')
     if (!plaza) return
+    const venue = this.state.scenario?.kind === 'first-storm'
+      ? this.state.places.find((p) => p.kind === 'notice-board') ?? plaza
+      : plaza
+    const venueName = venue.kind === 'notice-board' ? 'notice board' : 'plaza'
     const { startTick, endTick } = assemblyWindowFor(
       proposal.createdTick,
       proposal.closesTick,
@@ -1831,7 +2614,7 @@ export class Simulation {
     const gathering: Gathering = {
       id: `asm-${proposal.id}`,
       kind: 'assembly',
-      placeId: plaza.id,
+      placeId: venue.id,
       startTick,
       endTick,
       subjectId: proposal.id,
@@ -1847,13 +2630,13 @@ export class Simulation {
       data: {
         gatheringId: gathering.id,
         kind: 'assembly',
-        placeId: plaza.id,
+        placeId: venue.id,
         startTick,
         endTick,
         subjectId: proposal.id,
         proposalId: proposal.id,
       },
-      reason: `An assembly is scheduled at the plaza on day ${when.day} at ${hh}:00 to weigh "${proposal.text}"`,
+      reason: `An assembly is scheduled at the ${venueName} on day ${when.day} at ${hh}:00 to weigh "${proposal.text}"`,
     })
     if (this.state.tick >= startTick && this.state.tick < endTick) {
       this.emitGatheringStarted(gathering)
@@ -1869,6 +2652,8 @@ export class Simulation {
     g.started = true
     const proposal = this.gatheringProposal(g)
     const text = proposal?.text ?? g.subjectId
+    const venue = this.state.places.find((place) => place.id === g.placeId)
+    const venueName = venue?.kind === 'notice-board' ? 'notice board' : 'plaza'
     this.events.append({
       tick: this.state.tick,
       type: 'gathering:started',
@@ -1879,7 +2664,7 @@ export class Simulation {
         subjectId: g.subjectId,
         proposalId: g.subjectId,
       },
-      reason: `The assembly has gathered at the plaza to weigh "${text}"`,
+      reason: `The assembly has gathered at the ${venueName} to weigh "${text}"`,
     })
   }
 
@@ -2128,15 +2913,23 @@ export class Simulation {
       agent.action.kind === 'sleep' && this.isPerforming(agent)
     const onBed = sleeping && this.isSleepingOnBed(agent)
 
-    // Hunger decay always
-    agent.needs.hunger = clamp01(agent.needs.hunger - (1 / 960) * j.hunger)
+    const storm = isFirstStormWeather(this.state)
+
+    // Hunger decay always; cold storm work burns reserves twice as quickly.
+    agent.needs.hunger = clamp01(
+      agent.needs.hunger - (1 / 960) * j.hunger * (storm ? 2 : 1),
+    )
 
     // Energy: decay awake; bed slots full rate, anywhere else 60% rate
     if (sleeping) {
-      const rate = onBed ? SLEEP_BED_ENERGY : SLEEP_GROUND_ENERGY
+      const rate = onBed
+        ? SLEEP_BED_ENERGY * (storm ? 0.75 : 1)
+        : SLEEP_GROUND_ENERGY * (storm ? 0.25 : 1)
       agent.needs.energy = clamp01(agent.needs.energy + rate * j.energy)
     } else {
-      agent.needs.energy = clamp01(agent.needs.energy - (1 / 1080) * j.energy)
+      agent.needs.energy = clamp01(
+        agent.needs.energy - (1 / 1080) * j.energy * (storm ? 1.5 : 1),
+      )
     }
 
     // World rule 2: social regenerates only with another agent within 1.5 tiles
@@ -2401,7 +3194,11 @@ export class Simulation {
         isStanding(agent) &&
         adjacentToWater(this.state, Math.round(agent.x), Math.round(agent.y))
       if ((atWell || atShore) && !agent.collapsed) {
-        const rate = atWell ? DRINK_WELL_ENERGY : DRINK_SHORE_ENERGY
+        const rate = atWell
+          ? DRINK_WELL_ENERGY
+          : isFirstStormWeather(this.state)
+            ? 0
+            : DRINK_SHORE_ENERGY
         agent.needs.energy = clamp01(agent.needs.energy + rate)
       }
       if (agent.actionTicks >= DRINK_DURATION) {
@@ -2515,7 +3312,9 @@ export class Simulation {
   private haulDropoffForGood(good: Good): Place | undefined {
     if (good === 'food') return this.state.places.find((p) => p.kind === 'stall')
     if (good === 'wood' || good === 'stone') {
-      return this.state.places.find((p) => p.kind === 'storehouse')
+      return this.state.places.find(
+        (p) => p.kind === 'storehouse' && p.storageFilters?.[good] !== false,
+      )
     }
     return undefined
   }
@@ -3787,6 +4586,11 @@ export class Simulation {
     this.stepBushRegrowth()
     this.stepTerrainRegrowth()
     this.stepProduction()
+    // Player commands are issued against the completed current tick. During
+    // playback apply them after that tick's world work, matching live timing.
+    this.applyPlayerCommandsForTick()
+    this.stepFirstStormScenario()
+    this.stepTownGrowthProgression()
 
     if (this.state.tick % SNAPSHOT_INTERVAL === 0) {
       this.snapshots.add(this.makeSnapshot())
@@ -3795,6 +4599,102 @@ export class Simulation {
         this.snapshots.pin(this.state.tick)
       }
     }
+  }
+
+  /** Authored first-season deadline, success, and deterministic exodus. */
+  private stepFirstStormScenario(): void {
+    const scenario = this.state.scenario
+    if (!scenario || scenario.kind !== 'first-storm') return
+
+    settleFirstStormHousing(this.state)
+
+    if (scenario.status === 'preparing' && this.state.tick >= scenario.stormStartTick) {
+      scenario.preparedObjectiveIds = firstStormObjectives(this.state)
+        .filter((objective) => objective.met)
+        .map((objective) => objective.id)
+      scenario.status = 'storm'
+      this.events.append({
+        tick: this.state.tick,
+        type: 'scenario:storm-started',
+        data: {
+          scenario: scenario.kind,
+          stormEndTick: scenario.stormEndTick,
+          preparedObjectiveIds: [...scenario.preparedObjectiveIds],
+        },
+        reason: 'The first storm reached the island',
+      })
+    }
+
+    if (
+      (scenario.status !== 'preparing' && scenario.status !== 'storm') ||
+      this.state.tick < scenario.stormEndTick
+    ) {
+      return
+    }
+
+    const objectives = firstStormObjectives(this.state)
+    const unmet = objectives.filter((objective) => !objective.met)
+    if (unmet.length === 0) {
+      scenario.status = 'survived'
+      this.events.append({
+        tick: this.state.tick,
+        type: 'scenario:survived',
+        data: { scenario: scenario.kind, objectives },
+        reason: 'Every first-storm promise was kept',
+      })
+      return
+    }
+
+    scenario.status = 'failed'
+    const needSum = (agent: AgentState) =>
+      agent.needs.hunger + agent.needs.energy + agent.needs.social
+    const departing = this.state.agents
+      .slice()
+      .sort((a, b) => {
+        const ah = a.homeId ? 1 : 0
+        const bh = b.homeId ? 1 : 0
+        return ah - bh || needSum(a) - needSum(b) || a.id.localeCompare(b.id)
+      })
+      .slice(0, Math.min(unmet.length, Math.max(0, this.state.agents.length - 1)))
+    const departingIds = new Set(departing.map((agent) => agent.id))
+    scenario.departedAgentIds.push(...departing.map((agent) => agent.id))
+    this.state.agents = this.state.agents.filter((agent) => !departingIds.has(agent.id))
+
+    for (const agent of this.state.agents) {
+      for (const id of departingIds) delete agent.sympathy[id]
+    }
+    for (const map of [this.state.sympathyStreak, this.state.sympathyMet]) {
+      for (const key of Object.keys(map)) {
+        if (key.split('|').some((id) => departingIds.has(id))) delete map[key]
+      }
+    }
+    for (const agent of departing) {
+      delete this.state.commissionCooldownUntil?.[agent.id]
+      delete this.state.commissionLastRefusal?.[agent.id]
+      delete this.state.placeBlockLast?.[agent.id]
+      this.events.append({
+        tick: this.state.tick,
+        type: 'scenario:settler-departed',
+        agentId: agent.id,
+        data: {
+          scenario: scenario.kind,
+          agentName: agent.name,
+          unmetObjectives: unmet.map((objective) => objective.id),
+        },
+        reason: `${agent.name} left after the town broke its storm promises`,
+      })
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'scenario:failed',
+      data: {
+        scenario: scenario.kind,
+        objectives,
+        unmetObjectives: unmet.map((objective) => objective.id),
+        departedAgentIds: departing.map((agent) => agent.id),
+      },
+      reason: `${departing.length} settlers left after the first storm`,
+    })
   }
 
   /**
@@ -4128,6 +5028,7 @@ export class Simulation {
   /** World process: +1 food per bush/spring on each kind's interval, capped. */
   private stepBushRegrowth(): void {
     if (this.state.tick <= 0) return
+    if (isFirstStormWeather(this.state)) return
     const interval = presetFacts(this.state.preset).bushRegrowInterval
     const springInterval = springRegrowInterval(this.state.preset)
     const bushDue = this.state.tick % interval === 0
@@ -4773,6 +5674,7 @@ export class Simulation {
         ? this.state.agents.find((a) => a.id === commissioner)
         : undefined
 
+    const celebrationCrew = this.state.agents.filter((agent) => agent.employedAt === site.id)
     // Vacate all employees at this site
     for (const a of this.state.agents) {
       if (a.employedAt === site.id) {
@@ -4790,6 +5692,14 @@ export class Simulation {
     }
 
     this.applyCompletedPlace(site, finishedKind)
+    for (const resident of celebrationCrew) {
+      resident.action = {
+        kind: 'idle',
+        reason: `Celebrating the completed ${finishedKind === 'home' ? 'house' : finishedKind}`,
+      }
+      resident.actionTicks = 0
+      resident.lastDecideTick = this.state.tick
+    }
 
     // Deed to commissioner for every commissioned kind (firstPrivate semantics).
     if (commissioner !== 'commons') {
@@ -4859,6 +5769,7 @@ export class Simulation {
         ? this.state.agents.find((a) => a.id === commissioner)
         : undefined
 
+    const celebrationCrew = this.state.agents.filter((agent) => agent.employedAt === site.id)
     for (const a of this.state.agents) {
       if (a.employedAt === site.id) {
         this.vacateJob(a, `${a.name}'s construction job finished — ${kind} upgraded`)
@@ -4882,6 +5793,14 @@ export class Simulation {
     }
 
     this.removePlace(site)
+    for (const resident of celebrationCrew) {
+      resident.action = {
+        kind: 'idle',
+        reason: `Celebrating the level ${newLevel} ${kind === 'home' ? 'house' : kind}`,
+      }
+      resident.actionTicks = 0
+      resident.lastDecideTick = this.state.tick
+    }
 
     const ownerId = this.state.owners[target.id]
     const ownerAgent =
@@ -4910,6 +5829,85 @@ export class Simulation {
     const i = this.state.places.indexOf(place)
     if (i >= 0) this.state.places.splice(i, 1)
     delete this.state.owners[place.id]
+  }
+
+  /** Replay commands recorded at the current tick; live commands apply immediately. */
+  private applyPlayerCommandsForTick(): void {
+    if (!this.playerCommandPlayback) return
+    const atTick = this.playerCommandPlayback
+      .filter((record) => record.tick === this.state.tick)
+      .slice()
+    for (const record of atTick) {
+      // A command issued on a snapshot tick is already represented by that
+      // snapshot. Do not apply it a second time when seeking from that snap.
+      if ((this.state.playerCommandLog ?? []).some((existing) => existing.id === record.id)) continue
+      this.applyPlayerCommand(record.command, true, record.id)
+    }
+  }
+
+  private nearestStorehouse(x: number, y: number, excludeId?: string): Place | null {
+    const stores = this.state.places
+      .filter((p) => p.kind === 'storehouse' && p.id !== excludeId)
+      .slice()
+      .sort((a, b) => {
+        const da = (a.x - x) ** 2 + (a.y - y) ** 2
+        const db = (b.x - x) ** 2 + (b.y - y) ** 2
+        if (da !== db) return da - db
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+      })
+    return stores[0] ?? null
+  }
+
+  /** Clear workers, actions and site-bound cargo before removing a place. */
+  private cleanupAgentsForRemovedPlace(place: Place): void {
+    const store = this.nearestStorehouse(place.x, place.y, place.id)
+    for (const agent of this.state.agents) {
+      const referencesPlace =
+        agent.employedAt === place.id ||
+        agent.action.targetPlaceId === place.id ||
+        agent.haulSourceId === place.id ||
+        agent.haulDropoffId === place.id
+      if (!referencesPlace) continue
+
+      if (agent.haulAmount > 0 && agent.haulGood) {
+        const good = agent.haulGood
+        const amount = Math.min(agent.haulAmount, agent.inventory[good] ?? 0)
+        if (amount > 0 && store) {
+          this.transferGoods(
+            { kind: 'agent', id: agent.id },
+            { kind: 'place', id: store.id },
+            good,
+            amount,
+            `${agent.name} returned cargo from removed ${place.id} to ${store.id}`,
+          )
+        } else if (amount > 0) {
+          this.consumeGoods(
+            { kind: 'agent', id: agent.id },
+            good,
+            amount,
+            `${agent.name} discarded cargo from removed ${place.id}; no storehouse`,
+          )
+        }
+      }
+      if (agent.employedAt === place.id) {
+        this.events.append({
+          tick: this.state.tick,
+          type: 'job:vacated',
+          agentId: agent.id,
+          data: { agentName: agent.name, placeId: place.id, placeKind: place.kind },
+          reason: `${agent.name}'s workplace was removed`,
+        })
+        agent.employedAt = null
+        agent.workedTicks = 0
+        agent.daysIdleOnJob = 0
+      }
+      if (agent.homeId === place.id) agent.homeId = ''
+      agent.action = { kind: 'idle', reason: `${place.kind} was removed` }
+      agent.actionTicks = 0
+      agent.pathIndex = 0
+      agent.workPhase = null
+      this.clearHaul(agent)
+    }
   }
 
   private recordSiteContributor(site: Place, agentId: string): void {
@@ -4986,13 +5984,16 @@ export class Simulation {
     site.inventory = emptyInventory()
     site.production = undefined
     site.price = undefined
+    site.storageFilters = undefined
     site.jobSlots = 0
     site.wage = undefined
 
     const facts = presetFacts(this.state.preset)
     switch (kind) {
       case 'home':
-        site.slots = 1
+        site.slots = this.state.scenario?.kind === 'first-storm'
+          ? FIRST_STORM_HOME_SLOTS
+          : 1
         break
       case 'farm':
         site.slots = 2
@@ -5027,6 +6028,7 @@ export class Simulation {
         break
       case 'storehouse':
         site.slots = 2
+        site.storageFilters = { food: true, wood: true, stone: true }
         break
       case 'well':
         site.slots = 2
@@ -5545,6 +6547,7 @@ export class Simulation {
       intentPlayback?: ExternalIntentRecord[] | null
       notePlayback?: MindNoteRecord[] | null
       sayPlayback?: SayRecord[] | null
+      playerCommandPlayback?: PlayerCommandRecord[] | null
     },
   ): Simulation {
     const ev = new EventTrace()
@@ -5563,6 +6566,7 @@ export class Simulation {
       intentPlayback: opts?.intentPlayback ?? null,
       notePlayback: opts?.notePlayback ?? null,
       sayPlayback: opts?.sayPlayback ?? null,
+      playerCommandPlayback: opts?.playerCommandPlayback ?? null,
     })
     // Rebuild snapshot ring from restored position for further seeks on this fork
     sim.snapshots.add(sim.makeSnapshot())
@@ -5617,6 +6621,7 @@ export class Simulation {
     ensureMindFields(this.state)
     // Full logs up to live head — re-sim applies entries at their recorded ticks
     const playback = cloneExternalIntentLog(this.state.externalIntentLog)
+    const playerCommandPlayback = clonePlayerCommandLog(this.state.playerCommandLog)
     const notePlayback = cloneMindNoteLog(this.state.mindNoteLog)
     const sayPlayback = cloneSayLog(this.state.sayLog)
     const nearest = this.snapshots.nearestAtOrBefore(target)
@@ -5626,7 +6631,9 @@ export class Simulation {
         intentPlayback: playback,
         notePlayback,
         sayPlayback,
+        playerCommandPlayback,
         preset: this.state.preset,
+        scenario: this.state.scenario?.kind,
       })
       if (target > 0) fresh.advanceTicks(target)
       return fresh
@@ -5635,6 +6642,7 @@ export class Simulation {
       intentPlayback: playback,
       notePlayback,
       sayPlayback,
+      playerCommandPlayback,
     })
     const remaining = target - fork.state.tick
     if (remaining > 0) fork.advanceTicks(remaining)

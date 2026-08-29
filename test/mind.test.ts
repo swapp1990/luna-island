@@ -251,6 +251,25 @@ describe('mind external intents — record/replay', () => {
     })
     expect(a.text).toBe(b.text)
   })
+
+  it('MockProvider reserves most town decisions for social activity', () => {
+    const provider = new MockProvider()
+    let social = 0
+    let total = 0
+    for (const agentId of ['agent-0', 'agent-2']) {
+      for (let tick = 0; tick < 40; tick++) {
+        const result = provider.decideSync({
+          system: 's',
+          user: 'Player-made town facts:\n- The player built a shared notice board.\nOpen proposals: one posted',
+          agentId,
+          tick,
+        })
+        if (JSON.parse(result.text).action === 'socialize') social++
+        total++
+      }
+    }
+    expect(social / total).toBeGreaterThanOrEqual(0.5)
+  })
 })
 
 /**

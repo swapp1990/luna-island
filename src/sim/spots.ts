@@ -1,5 +1,6 @@
 import { findPath, isWalkable } from './pathfind'
 import type { AgentState, Place, PlaceKind, Rng, WorldState } from './types'
+import { workPriorityForPlace } from './workPriorities'
 
 /** Base footprint radii (euclidean) for place kinds. Home uses discrete 3×3. */
 export const PLACE_RADIUS: Record<PlaceKind, number> = {
@@ -161,10 +162,15 @@ export function pickOpenWorkplace(
   agent: AgentState,
 ): Place | null {
   const list = world.places.filter(
-    (p) => (p.jobSlots ?? 0) > 0 && (p.wage ?? 0) > 0,
+    (p) =>
+      (p.jobSlots ?? 0) > 0 &&
+      (p.wage ?? 0) > 0 &&
+      workPriorityForPlace(world, p) !== Number.NEGATIVE_INFINITY,
   )
   if (list.length === 0) return null
   const sorted = list.slice().sort((a, b) => {
+    const priority = workPriorityForPlace(world, b) - workPriorityForPlace(world, a)
+    if (priority !== 0) return priority
     const da = (a.x - agent.x) ** 2 + (a.y - agent.y) ** 2
     const db = (b.x - agent.x) ** 2 + (b.y - agent.y) ** 2
     if (da !== db) return da - db

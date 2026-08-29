@@ -724,7 +724,7 @@ test.describe.serial('lunabrain harness', () => {
     await page.screenshot({ path: 'artifacts/memories.png', fullPage: false })
 
     // Plain URL (no ?brain=) auto-enables mock or codex
-    await page.goto('/')
+    await page.goto('/observer')
     await expect
       .poll(async () => page.evaluate(() => (window as any).__simState?.ready === true))
       .toBe(true)

@@ -1,4 +1,6 @@
 /// <reference types="vitest/config" />
+import fs from 'node:fs'
+import path from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { lunaSidecarPlugin } from './scripts/luna-sidecar'
@@ -20,8 +22,55 @@ function godRoutePlugin(): Plugin {
   }
 }
 
+/**
+ * The colony builder (plans/colony-builder.md) grows on `/town` → `town.html` →
+ * `src/town/**`. This rewrites the pretty URL and serves the manor-slice glTF
+ * exports read-only at /assets/gltf/* so the asset pipeline has a stable URL
+ * space in dev. (Production asset serving is a later, deliberate step.)
+ */
+function townPlugin(): Plugin {
+  const gltfRoot = path.resolve(process.cwd(), 'art/manor-slice/export/gltf')
+  const types: Record<string, string> = {
+    '.gltf': 'model/gltf+json',
+    '.glb': 'model/gltf-binary',
+    '.bin': 'application/octet-stream',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+  }
+  return {
+    name: 'luna-town',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url === '/town' || req.url === '/town/') {
+          req.url = '/town.html'
+          return next()
+        }
+        if (req.url === '/observer' || req.url === '/observer/') {
+          req.url = '/observer.html'
+          return next()
+        }
+        if (req.url === '/gallery' || req.url === '/gallery/') {
+          req.url = '/gallery.html'
+          return next()
+        }
+        if (req.url?.startsWith('/assets/gltf/')) {
+          const rel = decodeURIComponent(req.url.slice('/assets/gltf/'.length).split('?')[0])
+          const file = path.resolve(gltfRoot, rel)
+          if (!file.startsWith(gltfRoot) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
+            res.statusCode = 404
+            return res.end('not found')
+          }
+          res.setHeader('Content-Type', types[path.extname(file).toLowerCase()] ?? 'application/octet-stream')
+          return fs.createReadStream(file).pipe(res)
+        }
+        next()
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin(), godRoutePlugin()],
+  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin(), godRoutePlugin(), townPlugin()],
   server: {
     host: '127.0.0.1',
     port: 5175,
@@ -31,7 +80,10 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: 'index.html',
+        observer: 'observer.html',
         god: 'god.html',
+        town: 'town.html',
+        gallery: 'gallery.html',
       },
     },
   },

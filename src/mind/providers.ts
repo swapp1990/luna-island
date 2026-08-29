@@ -44,6 +44,7 @@ const ACTION_CYCLE = [
   'sleep',
   'buy',
 ] as const
+const TOWN_ACTION_CYCLE = [...ACTION_CYCLE, 'propose'] as const
 
 export interface MockProviderOptions {
   /**
@@ -151,15 +152,23 @@ export class MockProvider implements MindProvider {
       return { text, latencyMs: 1, approxChars }
     }
 
-    // Bias toward socialize so conversations can emerge in mock/e2e
-    let action: (typeof ACTION_CYCLE)[number]
-    if (Math.abs(h) % 5 < 2) {
+    // Strongly bias town mocks toward socialize so conversations emerge before
+    // the bounded acceptance-session budget is spent on solitary decisions.
+    const observed = prompt.user.match(/Player-made town facts:\s*\n- ([^\n]+)/)?.[1]
+    const townMind = !!observed && !observed.startsWith('(none')
+    const actionCycle = townMind ? TOWN_ACTION_CYCLE : ACTION_CYCLE
+    let action: (typeof TOWN_ACTION_CYCLE)[number]
+    if (townMind && prompt.user.includes('Open proposals: none posted')) {
+      action = 'propose'
+    } else if (Math.abs(h) % 5 < (townMind ? 3 : 2)) {
       action = 'socialize'
     } else {
-      action = ACTION_CYCLE[Math.abs(h) % ACTION_CYCLE.length]!
+      action = actionCycle[Math.abs(h) % actionCycle.length]!
     }
-    const reasoning = `I should ${action} now — needs and the island clock say so.`
-    const payload: { action: string; target?: string; reasoning: string } = {
+    const reasoning = observed
+      ? `I noticed ${observed}; I should ${action} now.`
+      : `I should ${action} now — needs and the island clock say so.`
+    const payload: { action: string; target?: string; text?: string; reasoning: string } = {
       action,
       reasoning: reasoning.slice(0, 160),
     }
@@ -169,6 +178,7 @@ export class MockProvider implements MindProvider {
     else if (action === 'drink') payload.target = 'well'
     else if (action === 'socialize') payload.target = 'plaza'
     else if (action === 'sleep') payload.target = 'home'
+    else if (action === 'propose') payload.text = 'We should protect shared food before the next hard season.'
 
     const text = JSON.stringify(payload)
     const approxChars = prompt.system.length + prompt.user.length + text.length

@@ -245,7 +245,6 @@ function civicObservationLines(
         : 'Open proposals: none posted (anyone may post one, free)',
     )
   }
-  const plaza = world.places.find((p) => p.kind === 'plaza')
   const now = toSimTime(world.tick)
   for (const g of world.gatherings ?? []) {
     if (g.kind !== 'assembly') continue
@@ -253,15 +252,17 @@ function civicObservationLines(
     const text = clipObs(proposal?.text ?? '', 80)
     const ongoing = world.tick >= g.startTick && world.tick < g.endTick
     const today = toSimTime(g.startTick).day === now.day
+    const venue = world.places.find((place) => place.id === g.placeId)
+    const venueName = venue?.kind === 'notice-board' ? 'notice board' : 'plaza'
     if (ongoing) {
-      const n = plaza
-        ? world.agents.filter((a) => inPlazaRadius(a.x, a.y, plaza)).length
+      const n = venue
+        ? world.agents.filter((a) => inPlazaRadius(a.x, a.y, venue)).length
         : 0
       lines.push(
-        `The assembly is gathered at the plaza NOW (${n} villagers) — "${text}" is being weighed`,
+        `The assembly is gathered at the ${venueName} NOW (${n} villagers) — "${text}" is being weighed`,
       )
     } else if (today && world.tick < g.startTick) {
-      lines.push(`An assembly gathers at the plaza at 18:00 to weigh "${text}"`)
+      lines.push(`An assembly gathers at the ${venueName} at 18:00 to weigh "${text}"`)
     }
   }
   const r2 = PLACE_VIEW_RADIUS * PLACE_VIEW_RADIUS
@@ -358,6 +359,10 @@ export function buildUserPrompt(
       : []),
     `Standing facts:`,
     ...standing.map((s) => `- ${s}`),
+    `Player-made town facts:`,
+    ...((agent.observedFacts ?? []).length
+      ? (agent.observedFacts ?? []).slice(-4).map((fact) => `- @${fact.tick} ${fact.text}`)
+      : ['- (none observed)']),
     ...(goals.length ? ['Goals:', ...goals.map((g) => `- ${g}`)] : []),
     ...civic,
     `Recently felt:`,

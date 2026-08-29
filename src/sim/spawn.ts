@@ -68,7 +68,7 @@ function jitterFactor(rng: Rng): number {
   return 0.85 + rng.next() * 0.3
 }
 
-function makeAgent(
+export function makeAgent(
   i: number,
   x: number,
   y: number,

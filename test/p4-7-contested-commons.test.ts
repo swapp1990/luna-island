@@ -325,7 +325,7 @@ describe('P4-7 contested commons', () => {
     const a = new Simulation(42, { preset: 'wild' })
     const b = new Simulation(42, { preset: 'wild' })
     const h0 = a.hash()
-    expect(h0).toBe('94527801')
+    expect(h0).toBe('c10ec3d7')
     expect(b.hash()).toBe(h0)
     a.advanceTicks(200)
     b.advanceTicks(200)
