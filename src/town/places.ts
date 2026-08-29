@@ -6,6 +6,7 @@ import type { CompletionFxHandle } from './completionFx'
 import { TILE_METRES } from './constants'
 import { footprintMetres, footprintTiles, placeholderHeight, tileToWorld } from './coords'
 import { risingHeight01, stageForProgress } from './constructionPlan'
+import { buildStructureVisuals, structureVisualSignature } from './structureVisuals'
 import {
   applyWorldClipY,
   buildFrameStage,
@@ -42,6 +43,7 @@ export interface PlacesHandle {
 
 const KIND_GREY: Record<PlaceKind, number> = {
   home: 0x8a8a8a,
+  school: 0x8a8a8a,
   farm: 0x6e5b44, // tilled soil (style bible)
   well: 0x909090,
   plaza: 0xb5a488, // packed dirt
@@ -207,6 +209,7 @@ interface Rendered {
 }
 
 function signatureFor(place: Place, world: WorldState): string {
+  if (place.structure) return structureVisualSignature(place)
   if (place.kind === 'construction-site') {
     const progress = place.construction?.progress ?? 0
     const stage = stageForProgress(progress)
@@ -373,6 +376,11 @@ export async function createPlaces(
     // each independently capped by their own nearest distance, can never
     // sum to a real AABB overlap on both axes at once.
     const neighborCapM = nearestNeighborMetres(place, activeWorld) * 0.62
+
+    if (place.structure) {
+      group.add(buildStructureVisuals(place, geosOwned, matsOwned))
+      return { group, asset: 'placeholder', scale: 1 }
+    }
 
     if (place.kind === 'construction-site') {
       const nominalFootprintM = footprintMetres('construction-site')

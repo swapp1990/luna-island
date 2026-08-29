@@ -1,3 +1,4 @@
+import { interiorFloorTiles } from './blueprints'
 import { findPath, isWalkable } from './pathfind'
 import type { AgentState, Place, PlaceKind, Rng, WorldState } from './types'
 import { workPriorityForPlace } from './workPriorities'
@@ -17,6 +18,8 @@ export const PLACE_RADIUS: Record<PlaceKind, number> = {
   'notice-board': 1.0,
   /** Tight enough that slotTiles yields only the centre tile. */
   spring: 0.4,
+  /** Interior floors are the real slots; radius is a fallback. */
+  school: 2.5,
 }
 
 /** Euclidean plaza footprint — the physical "standing at the plaza" predicate. */
@@ -87,6 +90,12 @@ export function slotTiles(
   place: Place,
 ): Array<[number, number]> {
   const out: Array<[number, number]> = []
+  if (place.kind === 'school' && place.structure) {
+    for (const [x, y] of interiorFloorTiles(place)) {
+      if (isWalkable(world, x, y)) out.push([x, y])
+    }
+    return out
+  }
   // Home / farm / construction-site use a discrete 3×3 footprint
   if (
     place.kind === 'home' ||
@@ -126,6 +135,10 @@ export function isSlotTile(
 ): boolean {
   const tx = Math.round(x)
   const ty = Math.round(y)
+  if (place.kind === 'school' && place.structure) {
+    return interiorFloorTiles(place).some(([sx, sy]) => sx === tx && sy === ty) &&
+      isWalkable(world, tx, ty)
+  }
   if (
     place.kind === 'home' ||
     place.kind === 'farm' ||

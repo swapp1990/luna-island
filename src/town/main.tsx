@@ -1,6 +1,8 @@
 import * as THREE from 'three'
 import { createRoot } from 'react-dom/client'
+import { summarizeStructure } from '../sim/blueprints'
 import { Simulation } from '../sim/sim'
+import { toSimTime } from '../sim/time'
 import { createAgents } from './agents'
 import { createAssetCache, filesForPlaces } from './assets'
 import { createCamera } from './camera'
@@ -17,7 +19,7 @@ import { createPlacementGhost } from './placementGhost'
 import { createPlaces } from './places'
 import { createTerrain } from './terrain'
 import { groundHeight } from './terrainHeight'
-import { prospectiveFootprintHitsTrees, prospectivePathHitsTrees } from './treePlan'
+import { prospectiveBlueprintHitsTrees, prospectiveFootprintHitsTrees, prospectivePathHitsTrees } from './treePlan'
 import { createTrees } from './trees'
 import { createWorldOverlays } from './worldOverlays'
 import { availableInvitation, currentMilestone, townAppeal } from '../sim/townGrowth'
@@ -83,6 +85,13 @@ async function boot(): Promise<void> {
   const validateTownBuild = (kind: Parameters<typeof sim.validateBuildPlacement>[0], x: number, y: number) => {
     const check = sim.validateBuildPlacement(kind, x, y)
     if (check.ok && prospectiveFootprintHitsTrees(sim.state, x, y)) {
+      return { ...check, ok: false, reason: 'trees', reasonCode: 'trees' }
+    }
+    return check
+  }
+  const validateTownBlueprint = (blueprintId: string, x: number, y: number) => {
+    const check = sim.validateBlueprintPlacement(blueprintId, x, y)
+    if (check.ok && prospectiveBlueprintHitsTrees(sim.state, check.footprint)) {
       return { ...check, ok: false, reason: 'trees', reasonCode: 'trees' }
     }
     return check
@@ -308,6 +317,46 @@ async function boot(): Promise<void> {
       if (result.ok) syncAfterCommand()
       return result
     },
+    placeBlueprint: (id, x, y) => {
+      const result = sim.issuePlayerCommand({ type: 'place-blueprint', blueprintId: id, x, y })
+      if (result.ok) syncAfterCommand()
+      return { ok: result.ok, reason: result.reason }
+    },
+    listStructures: () => {
+      const rows = []
+      for (const place of sim.state.places) {
+        const row = summarizeStructure(place)
+        if (row) rows.push(row)
+      }
+      return rows
+    },
+    fastForward: (ticks) => {
+      const n = Math.max(0, Math.min(20_000, Math.floor(ticks)))
+      loop.advanceTicks(n, true)
+      loop.syncVisuals()
+      interaction.refresh()
+      const t = toSimTime(sim.state.tick)
+      debug.state.day = t.day
+      debug.state.hour = t.hour
+      debug.state.minute = t.minute
+      debug.state.tick = sim.state.tick
+      debug.state.agentCount = sim.state.agents.length
+      debug.state.placeCount = sim.state.places.length
+      let constructing = 0
+      let structureActive = 0
+      let structureBuilt = 0
+      for (const p of sim.state.places) {
+        if (p.kind === 'construction-site') constructing += 1
+        if (p.structure) {
+          if (p.kind === 'construction-site') structureActive += 1
+          else structureBuilt += 1
+        }
+      }
+      debug.state.constructionCount = constructing
+      debug.state.structures = { active: structureActive, built: structureBuilt }
+    },
+    validateBlueprint: validateTownBlueprint,
+    getEvents: () => sim.getEvents(),
     growthSnapshot: () => ({
       appeal: townAppeal(sim.state),
       milestone: currentMilestone(sim.state).id,
@@ -348,6 +397,9 @@ async function boot(): Promise<void> {
     getWorld: () => sim.state,
     validateBuild: validateTownBuild,
     issueBuild: (kind, x, y) => sim.issuePlayerCommand({ type: 'build', placeKind: kind, x, y }),
+    validateBlueprint: validateTownBlueprint,
+    issueBlueprint: (id, x, y) =>
+      sim.issuePlayerCommand({ type: 'place-blueprint', blueprintId: id, x, y }),
     validatePath: validateTownPath,
     issuePath: (x, y) => sim.issuePlayerCommand({ type: 'paint-path', x, y, enabled: true }),
     issueCancel: (placeId) => sim.issuePlayerCommand({ type: 'cancel-construction', placeId }),
@@ -373,6 +425,7 @@ async function boot(): Promise<void> {
       getEvents={() => sim.getEvents()}
       setSpeed={(n) => loop.setSpeed(n)}
       beginBuild={(kind) => interaction.beginBuild(kind)}
+      beginBlueprint={(id) => interaction.beginBlueprint(id)}
       beginPath={() => interaction.beginPath()}
       cancelPlacement={() => interaction.cancelMode()}
       cancelSelected={() => {

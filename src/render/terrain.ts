@@ -1734,6 +1734,19 @@ function addPlace(
     }
     bushBerries.set(place.id, fruits)
     root.add(group)
+  } else {
+    // Unknown place kind (e.g. school): inert placeholder, never crash.
+    const group = new THREE.Group()
+    group.position.set(place.x, 0, place.y)
+    const geo = track(new THREE.BoxGeometry(1.4, 0.9, 1.4))
+    const mat = track(new THREE.MeshStandardMaterial({ color: 0x8a8a8a, roughness: 0.9 }))
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.position.y = baseY + 0.45
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    group.add(mesh)
+    root.add(group)
+    return group
   }
   return undefined
 }

@@ -21,6 +21,14 @@ export interface ConstructionListItem {
   stage: 'pad' | 'frame' | 'rising'
 }
 
+export interface StructureListItem {
+  placeId: string
+  blueprintId: string
+  state: 'building' | 'built'
+  cells: { planned: number; stocked: number; built: number; total: number }
+  remaining: Partial<Record<'wood' | 'stone', number>>
+}
+
 export interface TownState {
   ready: boolean
   day: number
@@ -39,6 +47,8 @@ export interface TownState {
   assets: TownAssetsState
   camera: { yaw: number; pitch: number; dist: number; tx: number; tz: number }
   fps: number
+  /** Additive: blueprint sites in progress / finished structures. */
+  structures: { active: number; built: number }
 }
 
 export interface TownControl {
@@ -91,6 +101,17 @@ export interface TownControl {
     mindAgentIds: string[]
     assemblyAtNoticeBoard: boolean
   }
+  placeBlueprint: (id: string, x: number, y: number) => { ok: boolean; reason?: string }
+  listStructures: () => StructureListItem[]
+  /** Synchronously step the sim N ticks, no render between. Capped at 20000/call. */
+  fastForward: (ticks: number) => void
+  validateBlueprint: (id: string, x: number, y: number) => { ok: boolean; reason: string }
+  getEvents: () => ReadonlyArray<{
+    type: string
+    agentId?: string
+    data?: Record<string, unknown>
+    reason?: string
+  }>
 }
 
 declare global {
@@ -120,6 +141,7 @@ export function createDebug(control: TownControl): DebugHandle {
     placeCount: 0,
     constructionCount: 0,
     treeCount: 0,
+    structures: { active: 0, built: 0 },
     drawCalls: 0,
     assets: { loaded: 0, fallback: 0, failed: 0 },
     camera: { yaw: 0, pitch: 0, dist: 0, tx: 0, tz: 0 },

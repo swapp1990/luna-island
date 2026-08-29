@@ -12,6 +12,8 @@ export type PlayerCommandInput =
   | PlayerCommand
   | ({ type: 'build'; kind: BuildableKind; x: number; y: number; rotation?: number })
   | ({ kind: 'build'; placeKind?: BuildableKind; x: number; y: number; rotation?: number })
+  | ({ kind: 'place-blueprint'; blueprintId: string; x: number; y: number })
+  | ({ type: 'place-blueprint'; blueprintId: string; x: number; y: number })
   | ({ kind: 'cancel-construction'; placeId: string })
   | ({ type: 'cancel'; placeId: string })
   | ({ kind: 'cancel'; placeId: string })
@@ -49,6 +51,7 @@ export type PlayerCommandReason =
   | 'no-invitation'
   | 'candidate-unavailable'
   | 'no-housing'
+  | 'clearance'
 
 export interface BuildPlacementValidation {
   ok: boolean
@@ -64,6 +67,11 @@ export interface BuildPlacementValidation {
   /** UI-friendly warning; understocking never invalidates a designation. */
   warning?: 'missing-materials'
   blockingPlaceId?: string
+  /** Present on blueprint validation: per-cell ok flags, parallel to bp.cells. */
+  cellOk?: boolean[]
+  blueprintId?: string
+  originX?: number
+  originY?: number
 }
 
 export interface PlayerCommandResult {
@@ -87,6 +95,14 @@ export function clonePlayerCommand(command: PlayerCommand): PlayerCommand {
       x: command.x,
       y: command.y,
       ...(command.rotation !== undefined ? { rotation: command.rotation } : {}),
+    }
+  }
+  if (command.type === 'place-blueprint') {
+    return {
+      type: 'place-blueprint',
+      blueprintId: command.blueprintId,
+      x: command.x,
+      y: command.y,
     }
   }
   if (command.type === 'paint-path') {
@@ -184,6 +200,14 @@ export function normalizePlayerCommand(input: PlayerCommandInput): PlayerCommand
   }
   if (type === 'accept-invitation' && typeof raw.candidateId === 'string') {
     return { type, candidateId: raw.candidateId }
+  }
+  if (
+    type === 'place-blueprint' &&
+    typeof raw.blueprintId === 'string' &&
+    typeof raw.x === 'number' &&
+    typeof raw.y === 'number'
+  ) {
+    return { type: 'place-blueprint', blueprintId: raw.blueprintId, x: raw.x, y: raw.y }
   }
   return null
 }

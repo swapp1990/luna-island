@@ -72,6 +72,25 @@ import {
   type PlayerCommandReason,
 } from './playerCommands'
 import {
+  BLUEPRINTS,
+  CELL_COSTS,
+  blueprintBill,
+  cellWorldTile,
+  chebyshev,
+  clearanceTiles,
+  cloneStructure,
+  countStructureStates,
+  interiorFloorTiles,
+  inventoryCovers,
+  makePlannedStructure,
+  nextPlannedIndex,
+  plannedCellsBill,
+  placeOccupiedTiles,
+  remainingNeedsFromBill,
+  structureCenter,
+  totalStructureCells,
+} from './blueprints'
+import {
   blockedFeltLine,
   EXAMINE_BY_KIND,
   examineKnowledgeFor,
@@ -371,11 +390,9 @@ export function validateBuildPlacement(
   }
   for (const place of world.places) {
     if (NATURAL_PLACE_KINDS.has(place.kind)) continue
-    const ox = Math.round(place.x)
-    const oy = Math.round(place.y)
+    const occupied = placeOccupiedTiles(place)
     const footprintHit = footprint.some(([tx, ty]) =>
-      Math.abs(tx - ox) <= BUILD_FOOTPRINT_RADIUS &&
-      Math.abs(ty - oy) <= BUILD_FOOTPRINT_RADIUS,
+      occupied.some(([ox, oy]) => ox === tx && oy === ty),
     )
     if (footprintHit) {
       return {
@@ -410,6 +427,166 @@ export function buildableMenuLine(): string {
 
 export function buildableKindList(): string {
   return (Object.keys(BUILD_RECIPES) as BuildableKind[]).join(', ')
+}
+
+function blueprintCellTiles(
+  bp: { width: number; cells: Array<unknown> },
+  originX: number,
+  originY: number,
+): Array<[number, number]> {
+  const tiles: Array<[number, number]> = []
+  for (let i = 0; i < bp.cells.length; i++) {
+    if (!bp.cells[i]) continue
+    const at = cellWorldTile(originX, originY, bp.width, i)
+    tiles.push([at.x, at.y])
+  }
+  return tiles
+}
+
+/**
+ * Per-cell placement rules for a blueprint. Material availability is a warning,
+ * matching `validateBuildPlacement`.
+ */
+export function validateBlueprintPlacement(
+  world: WorldState,
+  blueprintId: string,
+  x: number,
+  y: number,
+): BuildPlacementValidation {
+  const px = Number.isFinite(x) ? Math.round(x) : Number.NaN
+  const py = Number.isFinite(y) ? Math.round(y) : Number.NaN
+  const bp = BLUEPRINTS[blueprintId]
+  const bill = bp ? blueprintBill(bp) : { wood: 0, stone: 0, labourTicks: 0 }
+  const footprint = bp && Number.isFinite(px) && Number.isFinite(py)
+    ? blueprintCellTiles(bp, px, py)
+    : []
+  const storedMaterials = world.places
+    .filter((p) => p.kind === 'storehouse')
+    .reduce(
+      (sum, p) => ({
+        wood: sum.wood + (p.inventory?.wood ?? 0),
+        stone: sum.stone + (p.inventory?.stone ?? 0),
+      }),
+      { wood: 0, stone: 0 },
+    )
+  const requiredMaterials = { wood: bill.wood, stone: bill.stone }
+  const missingStoredMaterials = {
+    wood: Math.max(0, requiredMaterials.wood - storedMaterials.wood),
+    stone: Math.max(0, requiredMaterials.stone - storedMaterials.stone),
+  }
+  const cellOk = bp ? bp.cells.map((cell) => !cell) : []
+  const base: BuildPlacementValidation = {
+    ok: false,
+    reason: 'unknown-kind',
+    reasonCode: 'unknown-kind',
+    x: px,
+    y: py,
+    footprint,
+    elevationSpread: 0,
+    requiredMaterials,
+    storedMaterials,
+    missingStoredMaterials,
+    cellOk,
+    blueprintId,
+    originX: px,
+    originY: py,
+  }
+  if (!bp) return base
+  if (!Number.isFinite(px) || !Number.isFinite(py)) {
+    return { ...base, reason: 'invalid-coordinate', reasonCode: 'invalid-coordinate' }
+  }
+  if (world.places.filter((p) => p.kind === 'construction-site').length >= MAX_ACTIVE_SITES) {
+    return { ...base, reason: 'site-cap', reasonCode: 'site-cap', cellOk: bp.cells.map(() => false) }
+  }
+
+  const failCell = (reason: PlayerCommandReason, extra?: Partial<BuildPlacementValidation>): BuildPlacementValidation => ({
+    ...base,
+    reason,
+    reasonCode: reason,
+    ...extra,
+  })
+
+  for (let i = 0; i < bp.cells.length; i++) {
+    if (!bp.cells[i]) {
+      cellOk[i] = true
+      continue
+    }
+    const at = cellWorldTile(px, py, bp.width, i)
+    if (at.x < 0 || at.y < 0 || at.x >= world.width || at.y >= world.height) {
+      cellOk[i] = false
+      return failCell('out-of-bounds', { cellOk })
+    }
+    const tile = world.tiles[at.y * world.width + at.x]!
+    if (tile.kind === 'water') {
+      cellOk[i] = false
+      return failCell('water', { cellOk })
+    }
+    if (tile.kind === 'rock') {
+      cellOk[i] = false
+      return failCell('rock', { cellOk })
+    }
+    if (!tile.walkable) {
+      cellOk[i] = false
+      return failCell('not-walkable', { cellOk })
+    }
+    cellOk[i] = true
+  }
+
+  const tiles = footprint.map(([tx, ty]) => world.tiles[ty * world.width + tx]!)
+  const elevations = tiles.map((t) => t.elevation)
+  const elevationSpread = tiles.length > 0 ? Math.max(...elevations) - Math.min(...elevations) : 0
+  if (elevationSpread > BUILD_MAX_ELEVATION_SPREAD) {
+    return failCell('slope', { elevationSpread, cellOk: bp.cells.map((c) => !c) })
+  }
+
+  const occupiedKeys = new Set<string>()
+  for (const place of world.places) {
+    if (NATURAL_PLACE_KINDS.has(place.kind)) continue
+    for (const [ox, oy] of placeOccupiedTiles(place)) {
+      occupiedKeys.add(`${ox},${oy}`)
+    }
+  }
+  for (let i = 0; i < bp.cells.length; i++) {
+    if (!bp.cells[i]) continue
+    const at = cellWorldTile(px, py, bp.width, i)
+    if (occupiedKeys.has(`${at.x},${at.y}`)) {
+      cellOk[i] = false
+      const blocker = world.places.find((place) => {
+        if (NATURAL_PLACE_KINDS.has(place.kind)) return false
+        return placeOccupiedTiles(place).some(([ox, oy]) => ox === at.x && oy === at.y)
+      })
+      return failCell('collision', {
+        elevationSpread,
+        cellOk,
+        blockingPlaceId: blocker?.id,
+      })
+    }
+  }
+
+  for (const [cx, cy] of clearanceTiles(bp, px, py)) {
+    if (cx < 0 || cy < 0 || cx >= world.width || cy >= world.height) {
+      return failCell('clearance', { elevationSpread, cellOk })
+    }
+    const tile = world.tiles[cy * world.width + cx]!
+    if (tile.kind === 'water' || tile.kind === 'rock' || !tile.walkable) {
+      return failCell('clearance', { elevationSpread, cellOk })
+    }
+    if (occupiedKeys.has(`${cx},${cy}`)) {
+      return failCell('clearance', { elevationSpread, cellOk })
+    }
+  }
+
+  return {
+    ...base,
+    ok: true,
+    reason: 'ok',
+    reasonCode: 'ok',
+    elevationSpread,
+    cellOk,
+    ...(missingStoredMaterials.wood > 0 || missingStoredMaterials.stone > 0
+      ? { warning: 'missing-materials' as const }
+      : {}),
+  }
 }
 
 /** Coin party: agent id or the village treasury. */
@@ -509,6 +686,7 @@ function deepClonePlace(p: Place): Place {
             : {}),
         }
       : undefined,
+    structure: cloneStructure(p.structure),
   }
 }
 
@@ -1163,6 +1341,15 @@ export class Simulation {
     return validateBuildPlacement(this.state, kind, x, y)
   }
 
+  /** Public blueprint-placement validator used by the town ghost and command UI. */
+  validateBlueprintPlacement(
+    blueprintId: string,
+    x: number,
+    y: number,
+  ): BuildPlacementValidation {
+    return validateBlueprintPlacement(this.state, blueprintId, x, y)
+  }
+
   /** Single-tile path paint validation shared by the town preview and command seam. */
   validatePathPlacement(
     x: number,
@@ -1254,6 +1441,7 @@ export class Simulation {
         ...(result.missingStoredMaterials
           ? { missingStoredMaterials: { ...result.missingStoredMaterials } }
           : {}),
+        reasonCode: result.reason,
         source: 'player',
       },
       reason: result.ok
@@ -1273,6 +1461,7 @@ export class Simulation {
   ): PlayerCommandResult {
     let result: PlayerCommandResult
     if (command.type === 'build') result = this.applyPlayerBuild(command)
+    else if (command.type === 'place-blueprint') result = this.applyPlayerPlaceBlueprint(command)
     else if (command.type === 'cancel-construction') result = this.applyPlayerCancel(command)
     else if (command.type === 'demolish') result = this.applyPlayerDemolish(command)
     else if (command.type === 'paint-path') result = this.applyPlayerPath(command)
@@ -1364,6 +1553,83 @@ export class Simulation {
     }
   }
 
+  private applyPlayerPlaceBlueprint(
+    command: Extract<PlayerCommand, { type: 'place-blueprint' }>,
+  ): PlayerCommandResult {
+    const validation = validateBlueprintPlacement(
+      this.state,
+      command.blueprintId,
+      command.x,
+      command.y,
+    )
+    if (!validation.ok) {
+      return {
+        ok: false,
+        reason: validation.reason,
+        command: clonePlayerCommand(command),
+        validation,
+      }
+    }
+    const bp = BLUEPRINTS[command.blueprintId]
+    if (!bp) {
+      return { ok: false, reason: 'unknown-kind', command: clonePlayerCommand(command), validation }
+    }
+    const originX = validation.originX ?? validation.x
+    const originY = validation.originY ?? validation.y
+    const centre = structureCenter(bp, originX, originY)
+    const bill = plannedCellsBill(bp, makePlannedStructure(bp, originX, originY).cells)
+    const siteId = `site-player-${this.state.tick}-${(this.state.playerCommandLog ?? []).length}`
+    const site: Place = {
+      id: siteId,
+      kind: 'construction-site',
+      x: centre.x,
+      y: centre.y,
+      slots: 3,
+      jobSlots: 3,
+      wage: 7,
+      inventory: emptyInventory(),
+      construction: {
+        needs: remainingNeedsFromBill(bill),
+        progress: 0,
+        consumeTicks: 0,
+        targetKind: bp.resultKind,
+        priority: 2,
+      },
+      structure: makePlannedStructure(bp, originX, originY),
+    }
+    for (const [tx, ty] of validation.footprint) {
+      const tile = this.state.tiles[ty * this.state.width + tx]
+      if (tile) {
+        tile.kind = 'grass'
+        tile.walkable = true
+      }
+    }
+    this.state.places.push(site)
+    this.state.owners[siteId] = 'commons'
+    this.assignFirstStormBuilders(site)
+    this.events.append({
+      tick: this.state.tick,
+      type: 'blueprint:placed',
+      data: {
+        placeId: siteId,
+        blueprintId: bp.id,
+        resultKind: bp.resultKind,
+        x: originX,
+        y: originY,
+        source: 'player',
+      },
+      reason: `placed ${bp.id} blueprint at (${originX},${originY})`,
+    })
+    return {
+      ok: true,
+      reason: 'ok',
+      command: clonePlayerCommand(command),
+      placeId: siteId,
+      validation,
+      missingStoredMaterials: { ...validation.missingStoredMaterials },
+    }
+  }
+
   /**
    * The authored opening has only seven settlers and an immovable storm
    * deadline. A player designation therefore forms a two-person emergency
@@ -1437,6 +1703,7 @@ export class Simulation {
         placeId: site.id,
       })
     }
+    this.restoreStructureWalkability(site)
     this.removePlace(site)
     this.events.append({
       tick: this.state.tick,
@@ -1685,6 +1952,8 @@ export class Simulation {
     let text: string
     if (command.type === 'build') {
       text = `The player designated a ${command.placeKind === 'home' ? 'house' : command.placeKind} at ${Math.round(command.x)},${Math.round(command.y)}.`
+    } else if (command.type === 'place-blueprint') {
+      text = `The player placed a ${command.blueprintId} blueprint at ${Math.round(command.x)},${Math.round(command.y)}.`
     } else if (command.type === 'paint-path') {
       text = `The player ${command.enabled ? 'laid' : 'removed'} a path at ${Math.round(command.x)},${Math.round(command.y)}.`
     } else if (command.type === 'set-work-priority') {
@@ -3440,6 +3709,11 @@ export class Simulation {
     const c = workplace.construction
     if (!c) return
 
+    if (workplace.structure) {
+      this.performBlueprintTend(agent, workplace)
+      return
+    }
+
     // Standing on the site: inventory can fill the bill (wild / no depot).
     this.depositInventoryToSite(agent, workplace)
 
@@ -3520,6 +3794,17 @@ export class Simulation {
   private constructionCanBuild(site: Place): boolean {
     const c = site.construction
     if (!c) return false
+    if (site.structure) {
+      if (this.hasStockedUnbuiltCell(site)) return true
+      const bp = BLUEPRINTS[site.structure.blueprintId]
+      if (!bp) return false
+      const idx = nextPlannedIndex(site.structure.cells)
+      if (idx >= 0) {
+        const spec = bp.cells[idx]
+        if (spec && inventoryCovers(site.inventory, CELL_COSTS[spec.kind])) return true
+      }
+      return false
+    }
     const totalNeed =
       (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
     if (totalNeed <= 0) return true
@@ -3559,6 +3844,198 @@ export class Simulation {
       if ((site.inventory[g] ?? 0) >= 1) return g
     }
     return null
+  }
+
+  private stepStructureSites(): void {
+    for (const place of this.state.places) {
+      if (place.kind !== 'construction-site' || !place.structure) continue
+      this.stockStructureCells(place)
+      this.refreshStructureProgress(place)
+    }
+  }
+
+  private performBlueprintTend(agent: AgentState, workplace: Place): void {
+    const c = workplace.construction
+    const structure = workplace.structure
+    if (!c || !structure) return
+
+    this.depositInventoryToSite(agent, workplace)
+    this.stockStructureCells(workplace)
+
+    const shortGood = this.constructionShortfall(workplace)
+    if (shortGood && !this.hasStockedUnbuiltCell(workplace)) {
+      const store = this.state.places.find((p) => p.kind === 'storehouse')
+      const need = Math.max(
+        0,
+        (c.needs[shortGood] ?? 0) - (workplace.inventory[shortGood] ?? 0),
+      )
+      const available = store ? (store.inventory[shortGood] ?? 0) : 0
+      if (store && available > 0 && need > 0) {
+        agent.haulAmount = 0
+        agent.haulGood = shortGood
+        agent.haulSourceId = store.id
+        agent.haulDropoffId = workplace.id
+        agent.workPhase = 'hauling'
+        this.retargetToPlace(
+          agent,
+          store,
+          `Fetching ${shortGood} from the storehouse for the build`,
+        )
+        return
+      }
+    }
+
+    if (!this.hasStockedUnbuiltCell(workplace)) {
+      this.endAction(agent, 'waiting on materials at the build site')
+      agent.action = {
+        kind: 'idle',
+        reason: 'Build site idle — materials not ready',
+      }
+      agent.actionTicks = 0
+      agent.workPhase = 'tend'
+      agent.lastDecideTick = this.state.tick - REDECIDE_INTERVAL
+      return
+    }
+
+    this.applyStructureWork(agent, workplace)
+    this.refreshStructureProgress(workplace)
+    if (this.structureFullyBuilt(workplace)) {
+      this.completeBlueprintConstruction(workplace)
+    }
+  }
+
+  private stockStructureCells(site: Place): void {
+    const structure = site.structure
+    const c = site.construction
+    if (!structure || !c) return
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) return
+    while (true) {
+      const idx = nextPlannedIndex(structure.cells)
+      if (idx < 0) break
+      const spec = bp.cells[idx]
+      const rec = structure.cells[idx]
+      if (!spec || !rec) break
+      const cost = CELL_COSTS[spec.kind]
+      if (!inventoryCovers(site.inventory, cost)) break
+      if (cost.wood > 0) {
+        const ok = this.consumeGoods(
+          { kind: 'place', id: site.id },
+          'wood',
+          cost.wood,
+          `stocked ${spec.kind} cell ${idx} with ${cost.wood} wood at ${site.id}`,
+        )
+        if (!ok) break
+      }
+      if (cost.stone > 0) {
+        const ok = this.consumeGoods(
+          { kind: 'place', id: site.id },
+          'stone',
+          cost.stone,
+          `stocked ${spec.kind} cell ${idx} with ${cost.stone} stone at ${site.id}`,
+        )
+        if (!ok) break
+      }
+      rec.state = 'stocked'
+      rec.workedTicks = rec.workedTicks ?? 0
+    }
+    const bill = plannedCellsBill(bp, structure.cells)
+    c.needs = remainingNeedsFromBill(bill)
+  }
+
+  private hasStockedUnbuiltCell(site: Place): boolean {
+    const structure = site.structure
+    if (!structure) return false
+    return structure.cells.some((cell) => cell?.state === 'stocked')
+  }
+
+  private structureFullyBuilt(site: Place): boolean {
+    const structure = site.structure
+    if (!structure) return false
+    for (const cell of structure.cells) {
+      if (cell && cell.state !== 'built') return false
+    }
+    return true
+  }
+
+  private applyStructureWork(agent: AgentState, site: Place): void {
+    const structure = site.structure
+    if (!structure) return
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (!bp) return
+    const ax = Math.round(agent.x)
+    const ay = Math.round(agent.y)
+    let best = -1
+    let bestD = Infinity
+    for (let i = 0; i < structure.cells.length; i++) {
+      const rec = structure.cells[i]
+      if (!rec || rec.state !== 'stocked') continue
+      const at = cellWorldTile(structure.originX, structure.originY, bp.width, i)
+      const d = chebyshev(ax, ay, at.x, at.y)
+      if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && (best < 0 || i < best))) {
+        bestD = d
+        best = i
+      }
+    }
+    if (best < 0) return
+    const rec = structure.cells[best]!
+    const spec = bp.cells[best]
+    if (!spec) return
+    rec.workedTicks += 1
+    this.recordSiteContributor(site, agent.id)
+    const labour = CELL_COSTS[spec.kind].labourTicks
+    if (rec.workedTicks < labour) return
+    const at = cellWorldTile(structure.originX, structure.originY, bp.width, best)
+    const occupied = this.tileOccupiedByAgent(at.x, at.y)
+    if ((spec.kind === 'wall' || spec.kind === 'door') && occupied) {
+      rec.workedTicks = labour - 1
+      return
+    }
+    rec.state = 'built'
+    rec.workedTicks = labour
+    const tile = this.state.tiles[at.y * this.state.width + at.x]
+    if (tile) {
+      if (spec.kind === 'wall') tile.walkable = false
+      else tile.walkable = true
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'structure:cell-built',
+      agentId: agent.id,
+      data: {
+        placeId: site.id,
+        blueprintId: structure.blueprintId,
+        index: best,
+        kind: spec.kind,
+        x: at.x,
+        y: at.y,
+        agentName: agent.name,
+      },
+      reason: `${spec.kind} cell built at (${at.x},${at.y})`,
+    })
+  }
+
+  private tileOccupiedByAgent(x: number, y: number): boolean {
+    for (const agent of this.state.agents) {
+      if (Math.round(agent.x) === x && Math.round(agent.y) === y) return true
+    }
+    return false
+  }
+
+  private refreshStructureProgress(site: Place): void {
+    const structure = site.structure
+    const c = site.construction
+    if (!structure || !c) return
+    const counts = countStructureStates(structure.cells)
+    c.progress = counts.total > 0 ? counts.built / counts.total : 1
+  }
+
+  private restoreStructureWalkability(place: Place): void {
+    if (!place.structure) return
+    for (const [tx, ty] of placeOccupiedTiles(place)) {
+      const tile = this.state.tiles[ty * this.state.width + tx]
+      if (tile) tile.walkable = true
+    }
   }
 
   /** Generic haul leg: fetch (amount 0) or deliver (amount > 0). */
@@ -4580,6 +5057,7 @@ export class Simulation {
     this.closeExpiredProposals()
 
     this.stepAgents()
+    this.stepStructureSites()
     this.recordOngoingAssemblyAttendance()
     this.stepSheepAssemblyVotes()
     this.stepSympathy()
@@ -5657,10 +6135,13 @@ export class Simulation {
    */
   private completeConstruction(site: Place): void {
     if (site.kind !== 'construction-site') return
+    if (site.structure) {
+      this.completeBlueprintConstruction(site)
+      return
+    }
     this.payPublicWorksBounty(site)
-    const finishedKind: BuildableKind = isBuildableKind(site.construction?.targetKind ?? 'home')
-      ? (site.construction!.targetKind ?? 'home')
-      : 'home'
+    const rawKind = site.construction?.targetKind ?? 'home'
+    const finishedKind: BuildableKind = isBuildableKind(rawKind) ? rawKind : 'home'
     const upgradeOf = site.construction?.upgradeOf
     if (upgradeOf) {
       const target = this.state.places.find((p) => p.id === upgradeOf)
@@ -5972,6 +6453,85 @@ export class Simulation {
     if (!c.upgradeOf) return base
     const target = this.state.places.find((p) => p.id === c.upgradeOf)
     return base * placeLevel(target)
+  }
+
+  private completeBlueprintConstruction(site: Place): void {
+    if (site.kind !== 'construction-site' || !site.structure) return
+    const structure = site.structure
+    const bp = BLUEPRINTS[structure.blueprintId]
+    const finishedKind = (bp?.resultKind ?? 'school') as PlaceKind
+    const total = bp ? totalStructureCells(bp) : countStructureStates(structure.cells).total
+    this.payPublicWorksBounty(site)
+    const commissioner = this.state.owners[site.id] ?? 'commons'
+    const commissionerAgent =
+      commissioner !== 'commons'
+        ? this.state.agents.find((a) => a.id === commissioner)
+        : undefined
+    const celebrationCrew = this.state.agents.filter((agent) => agent.employedAt === site.id)
+    for (const a of this.state.agents) {
+      if (a.employedAt === site.id) {
+        this.vacateJob(
+          a,
+          `${a.name}'s construction job finished — ${finishedKind} complete`,
+        )
+        if (a.action.kind === 'work' && a.action.targetPlaceId === site.id) {
+          a.action = { kind: 'idle', reason: `${finishedKind} finished` }
+          a.actionTicks = 0
+          a.workPhase = null
+          this.clearHaul(a)
+        }
+      }
+    }
+    this.applyCompletedBlueprint(site, finishedKind)
+    for (const resident of celebrationCrew) {
+      resident.action = {
+        kind: 'idle',
+        reason: `Celebrating the completed ${finishedKind}`,
+      }
+      resident.actionTicks = 0
+      resident.lastDecideTick = this.state.tick
+    }
+    this.events.append({
+      tick: this.state.tick,
+      type: 'structure:complete',
+      agentId: commissioner !== 'commons' ? commissioner : undefined,
+      data: {
+        placeId: site.id,
+        blueprintId: structure.blueprintId,
+        kind: finishedKind,
+        cells: total,
+      },
+      reason: `${finishedKind} finished — ${total} cells`,
+    })
+    this.events.append({
+      tick: this.state.tick,
+      type: 'construction:completed',
+      agentId: commissioner !== 'commons' ? commissioner : undefined,
+      data: {
+        placeId: site.id,
+        agentName: commissionerAgent?.name,
+        kind: finishedKind,
+        firstPrivate: commissioner !== 'commons',
+      },
+      reason: commissionerAgent
+        ? `${commissionerAgent.name}'s ${finishedKind} is finished`
+        : `${finishedKind} ${site.id} is finished`,
+    })
+  }
+
+  private applyCompletedBlueprint(site: Place, kind: PlaceKind): void {
+    const floors = interiorFloorTiles(site)
+    site.kind = kind
+    site.construction = undefined
+    site.growth = undefined
+    site.inventory = emptyInventory()
+    site.production = undefined
+    site.price = undefined
+    site.storageFilters = undefined
+    site.jobSlots = 0
+    site.wage = undefined
+    site.slots = Math.max(1, floors.length)
+    // Built geometry stays: walls remain non-walkable via the structure record.
   }
 
   /**

@@ -65,6 +65,8 @@ export function footprintTiles(kind: PlaceKind): { w: number; d: number } {
       return { w: 2, d: 2 }
     case 'spring':
       return { w: 1, d: 1 }
+    case 'school':
+      return { w: 7, d: 5 }
   }
 }
 
@@ -99,6 +101,8 @@ export function placeholderHeight(kind: PlaceKind): number {
     case 'plaza':
       return 0.35
     case 'construction-site':
+      return 3
+    case 'school':
       return 3
   }
 }

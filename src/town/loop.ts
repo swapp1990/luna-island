@@ -94,8 +94,17 @@ export function createTownLoop(opts: {
     debug.state.agentCount = sim.state.agents.length
     debug.state.placeCount = sim.state.places.length
     let constructing = 0
-    for (const p of sim.state.places) if (p.kind === 'construction-site') constructing += 1
+    let structureActive = 0
+    let structureBuilt = 0
+    for (const p of sim.state.places) {
+      if (p.kind === 'construction-site') constructing += 1
+      if (p.structure) {
+        if (p.kind === 'construction-site') structureActive += 1
+        else structureBuilt += 1
+      }
+    }
     debug.state.constructionCount = constructing
+    debug.state.structures = { active: structureActive, built: structureBuilt }
     debug.state.drawCalls = lighting.rendererInfo().calls
     debug.writeCamera(camera.getState())
   }

@@ -1,19 +1,27 @@
 import * as THREE from 'three'
+import { BLUEPRINTS, cellWorldTile } from '../sim/blueprints'
 import type { AgentState, BuildableKind, Place, WorldState } from '../sim/types'
 import type { AgentsHandle } from './agents'
 import { tileToWorld, worldToTile } from './coords'
 import type { PlacesHandle } from './places'
-import type { PlacementGhostHandle, PlacementGhostTone } from './placementGhost'
+import type {
+  BlueprintGhostCell,
+  PlacementGhostHandle,
+  PlacementGhostMode,
+  PlacementGhostTone,
+} from './placementGhost'
 import type { TerrainHandle } from './terrain'
 import { groundHeight } from './terrainHeight'
 
-export type PlacementTool = BuildableKind | 'path'
+export type PlacementTool = BuildableKind | 'path' | `blueprint:${string}`
 
 export interface PlacementCheck {
   ok: boolean
   reason: string
   missing?: Partial<Record<'wood' | 'stone', number>>
   missingStoredMaterials?: Partial<Record<'wood' | 'stone', number>>
+  requiredMaterials?: { wood: number; stone: number }
+  cellOk?: boolean[]
 }
 
 export interface PlayerCommandResult {
@@ -30,6 +38,8 @@ export interface PlacementPreviewState {
   reason: string
   missingWood: number
   missingStone: number
+  billWood: number
+  billStone: number
 }
 
 export interface TownInteractionState {
@@ -53,6 +63,7 @@ export interface TownInteractionState {
 export interface PlacementController {
   getState: () => TownInteractionState
   beginBuild: (kind: BuildableKind) => void
+  beginBlueprint: (blueprintId: string) => void
   beginPath: () => void
   cancelMode: () => void
   cancelSelected: () => PlayerCommandResult
@@ -77,6 +88,7 @@ const FRIENDLY_REASON: Record<string, string> = {
   collision: 'Another place blocks this footprint',
   'site-cap': 'Too many construction sites are already active',
   'unknown-kind': 'That structure cannot be built',
+  clearance: 'Need a one-tile walkable ring around the shape',
   'not-found': 'That place no longer exists',
   'not-construction-site': 'Select a construction site to cancel it',
   'not-demolishable': 'This place cannot be demolished',
@@ -88,6 +100,10 @@ const FRIENDLY_REASON: Record<string, string> = {
 
 function friendly(reason: string): string {
   return FRIENDLY_REASON[reason] ?? reason.replace(/-/g, ' ')
+}
+
+function blueprintIdOf(tool: PlacementTool): string | null {
+  return tool.startsWith('blueprint:') ? tool.slice('blueprint:'.length) : null
 }
 
 function missingAmount(check: PlacementCheck, good: 'wood' | 'stone'): number {
@@ -124,6 +140,8 @@ export function createPlacementController(opts: {
   getWorld: () => WorldState
   validateBuild: (kind: BuildableKind, x: number, y: number) => PlacementCheck
   issueBuild: (kind: BuildableKind, x: number, y: number) => PlayerCommandResult
+  validateBlueprint: (blueprintId: string, x: number, y: number) => PlacementCheck
+  issueBlueprint: (blueprintId: string, x: number, y: number) => PlayerCommandResult
   validatePath: (x: number, y: number) => PlacementCheck
   issuePath: (x: number, y: number) => PlayerCommandResult
   issueCancel: (placeId: string) => PlayerCommandResult
@@ -206,9 +224,12 @@ export function createPlacementController(opts: {
       return
     }
     const world = opts.getWorld()
+    const blueprintId = blueprintIdOf(activeKind)
     const check = activeKind === 'path'
       ? opts.validatePath(tile.x, tile.y)
-      : opts.validateBuild(activeKind, tile.x, tile.y)
+      : blueprintId
+        ? opts.validateBlueprint(blueprintId, tile.x, tile.y)
+        : opts.validateBuild(activeKind as BuildableKind, tile.x, tile.y)
     const missingWood = activeKind === 'path' ? 0 : missingAmount(check, 'wood')
     const missingStone = activeKind === 'path' ? 0 : missingAmount(check, 'stone')
     const tone: PlacementGhostTone = !check.ok
@@ -216,6 +237,7 @@ export function createPlacementController(opts: {
       : missingWood > 0 || missingStone > 0
         ? 'warning'
         : 'valid'
+    const bp = blueprintId ? BLUEPRINTS[blueprintId] : undefined
     preview = {
       x: tile.x,
       y: tile.y,
@@ -224,15 +246,41 @@ export function createPlacementController(opts: {
       reason: friendly(check.reason),
       missingWood,
       missingStone,
+      billWood: check.requiredMaterials?.wood ?? 0,
+      billStone: check.requiredMaterials?.stone ?? 0,
     }
     const at = tileToWorld(tile.x, tile.y, world.width, world.height)
     const tileKind = world.tiles[tile.y * world.width + tile.x]?.kind ?? 'grass'
+    let mode: PlacementGhostMode = 'building'
+    if (activeKind === 'path') mode = 'path'
+    else if (blueprintId) mode = 'blueprint'
+    let cells: BlueprintGhostCell[] | undefined
+    if (bp && blueprintId) {
+      cells = []
+      const cellOk = check.cellOk
+      for (let i = 0; i < bp.cells.length; i++) {
+        const spec = bp.cells[i]
+        if (!spec) continue
+        const worldTile = cellWorldTile(tile.x, tile.y, bp.width, i)
+        const pos = tileToWorld(worldTile.x, worldTile.y, world.width, world.height)
+        const kindAt = world.tiles[worldTile.y * world.width + worldTile.x]?.kind ?? 'grass'
+        const ok = cellOk ? cellOk[i] !== false : check.ok
+        cells.push({
+          wx: pos.x,
+          wy: groundHeight(worldTile.x, worldTile.y, kindAt) + 0.04,
+          wz: pos.z,
+          kind: spec.kind,
+          tone: ok ? (tone === 'warning' ? 'warning' : 'valid') : 'invalid',
+        })
+      }
+    }
     opts.ghost.show(
       at.x,
       groundHeight(tile.x, tile.y, tileKind) + 0.04,
       at.z,
       tone,
-      activeKind === 'path' ? 'path' : 'building',
+      mode,
+      cells,
     )
   }
 
@@ -335,9 +383,15 @@ export function createPlacementController(opts: {
         }
         return
       }
-      const result = opts.issueBuild(kind, placedAt.x, placedAt.y)
+      const blueprintId = blueprintIdOf(kind)
+      const result = blueprintId
+        ? opts.issueBlueprint(blueprintId, placedAt.x, placedAt.y)
+        : opts.issueBuild(kind as BuildableKind, placedAt.x, placedAt.y)
+      const label = blueprintId
+        ? (BLUEPRINTS[blueprintId]?.name ?? blueprintId)
+        : kind === 'home' ? 'House' : kind
       message = result.ok
-        ? `${kind === 'home' ? 'House' : kind} site designated at ${preview.x}, ${preview.y}.`
+        ? `${label} site designated at ${preview.x}, ${preview.y}.`
         : friendly(result.reason)
       if (result.ok) {
         activeKind = null
@@ -427,6 +481,14 @@ export function createPlacementController(opts: {
       preview = null
       selectPlace(null)
       message = `Move the ${kind === 'home' ? 'house' : kind} ghost over clear ground.`
+      opts.canvas.style.cursor = 'crosshair'
+    },
+    beginBlueprint: (blueprintId) => {
+      activeKind = `blueprint:${blueprintId}`
+      preview = null
+      selectPlace(null)
+      const name = BLUEPRINTS[blueprintId]?.name ?? blueprintId
+      message = `Move the ${name} blueprint over clear ground. Top-left cell follows the cursor.`
       opts.canvas.style.cursor = 'crosshair'
     },
     beginPath: () => {

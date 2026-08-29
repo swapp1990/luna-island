@@ -56,6 +56,7 @@ export type PlaceKind =
   | 'construction-site'
   | 'notice-board'
   | 'spring'
+  | 'school'
 
 /** Place kinds the engine can raise from a construction site. */
 export type BuildableKind =
@@ -95,9 +96,10 @@ export interface ConstructionSpec {
   consumeTicks: number
   /**
    * Kind this site becomes at progress ≥ 1.
-   * Missing on older saves ⇒ home.
+   * Missing on older saves ⇒ home. Blueprint sites may use a non-buildable
+   * result kind (e.g. `'school'`) — not a `BuildableKind`.
    */
-  targetKind?: BuildableKind
+  targetKind?: BuildableKind | string
   /**
    * When set, this site upgrades an existing place instead of becoming a new one.
    * Missing ⇒ new construction. Additive; old saves treat as a new build.
@@ -110,6 +112,29 @@ export interface ConstructionSpec {
   contributors?: string[]
   /** Player-facing site rank. Missing means normal (2). */
   priority?: 1 | 2 | 3
+}
+
+export type CellKind = 'wall' | 'door' | 'floor'
+export type StructureCellState = 'planned' | 'stocked' | 'built'
+
+/** One cell of a blueprint-backed structure. `null` = outside the shape. */
+export interface StructureCell {
+  state: StructureCellState
+  /** Labour ticks applied while `stocked`. Missing ⇒ 0. */
+  workedTicks: number
+}
+
+/**
+ * Cell-shaped geometry on a construction site or finished blueprint place.
+ * Missing ⇒ ordinary point-building. Additive; old saves load unchanged.
+ */
+export interface PlaceStructure {
+  blueprintId: string
+  /** Top-left cell in world tiles. */
+  originX: number
+  originY: number
+  /** Parallel to the blueprint's `cells` array. */
+  cells: Array<StructureCell | null>
 }
 
 /** Place owner: a villager id or the village commons. */
@@ -151,6 +176,11 @@ export interface Place {
   level?: number
   /** Storehouse intake switches. Missing keys accept that good. */
   storageFilters?: Partial<Record<Good, boolean>>
+  /**
+   * Cell-shaped structure (blueprint sites and finished schools).
+   * Missing ⇒ ordinary place. Additive; old saves load unchanged.
+   */
+  structure?: PlaceStructure
 }
 
 /** Hourly economy sample (Dispatch L UI). */
@@ -376,6 +406,7 @@ export interface SayRecord {
 /** A command issued by the player (kept separate from mind intents). */
 export type PlayerCommand =
   | PlayerBuildCommand
+  | PlayerPlaceBlueprintCommand
   | PlayerCancelConstructionCommand
   | PlayerDemolishCommand
   | PlayerPaintPathCommand
@@ -392,6 +423,14 @@ export interface PlayerBuildCommand {
   y: number
   /** Cardinal facing in degrees; simulation placement is otherwise orientation-free. */
   rotation?: number
+}
+
+/** `(x,y)` is the blueprint's top-left cell in world tiles. */
+export interface PlayerPlaceBlueprintCommand {
+  type: 'place-blueprint'
+  blueprintId: string
+  x: number
+  y: number
 }
 
 export interface PlayerCancelConstructionCommand {

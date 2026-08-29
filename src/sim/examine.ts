@@ -34,6 +34,7 @@ export const EXAMINE_BY_KIND: Record<Exclude<PlaceKind, 'construction-site'>, st
   plaza: 'People gather here; standing near others felt less lonely.',
   spring:
     'Sweet fruit grows thick here — more than a bush holds, and it comes back faster. One person fits.',
+  school: 'A schoolhouse — people gather in the rooms to talk.',
 }
 
 export interface ExamineContext {

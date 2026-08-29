@@ -1,8 +1,17 @@
 import * as THREE from 'three'
+import type { CellKind } from '../sim/types'
 import { TILE_METRES } from './constants'
 
 export type PlacementGhostTone = 'valid' | 'warning' | 'invalid'
-export type PlacementGhostMode = 'building' | 'path'
+export type PlacementGhostMode = 'building' | 'path' | 'blueprint'
+
+export interface BlueprintGhostCell {
+  wx: number
+  wy: number
+  wz: number
+  kind: CellKind
+  tone: PlacementGhostTone
+}
 
 export interface PlacementGhostHandle {
   root: THREE.Group
@@ -12,6 +21,7 @@ export interface PlacementGhostHandle {
     worldZ: number,
     tone: PlacementGhostTone,
     mode?: PlacementGhostMode,
+    blueprintCells?: BlueprintGhostCell[],
   ) => void
   hide: () => void
   dispose: () => void
@@ -23,10 +33,15 @@ const COLORS: Record<PlacementGhostTone, number> = {
   invalid: 0xe65d57,
 }
 
+const KIND_HEIGHT: Record<CellKind, number> = {
+  wall: 1.15,
+  door: 0.7,
+  floor: 0.08,
+}
+
 /**
- * Lightweight 3x3-tile construction preview. It deliberately uses procedural
- * geometry so hovering never waits for a glTF load and the ghost exactly
- * matches the simulation's construction-pad footprint.
+ * Lightweight construction preview. Building/path modes keep the original 3×3
+ * pad; blueprint mode draws one distinguishable tile per cell.
  */
 export function createPlacementGhost(scene: THREE.Scene): PlacementGhostHandle {
   const root = new THREE.Group()
@@ -93,15 +108,70 @@ export function createPlacementGhost(scene: THREE.Scene): PlacementGhostHandle {
     root.add(beam)
   }
 
+  const cellRoot = new THREE.Group()
+  cellRoot.name = 'blueprint-cells'
+  cellRoot.visible = false
+  root.add(cellRoot)
+
+  const cellGeo = new THREE.BoxGeometry(TILE_METRES * 0.92, 1, TILE_METRES * 0.92)
+  const cellPool: Array<{ mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial }> = []
+  const makeCell = () => {
+    const mat = new THREE.MeshBasicMaterial({
+      color: COLORS.valid,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    })
+    const mesh = new THREE.Mesh(cellGeo, mat)
+    mesh.visible = false
+    cellRoot.add(mesh)
+    const entry = { mesh, mat }
+    cellPool.push(entry)
+    return entry
+  }
+  for (let i = 0; i < 40; i++) makeCell()
+
+  const setBuildingVisible = (on: boolean) => {
+    pad.visible = on
+    outline.visible = on
+    for (const part of frameParts) part.visible = on
+  }
+
   scene.add(root)
 
   return {
     root,
-    show: (worldX, worldY, worldZ, tone, mode = 'building') => {
+    show: (worldX, worldY, worldZ, tone, mode = 'building', blueprintCells) => {
       const color = COLORS[tone]
       padMat.color.setHex(color)
       outlineMat.color.setHex(color)
       frameMat.color.setHex(color)
+      if (mode === 'blueprint' && blueprintCells && blueprintCells.length > 0) {
+        setBuildingVisible(false)
+        cellRoot.visible = true
+        while (cellPool.length < blueprintCells.length) makeCell()
+        for (let i = 0; i < cellPool.length; i++) {
+          const entry = cellPool[i]!
+          const cell = blueprintCells[i]
+          if (!cell) {
+            entry.mesh.visible = false
+            continue
+          }
+          const h = KIND_HEIGHT[cell.kind]
+          entry.mat.color.setHex(COLORS[cell.tone])
+          entry.mat.opacity = cell.kind === 'floor' ? 0.32 : 0.5
+          entry.mesh.position.set(cell.wx - worldX, h / 2, cell.wz - worldZ)
+          entry.mesh.scale.set(1, h, 1)
+          entry.mesh.visible = true
+        }
+        root.scale.set(1, 1, 1)
+        root.position.set(worldX, worldY, worldZ)
+        root.visible = true
+        return
+      }
+      cellRoot.visible = false
+      for (const entry of cellPool) entry.mesh.visible = false
+      setBuildingVisible(true)
       const footprintScale = mode === 'path' ? 1 / 3 : 1
       root.scale.set(footprintScale, 1, footprintScale)
       for (const part of frameParts) part.visible = mode === 'building'
@@ -118,9 +188,11 @@ export function createPlacementGhost(scene: THREE.Scene): PlacementGhostHandle {
       postGeo.dispose()
       beamXGeo.dispose()
       beamZGeo.dispose()
+      cellGeo.dispose()
       padMat.dispose()
       outlineMat.dispose()
       frameMat.dispose()
+      for (const entry of cellPool) entry.mat.dispose()
     },
   }
 }

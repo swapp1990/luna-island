@@ -94,6 +94,24 @@ export function prospectiveFootprintHitsTrees(world: WorldState, x: number, y: n
   return false
 }
 
+/** True when any non-null blueprint cell would sit on a rendered tree. */
+export function prospectiveBlueprintHitsTrees(
+  world: WorldState,
+  cells: Array<[number, number]>,
+): boolean {
+  const exclusion = buildTreeExclusionSet(
+    world.places,
+    world.tiles.filter((tile) => tile.path),
+  )
+  for (const [tx, ty] of cells) {
+    if (tx < 0 || ty < 0 || tx >= world.width || ty >= world.height) continue
+    const tile = world.tiles[ty * world.width + tx]
+    if (tile?.kind !== 'forest' || isTileExcluded(tx, ty, exclusion)) continue
+    if (treesForTile(tx, ty).length > 0) return true
+  }
+  return false
+}
+
 /** A painted path is one tile wide, so its visual obstacle check is smaller. */
 export function prospectivePathHitsTrees(world: WorldState, x: number, y: number): boolean {
   const tx = Math.round(x)

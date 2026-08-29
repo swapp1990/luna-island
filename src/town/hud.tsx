@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
 import { firstStormObjectives, secureFood } from '../sim/firstStorm'
-import { BUILD_RECIPES, MAX_PLACE_LEVEL, placeLevel } from '../sim/sim'
+import { BLUEPRINTS, blueprintBill, countBuiltByKind } from '../sim/blueprints'
+import { BUILD_RECIPES, MAX_PLACE_LEVEL, isBuildableKind, placeLevel } from '../sim/sim'
 import type {
   BuildableKind,
   Good,
@@ -212,6 +213,7 @@ export function Hud(props: {
   getInteraction: () => TownInteractionState
   setSpeed: (n: TownSpeed) => void
   beginBuild: (kind: BuildableKind) => void
+  beginBlueprint: (blueprintId: string) => void
   beginPath: () => void
   cancelPlacement: () => void
   cancelSelected: () => void
@@ -315,9 +317,24 @@ export function Hud(props: {
     ? currentWorld.agents.filter((agent) => agent.employedAt === selected.id).length
     : 0
   const selectedCapacity = selected?.jobSlots ?? 0
-  const selectedRecipe = selected?.kind === 'construction-site'
-    ? BUILD_RECIPES[selected.construction?.targetKind ?? 'home']
+  const selectedTarget = selected?.construction?.targetKind ?? 'home'
+  const selectedRecipe = selected?.kind === 'construction-site' && isBuildableKind(selectedTarget)
+    ? BUILD_RECIPES[selectedTarget]
     : null
+  const selectedBlueprint = selected?.structure
+    ? BLUEPRINTS[selected.structure.blueprintId]
+    : undefined
+  const selectedBlueprintBill = selectedBlueprint ? blueprintBill(selectedBlueprint) : null
+  const selectedCellCounts = selected?.structure && selectedBlueprint
+    ? countBuiltByKind(selectedBlueprint, selected.structure.cells)
+    : null
+  const selectedOnSite = selected
+    ? currentWorld.agents.filter((agent) =>
+        agent.employedAt === selected.id &&
+        (agent.action.kind === 'work' || agent.action.kind === 'deliver') &&
+        Math.max(Math.abs(Math.round(agent.x) - selected.x), Math.abs(Math.round(agent.y) - selected.y)) <= 4,
+      ).length
+    : 0
   const shortMaterials = selected?.kind === 'construction-site'
     ? (['wood', 'stone'] as const).filter(
         (good) =>
@@ -650,6 +667,26 @@ export function Hud(props: {
                 )
               })}
             </div>
+            <div style={blueprintRow}>
+              <span style={blueprintLabel}>Blueprints (ungated)</span>
+              {Object.values(BLUEPRINTS).map((bp) => {
+                const bill = blueprintBill(bp)
+                const active = interaction.activeKind === `blueprint:${bp.id}`
+                return (
+                  <button
+                    key={bp.id}
+                    type="button"
+                    data-testid={`build-blueprint-${bp.id}`}
+                    aria-pressed={active}
+                    title="Temporary: always available, no milestone gate"
+                    onClick={() => props.beginBlueprint(bp.id)}
+                    style={active ? blueprintChipOn : blueprintChip}
+                  >
+                    {bp.name} · {bill.wood}W {bill.stone}S
+                  </button>
+                )
+              })}
+            </div>
           </section>
         ) : null}
         {prioritiesOpen ? (
@@ -742,6 +779,9 @@ export function Hud(props: {
           <strong>{interaction.preview.reason}</strong>
           <span>
             Tile {interaction.preview.x}, {interaction.preview.y}
+            {(interaction.preview.billWood ?? 0) > 0 || (interaction.preview.billStone ?? 0) > 0
+              ? ` · bill ${interaction.preview.billWood} wood · ${interaction.preview.billStone} stone`
+              : ''}
             {interaction.preview.missingWood > 0 || interaction.preview.missingStone > 0
               ? ` · awaiting ${[
                   interaction.preview.missingWood > 0 ? `${interaction.preview.missingWood} wood` : '',
@@ -888,10 +928,30 @@ export function Hud(props: {
               <div style={billLine}>
                 Needs {selected.construction?.needs.wood ?? 0} wood · {selected.construction?.needs.stone ?? 0} stone
               </div>
+              {selectedCellCounts ? (
+                <div style={diagnosticBlock} data-testid="blueprint-cell-counts">
+                  <div style={diagnosticRow}>
+                    <span>Walls</span>
+                    <strong>{selectedCellCounts.wall.built}/{selectedCellCounts.wall.total}</strong>
+                  </div>
+                  <div style={diagnosticRow}>
+                    <span>Doors</span>
+                    <strong>{selectedCellCounts.door.built}/{selectedCellCounts.door.total}</strong>
+                  </div>
+                  <div style={diagnosticRow}>
+                    <span>Floors</span>
+                    <strong>{selectedCellCounts.floor.built}/{selectedCellCounts.floor.total}</strong>
+                  </div>
+                  <div style={diagnosticRow}>
+                    <span>Workers on site</span>
+                    <strong>{selectedOnSite}</strong>
+                  </div>
+                </div>
+              ) : null}
               <div style={diagnosticBlock} data-testid="construction-diagnostics">
                 <div style={diagnosticRow}>
                   <span>Original bill</span>
-                  <strong>{selectedRecipe?.wood ?? 0}W · {selectedRecipe?.stone ?? 0}S</strong>
+                  <strong>{(selectedBlueprintBill ?? selectedRecipe)?.wood ?? 0}W · {(selectedBlueprintBill ?? selectedRecipe)?.stone ?? 0}S</strong>
                 </div>
                 <div style={diagnosticRow}>
                   <span>Delivered on site</span>
@@ -1231,6 +1291,29 @@ const buildCardLocked: CSSProperties = { ...buildCard, cursor: 'not-allowed', op
 const buildGlyph: CSSProperties = { gridRow: '1 / span 2', fontSize: 23, color: '#d9bd73', textAlign: 'center' }
 const buildName: CSSProperties = { fontWeight: 750, fontSize: 12 }
 const buildCost: CSSProperties = { opacity: 0.58, fontSize: 10 }
+const blueprintRow: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginTop: 8,
+  flexWrap: 'wrap',
+}
+const blueprintLabel: CSSProperties = { fontSize: 10, opacity: 0.62, fontWeight: 650, letterSpacing: '0.03em' }
+const blueprintChip: CSSProperties = {
+  border: '1px solid rgba(228,207,158,0.22)',
+  borderRadius: 4,
+  background: 'rgba(255,248,226,0.06)',
+  color: '#eee6d4',
+  padding: '4px 8px',
+  cursor: 'pointer',
+  font: 'inherit',
+  fontSize: 11,
+}
+const blueprintChipOn: CSSProperties = {
+  ...blueprintChip,
+  borderColor: '#69d77b',
+  background: 'rgba(80,145,82,0.22)',
+}
 const toolRow: CSSProperties = { display: 'flex', gap: 7 }
 const priorityPanel: CSSProperties = {
   ...buildPanel,
