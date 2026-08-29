@@ -16,7 +16,7 @@ describe('blueprint model', () => {
     expect(SCHOOL_BLUEPRINT.height).toBe(5)
     expect(SCHOOL_BLUEPRINT.cells).toHaveLength(35)
     expect(totalStructureCells(SCHOOL_BLUEPRINT)).toBe(35)
-    expect(blueprintBill(SCHOOL_BLUEPRINT)).toEqual({ wood: 36, stone: 19, labourTicks: 740 })
+    expect(blueprintBill(SCHOOL_BLUEPRINT)).toEqual({ wood: 90, stone: 20, labourTicks: 966 })
   })
 
   it('registers only valid blueprints', () => {
@@ -32,7 +32,7 @@ describe('blueprint model', () => {
       ...SCHOOL_BLUEPRINT,
       id: 'no-door',
       cells: SCHOOL_BLUEPRINT.cells.map((cell) =>
-        cell?.kind === 'door' ? { kind: 'wall' } : cell,
+        cell?.kind === 'door' ? { kind: 'wall', roof: cell.roof } : cell,
       ),
     }
     expect(validateBlueprint(mutant)).toContain('blueprint needs at least one door')

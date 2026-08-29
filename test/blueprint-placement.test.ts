@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { blueprintBill, SCHOOL_BLUEPRINT } from '../src/sim/blueprints'
 import { MAX_ACTIVE_SITES, Simulation } from '../src/sim/sim'
 
 function findSchoolPlot(sim: Simulation): { x: number; y: number } {
@@ -30,8 +31,9 @@ describe('blueprint placement', () => {
     expect(site?.structure?.blueprintId).toBe('school')
     expect(site?.structure?.originX).toBe(plot.x)
     expect(site?.structure?.originY).toBe(plot.y)
-    expect(site?.construction?.needs.wood).toBe(36)
-    expect(site?.construction?.needs.stone).toBe(19)
+    const bill = blueprintBill(SCHOOL_BLUEPRINT)
+    expect(site?.construction?.needs.wood).toBe(bill.wood)
+    expect(site?.construction?.needs.stone).toBe(bill.stone)
     const placed = sim.getEvents().find((e) => e.type === 'blueprint:placed')
     expect(placed?.reason).toBe(`placed school blueprint at (${plot.x},${plot.y})`)
   })

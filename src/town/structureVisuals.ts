@@ -1,19 +1,32 @@
 /**
  * Per-cell greybox for blueprint sites and finished schools.
- * Replaces pad/frame/rising staging for structure places only.
+ * Keyed on stage + worked fraction; previous stages stay visible.
  */
 import * as THREE from 'three'
-import { BLUEPRINTS, cellWorldTile } from '../sim/blueprints'
-import type { CellKind, Place, PlaceStructure } from '../sim/types'
+import {
+  BLUEPRINTS,
+  STAGE_COSTS,
+  cellPipeline,
+  cellWorldTile,
+  currentStageKind,
+  derivedCellState,
+} from '../sim/blueprints'
+import type { CellKind, Place, PlaceStructure, StructureCell } from '../sim/types'
 import { TILE_METRES } from './constants'
 
 const PLANNED = 0x9a9a9a
-const STOCKED_WOOD = 0x6e5b44
-const STOCKED_STONE = 0x8c8578
-const BUILT_WALL = 0x8a8a8a
-const BUILT_DOOR = 0x7a7a7a
-const BUILT_FLOOR = 0x9b9b9b
 const OUTLINE = 0xb0b0b0
+const FOUNDATION = 0x8c8578
+const FRAME = 0x6e5b44
+const WALL_FILL = 0x8a8a8a
+const DOOR = 0x7a7a7a
+const FLOOR = 0x9b9b9b
+const ROOF = 0xb07a4a
+
+const FRAME_H = 3
+const FOUNDATION_H = 0.3
+const ROOF_Y = 3
+const ROOF_THICK = 0.16
 
 function addBox(
   g: THREE.Group,
@@ -50,17 +63,69 @@ function cellLocal(
   }
 }
 
+function clamp01(n: number): number {
+  if (n < 0) return 0
+  if (n > 1) return 1
+  return n
+}
+
+function stageFraction(rec: StructureCell, stageIndex: number, labour: number): number {
+  if (rec.stageIndex > stageIndex) return 1
+  if (rec.stageIndex < stageIndex) return 0
+  if (rec.stageState === 'built') return 1
+  if (rec.stageState === 'pending') return 0
+  if (labour <= 0) return 0
+  return clamp01(rec.workedTicks / labour)
+}
+
+function fracBucket(frac: number): number {
+  return Math.floor(frac * 20 + 1e-9)
+}
+
 /**
- * Signature of cell states — places.ts rebuilds only when this changes.
+ * Signature of cell stages + 5% fraction buckets — places.ts rebuilds only when this changes.
  */
 export function structureVisualSignature(place: Place): string {
   const s = place.structure
   if (!s) return ''
+  const bp = BLUEPRINTS[s.blueprintId]
   const parts: string[] = [place.kind, s.blueprintId]
-  for (const cell of s.cells) {
-    parts.push(cell ? cell.state[0]! : '_')
+  for (let i = 0; i < s.cells.length; i++) {
+    const cell = s.cells[i]
+    if (!cell) {
+      parts.push('_')
+      continue
+    }
+    const stage = bp ? currentStageKind(bp, i, cell) : null
+    const labour = stage ? STAGE_COSTS[stage].labourTicks : 1
+    const frac = cell.stageState === 'stocked' ? fracBucket(stageFraction(cell, cell.stageIndex, labour)) : 0
+    parts.push(`${cell.stageIndex}${cell.stageState[0]}${frac}`)
   }
   return parts.join(':')
+}
+
+function drawFrame(
+  group: THREE.Group,
+  geos: THREE.BufferGeometry[],
+  mat: THREE.Material,
+  loc: { x: number; z: number },
+  span: number,
+  height: number,
+): void {
+  if (height < 0.04) return
+  const postW = 0.16
+  const inset = span / 2 - postW / 2
+  const y = height / 2
+  addBox(group, geos, mat, postW, height, postW, loc.x - inset, y, loc.z - inset)
+  addBox(group, geos, mat, postW, height, postW, loc.x + inset, y, loc.z - inset)
+  addBox(group, geos, mat, postW, height, postW, loc.x - inset, y, loc.z + inset)
+  addBox(group, geos, mat, postW, height, postW, loc.x + inset, y, loc.z + inset)
+  const beamY = Math.max(height - 0.08, height * 0.92)
+  const beamH = 0.12
+  addBox(group, geos, mat, span - postW, beamH, postW, loc.x, beamY, loc.z - inset)
+  addBox(group, geos, mat, span - postW, beamH, postW, loc.x, beamY, loc.z + inset)
+  addBox(group, geos, mat, postW, beamH, span - postW, loc.x - inset, beamY, loc.z)
+  addBox(group, geos, mat, postW, beamH, span - postW, loc.x + inset, beamY, loc.z)
 }
 
 export function buildStructureVisuals(
@@ -88,12 +153,19 @@ export function buildStructureVisuals(
     opacity: 0.85,
     depthTest: false,
   })
-  const pileWood = new THREE.MeshStandardMaterial({ color: STOCKED_WOOD, roughness: 0.88 })
-  const pileStone = new THREE.MeshStandardMaterial({ color: STOCKED_STONE, roughness: 0.94 })
-  const wallMat = new THREE.MeshStandardMaterial({ color: BUILT_WALL, roughness: 0.82 })
-  const doorMat = new THREE.MeshStandardMaterial({ color: BUILT_DOOR, roughness: 0.8 })
-  const floorMat = new THREE.MeshStandardMaterial({ color: BUILT_FLOOR, roughness: 0.9 })
-  matsOwned.push(plannedMat, outlineMat, pileWood, pileStone, wallMat, doorMat, floorMat)
+  const foundationMat = new THREE.MeshStandardMaterial({ color: FOUNDATION, roughness: 0.94 })
+  const frameMat = new THREE.MeshStandardMaterial({ color: FRAME, roughness: 0.88 })
+  const wallMat = new THREE.MeshStandardMaterial({ color: WALL_FILL, roughness: 0.82 })
+  const doorMat = new THREE.MeshStandardMaterial({ color: DOOR, roughness: 0.8 })
+  const floorMat = new THREE.MeshStandardMaterial({
+    color: FLOOR,
+    roughness: 0.9,
+    transparent: true,
+    opacity: 1,
+    depthWrite: true,
+  })
+  const roofMat = new THREE.MeshStandardMaterial({ color: ROOF, roughness: 0.78 })
+  matsOwned.push(plannedMat, outlineMat, foundationMat, frameMat, wallMat, doorMat, floorMat, roofMat)
 
   const span = TILE_METRES * 0.92
   const outlineGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(span, 0.04, span))
@@ -104,40 +176,67 @@ export function buildStructureVisuals(
     const specKind: CellKind | null = bp?.cells[i]?.kind ?? (rec ? 'floor' : null)
     if (!rec || !specKind) continue
     const loc = cellLocal(structure, width, i, place.x, place.y)
+    const pipe = bp ? cellPipeline(bp, i) : []
+    let drew = false
 
-    if (rec.state === 'planned') {
+    if (derivedCellState(rec) === 'planned' || pipe.length === 0) {
       addBox(group, geosOwned, plannedMat, span, 0.04, span, loc.x, 0.03, loc.z)
       const outline = new THREE.LineSegments(outlineGeo, outlineMat)
       outline.position.set(loc.x, 0.05, loc.z)
       group.add(outline)
-      continue
+      drew = true
+      if (pipe.length === 0) continue
     }
 
-    if (rec.state === 'stocked') {
-      addBox(group, geosOwned, plannedMat, span, 0.03, span, loc.x, 0.02, loc.z)
-      addBox(group, geosOwned, pileWood, 0.7, 0.32, 0.45, loc.x - 0.25, 0.18, loc.z)
-      if (specKind === 'wall') {
-        addBox(group, geosOwned, pileStone, 0.45, 0.28, 0.4, loc.x + 0.28, 0.16, loc.z + 0.1)
+    for (let s = 0; s < pipe.length; s++) {
+      const stage = pipe[s]!
+      const frac = stageFraction(rec, s, STAGE_COSTS[stage].labourTicks)
+      if (frac <= 0.001) continue
+      drew = true
+
+      if (stage === 'foundation') {
+        const h = FOUNDATION_H * frac
+        addBox(group, geosOwned, foundationMat, span, h, span, loc.x, h / 2, loc.z)
+        continue
       }
-      continue
+
+      if (stage === 'frame') {
+        drawFrame(group, geosOwned, frameMat, loc, span, FRAME_H * frac)
+        continue
+      }
+
+      if (stage === 'wall') {
+        const h = FRAME_H * frac
+        const inset = span - 0.36
+        addBox(group, geosOwned, wallMat, inset, h, inset, loc.x, h / 2, loc.z)
+        continue
+      }
+
+      if (stage === 'door') {
+        if (frac >= 1) {
+          addBox(group, geosOwned, doorMat, 0.7, 1.5, 0.1, loc.x, 0.75, loc.z)
+        }
+        continue
+      }
+
+      if (stage === 'floor') {
+        const mat = floorMat.clone()
+        mat.opacity = 0.2 + 0.8 * frac
+        mat.transparent = frac < 1
+        matsOwned.push(mat)
+        addBox(group, geosOwned, mat, span, 0.1, span, loc.x, 0.06, loc.z)
+        continue
+      }
+
+      if (stage === 'roof') {
+        const thick = ROOF_THICK * Math.max(0.25, frac)
+        addBox(group, geosOwned, roofMat, span, thick, span, loc.x, ROOF_Y + thick / 2, loc.z)
+      }
     }
 
-    if (specKind === 'floor') {
-      addBox(group, geosOwned, floorMat, span, 0.12, span, loc.x, 0.07, loc.z)
-      continue
+    if (!drew) {
+      addBox(group, geosOwned, plannedMat, span, 0.04, span, loc.x, 0.03, loc.z)
     }
-
-    if (specKind === 'door') {
-      const postW = 0.28
-      const gap = 1.15
-      addBox(group, geosOwned, doorMat, postW, 2.2, span, loc.x - gap / 2, 1.1, loc.z)
-      addBox(group, geosOwned, doorMat, postW, 2.2, span, loc.x + gap / 2, 1.1, loc.z)
-      addBox(group, geosOwned, doorMat, gap + postW, 0.28, span, loc.x, 2.28, loc.z)
-      addBox(group, geosOwned, floorMat, span, 0.1, span, loc.x, 0.06, loc.z)
-      continue
-    }
-
-    addBox(group, geosOwned, wallMat, span, 3, span, loc.x, 1.5, loc.z)
   }
 
   return group

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SCHOOL_BLUEPRINT, makePlannedStructure, summarizeStructure } from '../src/sim/blueprints'
+import { SCHOOL_BLUEPRINT, countBuiltStages, makePlannedStructure, summarizeStructure } from '../src/sim/blueprints'
 import { emptyInventory } from '../src/sim/types'
 import type { Place } from '../src/sim/types'
 
@@ -13,7 +13,7 @@ describe('structure HUD summary', () => {
       y: 10,
       slots: 4,
       inventory: emptyInventory(),
-      construction: { needs: { wood: 36, stone: 19 }, progress: 0, consumeTicks: 0, targetKind: 'school' },
+      construction: { needs: { wood: 90, stone: 20 }, progress: 0, consumeTicks: 0, targetKind: 'school' }, // totals asserted from tables in blueprint-stages.test.ts
       structure,
     }
     const row = summarizeStructure(place)
@@ -22,7 +22,9 @@ describe('structure HUD summary', () => {
       blueprintId: 'school',
       state: 'building',
       cells: { planned: 35, stocked: 0, built: 0, total: 35 },
-      remaining: { wood: 36, stone: 19 },
+      remaining: { wood: 90, stone: 20 },
+      stages: countBuiltStages(SCHOOL_BLUEPRINT, structure.cells),
+      phase: 'foundation',
     })
   })
 })

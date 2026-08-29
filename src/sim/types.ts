@@ -115,12 +115,16 @@ export interface ConstructionSpec {
 }
 
 export type CellKind = 'wall' | 'door' | 'floor'
+/** Derived 3-state the bridge still reads. Stored cells use `stageState`. */
 export type StructureCellState = 'planned' | 'stocked' | 'built'
+export type StageState = 'pending' | 'stocked' | 'built'
 
 /** One cell of a blueprint-backed structure. `null` = outside the shape. */
 export interface StructureCell {
-  state: StructureCellState
-  /** Labour ticks applied while `stocked`. Missing ⇒ 0. */
+  /** Index into the cell's stage pipeline. */
+  stageIndex: number
+  stageState: StageState
+  /** Labour ticks applied to the current stocked stage. Missing ⇒ 0. */
   workedTicks: number
 }
 
@@ -415,6 +419,7 @@ export type PlayerCommand =
   | PlayerSetStockpileFilterCommand
   | PlayerUpgradePlaceCommand
   | PlayerAcceptInvitationCommand
+  | PlayerDebugStockSiteCommand
 
 export interface PlayerBuildCommand {
   type: 'build'
@@ -477,6 +482,12 @@ export interface PlayerUpgradePlaceCommand {
 export interface PlayerAcceptInvitationCommand {
   type: 'accept-invitation'
   candidateId: string
+}
+
+/** DEV sandbox: inject the remaining material bill into a blueprint site. */
+export interface PlayerDebugStockSiteCommand {
+  type: 'debug-stock-site'
+  placeId: string
 }
 
 export type TownMilestoneId = 'camp' | 'hamlet' | 'village' | 'town' | 'sanctuary'

@@ -73,20 +73,25 @@ import {
 } from './playerCommands'
 import {
   BLUEPRINTS,
-  CELL_COSTS,
+  STAGE_COSTS,
   blueprintBill,
+  cellDone,
+  cellPipeline,
   cellWorldTile,
   chebyshev,
   clearanceTiles,
   cloneStructure,
+  countBuiltStages,
   countStructureStates,
   interiorFloorTiles,
   inventoryCovers,
   makePlannedStructure,
-  nextPlannedIndex,
+  migrateWorldStructures,
+  nextStockableIndex,
   plannedCellsBill,
   placeOccupiedTiles,
   remainingNeedsFromBill,
+  roofUnlocked,
   structureCenter,
   totalStructureCells,
 } from './blueprints'
@@ -965,6 +970,7 @@ export function ensureMindFields(state: WorldState): void {
   if (typeof state.commissionFeeCoins !== 'number') {
     state.commissionFeeCoins = state.preset === 'wild' ? 0 : COMMISSION_COST
   }
+  migrateWorldStructures(state)
 }
 
 /** Ordered pair key for sympathy streak / met maps. */
@@ -1472,6 +1478,8 @@ export class Simulation {
       result = this.applyPlayerStockpileFilter(command)
     } else if (command.type === 'upgrade-place') {
       result = this.applyPlayerUpgrade(command)
+    } else if (command.type === 'debug-stock-site') {
+      result = this.applyPlayerDebugStockSite(command)
     } else {
       result = this.applyPlayerAcceptInvitation(command)
     }
@@ -1628,6 +1636,34 @@ export class Simulation {
       validation,
       missingStoredMaterials: { ...validation.missingStoredMaterials },
     }
+  }
+
+  private applyPlayerDebugStockSite(
+    command: Extract<PlayerCommand, { type: 'debug-stock-site' }>,
+  ): PlayerCommandResult {
+    const site = this.state.places.find((p) => p.id === command.placeId)
+    if (!site) return { ok: false, reason: 'not-found', command: clonePlayerCommand(command) }
+    if (site.kind !== 'construction-site' || !site.structure || !site.construction) {
+      return { ok: false, reason: 'not-construction-site', command: clonePlayerCommand(command) }
+    }
+    const bp = BLUEPRINTS[site.structure.blueprintId]
+    if (!bp) return { ok: false, reason: 'unknown-kind', command: clonePlayerCommand(command) }
+    const bill = plannedCellsBill(bp, site.structure.cells)
+    site.construction.needs = remainingNeedsFromBill(bill)
+    if (bill.wood > 0) site.inventory.wood = (site.inventory.wood ?? 0) + bill.wood
+    if (bill.stone > 0) site.inventory.stone = (site.inventory.stone ?? 0) + bill.stone
+    this.events.append({
+      tick: this.state.tick,
+      type: 'structure:sandbox-stocked',
+      data: {
+        placeId: site.id,
+        blueprintId: site.structure.blueprintId,
+        wood: bill.wood,
+        stone: bill.stone,
+      },
+      reason: 'sandbox: site fully stocked',
+    })
+    return { ok: true, reason: 'ok', command: clonePlayerCommand(command), placeId: site.id }
   }
 
   /**
@@ -1968,6 +2004,8 @@ export class Simulation {
     } else if (command.type === 'accept-invitation') {
       const agent = this.state.agents.find((candidate) => candidate.id === command.candidateId)
       text = `The player invited ${agent?.name ?? command.candidateId} to become a resident.`
+    } else if (command.type === 'debug-stock-site') {
+      text = `The player sandbox-stocked construction site ${command.placeId}.`
     } else if (command.type === 'cancel-construction') {
       text = `The player cancelled construction at ${command.placeId}.`
     } else {
@@ -3798,12 +3836,12 @@ export class Simulation {
       if (this.hasStockedUnbuiltCell(site)) return true
       const bp = BLUEPRINTS[site.structure.blueprintId]
       if (!bp) return false
-      const idx = nextPlannedIndex(site.structure.cells)
-      if (idx >= 0) {
-        const spec = bp.cells[idx]
-        if (spec && inventoryCovers(site.inventory, CELL_COSTS[spec.kind])) return true
-      }
-      return false
+      const idx = nextStockableIndex(site.structure, bp)
+      if (idx < 0) return false
+      const rec = site.structure.cells[idx]
+      const stage = rec ? cellPipeline(bp, idx)[rec.stageIndex] : undefined
+      if (!stage) return false
+      return inventoryCovers(site.inventory, STAGE_COSTS[stage])
     }
     const totalNeed =
       (c.needs.wood ?? 0) + (c.needs.stone ?? 0) + (c.needs.food ?? 0)
@@ -3911,19 +3949,21 @@ export class Simulation {
     const bp = BLUEPRINTS[structure.blueprintId]
     if (!bp) return
     while (true) {
-      const idx = nextPlannedIndex(structure.cells)
+      const idx = nextStockableIndex(structure, bp)
       if (idx < 0) break
       const spec = bp.cells[idx]
       const rec = structure.cells[idx]
       if (!spec || !rec) break
-      const cost = CELL_COSTS[spec.kind]
+      const stage = cellPipeline(bp, idx)[rec.stageIndex]
+      if (!stage) break
+      const cost = STAGE_COSTS[stage]
       if (!inventoryCovers(site.inventory, cost)) break
       if (cost.wood > 0) {
         const ok = this.consumeGoods(
           { kind: 'place', id: site.id },
           'wood',
           cost.wood,
-          `stocked ${spec.kind} cell ${idx} with ${cost.wood} wood at ${site.id}`,
+          `stocked ${spec.kind} ${stage} at cell ${idx} with ${cost.wood} wood at ${site.id}`,
         )
         if (!ok) break
       }
@@ -3932,11 +3972,11 @@ export class Simulation {
           { kind: 'place', id: site.id },
           'stone',
           cost.stone,
-          `stocked ${spec.kind} cell ${idx} with ${cost.stone} stone at ${site.id}`,
+          `stocked ${spec.kind} ${stage} at cell ${idx} with ${cost.stone} stone at ${site.id}`,
         )
         if (!ok) break
       }
-      rec.state = 'stocked'
+      rec.stageState = 'stocked'
       rec.workedTicks = rec.workedTicks ?? 0
     }
     const bill = plannedCellsBill(bp, structure.cells)
@@ -3946,14 +3986,29 @@ export class Simulation {
   private hasStockedUnbuiltCell(site: Place): boolean {
     const structure = site.structure
     if (!structure) return false
-    return structure.cells.some((cell) => cell?.state === 'stocked')
+    const bp = BLUEPRINTS[structure.blueprintId]
+    const unlocked = bp ? roofUnlocked(structure, bp) : true
+    return structure.cells.some((cell, i) => {
+      if (!cell || cell.stageState !== 'stocked') return false
+      if (!bp) return true
+      const stage = cellPipeline(bp, i)[cell.stageIndex]
+      if (stage === 'roof' && !unlocked) return false
+      return true
+    })
   }
 
   private structureFullyBuilt(site: Place): boolean {
     const structure = site.structure
     if (!structure) return false
-    for (const cell of structure.cells) {
-      if (cell && cell.state !== 'built') return false
+    const bp = BLUEPRINTS[structure.blueprintId]
+    for (let i = 0; i < structure.cells.length; i++) {
+      const cell = structure.cells[i]
+      if (!cell) continue
+      if (bp) {
+        if (!cellDone(bp, i, cell)) return false
+      } else if (cell.stageState !== 'built') {
+        return false
+      }
     }
     return true
   }
@@ -3965,11 +4020,14 @@ export class Simulation {
     if (!bp) return
     const ax = Math.round(agent.x)
     const ay = Math.round(agent.y)
+    const unlocked = roofUnlocked(structure, bp)
     let best = -1
     let bestD = Infinity
     for (let i = 0; i < structure.cells.length; i++) {
       const rec = structure.cells[i]
-      if (!rec || rec.state !== 'stocked') continue
+      if (!rec || rec.stageState !== 'stocked') continue
+      const stage = cellPipeline(bp, i)[rec.stageIndex]
+      if (stage === 'roof' && !unlocked) continue
       const at = cellWorldTile(structure.originX, structure.originY, bp.width, i)
       const d = chebyshev(ax, ay, at.x, at.y)
       if (d < bestD - 1e-12 || (Math.abs(d - bestD) <= 1e-12 && (best < 0 || i < best))) {
@@ -3981,38 +4039,46 @@ export class Simulation {
     const rec = structure.cells[best]!
     const spec = bp.cells[best]
     if (!spec) return
+    const pipe = cellPipeline(bp, best)
+    const stage = pipe[rec.stageIndex]
+    if (!stage) return
     rec.workedTicks += 1
     this.recordSiteContributor(site, agent.id)
-    const labour = CELL_COSTS[spec.kind].labourTicks
+    const labour = STAGE_COSTS[stage].labourTicks
     if (rec.workedTicks < labour) return
     const at = cellWorldTile(structure.originX, structure.originY, bp.width, best)
     const occupied = this.tileOccupiedByAgent(at.x, at.y)
-    if ((spec.kind === 'wall' || spec.kind === 'door') && occupied) {
+    if (spec.kind === 'wall' && stage === 'frame' && occupied) {
       rec.workedTicks = labour - 1
       return
     }
-    rec.state = 'built'
+    rec.stageState = 'built'
     rec.workedTicks = labour
     const tile = this.state.tiles[at.y * this.state.width + at.x]
-    if (tile) {
-      if (spec.kind === 'wall') tile.walkable = false
-      else tile.walkable = true
+    if (tile && spec.kind === 'wall' && stage === 'frame') {
+      tile.walkable = false
     }
     this.events.append({
       tick: this.state.tick,
-      type: 'structure:cell-built',
+      type: 'structure:stage-built',
       agentId: agent.id,
       data: {
         placeId: site.id,
         blueprintId: structure.blueprintId,
         index: best,
-        kind: spec.kind,
+        cellKind: spec.kind,
+        stage,
         x: at.x,
         y: at.y,
         agentName: agent.name,
       },
-      reason: `${spec.kind} cell built at (${at.x},${at.y})`,
+      reason: `${spec.kind} ${stage} raised at (${at.x},${at.y})`,
     })
+    if (rec.stageIndex < pipe.length - 1) {
+      rec.stageIndex += 1
+      rec.stageState = 'pending'
+      rec.workedTicks = 0
+    }
   }
 
   private tileOccupiedByAgent(x: number, y: number): boolean {
@@ -4026,8 +4092,14 @@ export class Simulation {
     const structure = site.structure
     const c = site.construction
     if (!structure || !c) return
-    const counts = countStructureStates(structure.cells)
-    c.progress = counts.total > 0 ? counts.built / counts.total : 1
+    const bp = BLUEPRINTS[structure.blueprintId]
+    if (bp) {
+      const stages = countBuiltStages(bp, structure.cells)
+      c.progress = stages.total > 0 ? stages.built / stages.total : 1
+    } else {
+      const counts = countStructureStates(structure.cells)
+      c.progress = counts.total > 0 ? counts.built / counts.total : 1
+    }
   }
 
   private restoreStructureWalkability(place: Place): void {

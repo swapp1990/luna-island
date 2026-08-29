@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import { SCHOOL_BLUEPRINT, STAGE_COSTS, cellDone } from '../src/sim/blueprints'
 import { isWalkable } from '../src/sim/pathfind'
 import { Simulation } from '../src/sim/sim'
-import type { AgentState, Place } from '../src/sim/types'
+import type { AgentState, Place, StructureCell } from '../src/sim/types'
 
 function findSchoolPlot(sim: Simulation): { x: number; y: number } {
   for (let y = 1; y < sim.state.height - 6; y++) {
@@ -41,73 +42,145 @@ function pinWorker(agent: AgentState, site: Place, x: number, y: number, tick: n
   agent.needs = { hunger: 0.9, energy: 0.9, social: 0.9 }
 }
 
+function setCell(cell: StructureCell, stageIndex: number, stageState: StructureCell['stageState'], workedTicks = 0): void {
+  cell.stageIndex = stageIndex
+  cell.stageState = stageState
+  cell.workedTicks = workedTicks
+}
+
+function parkOthers(sim: Simulation, keep: AgentState[]): void {
+  const keepIds = new Set(keep.map((agent) => agent.id))
+  for (const agent of sim.state.agents) {
+    if (keepIds.has(agent.id)) continue
+    agent.action = { kind: 'idle', reason: 'parked' }
+    agent.employedAt = null
+    agent.workPhase = null
+    agent.lastDecideTick = sim.state.tick
+  }
+}
+
 describe('blueprint construction engine', () => {
-  it('stocks cells in row-major order', () => {
+  it('stocks the next unlockable stage of the lowest-index eligible cell', () => {
     const sim = new Simulation(42)
     const site = placeSchool(sim)
-    site.inventory.wood = 1
+    site.inventory.wood = 0
     site.inventory.stone = 1
     sim.advanceTicks(1)
-    expect(site.structure!.cells[0]?.state).toBe('stocked')
-    expect(site.structure!.cells[1]?.state).toBe('planned')
-    site.inventory.wood = 1
+    expect(site.structure!.cells[0]?.stageState).toBe('stocked')
+    expect(site.structure!.cells[0]?.stageIndex).toBe(0)
+    expect(site.structure!.cells[1]?.stageState).toBe('pending')
     site.inventory.stone = 1
     sim.advanceTicks(1)
-    expect(site.structure!.cells[0]?.state).toBe('stocked')
-    expect(site.structure!.cells[1]?.state).toBe('stocked')
-    expect(site.structure!.cells[2]?.state).toBe('planned')
-    expect(site.construction?.needs.wood).toBe(36 - 2)
-    expect(site.construction?.needs.stone).toBe(19 - 2)
+    expect(site.structure!.cells[0]?.stageState).toBe('stocked')
+    expect(site.structure!.cells[1]?.stageState).toBe('stocked')
+    expect(site.structure!.cells[2]?.stageState).toBe('pending')
+    expect(site.construction?.needs.wood).toBe(90)
+    expect(site.construction?.needs.stone).toBe(18)
   })
 
-  it('routes work to the nearest stocked cell and flips wall walkability', () => {
+  it('routes work to the nearest stocked stage and flips walkability at wall frame', () => {
     const sim = new Simulation(42)
     const site = placeSchool(sim)
     const originX = site.structure!.originX
     const originY = site.structure!.originY
-    // Stock only the two opposite top-row walls.
-    site.structure!.cells[0]!.state = 'stocked'
-    site.structure!.cells[6]!.state = 'stocked'
-    site.construction!.needs = { wood: 34, stone: 17 }
+    setCell(site.structure!.cells[0]!, 1, 'stocked', 0)
+    setCell(site.structure!.cells[6]!, 1, 'stocked', 0)
+    site.construction!.needs = { wood: 88, stone: 18 }
     const a = sim.state.agents[0]!
     const b = sim.state.agents[1]!
     pinWorker(a, site, originX + 2, originY + 1, sim.state.tick)
     pinWorker(b, site, originX + 4, originY + 1, sim.state.tick)
+    parkOthers(sim, [a, b])
     sim.advanceTicks(1)
     expect(site.structure!.cells[0]!.workedTicks).toBeGreaterThan(0)
     expect(site.structure!.cells[6]!.workedTicks).toBeGreaterThan(0)
     expect(site.structure!.cells[0]!.workedTicks + site.structure!.cells[6]!.workedTicks).toBe(2)
 
-    site.structure!.cells[6]!.state = 'planned'
-    site.structure!.cells[6]!.workedTicks = 0
+    setCell(site.structure!.cells[6]!, 0, 'pending', 0)
     pinWorker(a, site, site.x, site.y, sim.state.tick)
-    site.structure!.cells[0]!.workedTicks = 29
+    parkOthers(sim, [a])
+    setCell(site.structure!.cells[0]!, 1, 'stocked', STAGE_COSTS.frame.labourTicks - 1)
     sim.advanceTicks(1)
-    expect(site.structure!.cells[0]!.state).toBe('built')
+    expect(site.structure!.cells[0]!.stageIndex).toBe(2)
+    expect(site.structure!.cells[0]!.stageState).toBe('pending')
     expect(isWalkable(sim.state, originX, originY)).toBe(false)
-    expect(site.construction!.progress).toBeCloseTo(1 / 35, 10)
+    expect(site.construction!.progress).toBeCloseTo(2 / 110, 10)
   })
 
-  it('defers wall completion while the tile is occupied', () => {
+  it('defers wall frame completion while the tile is occupied', () => {
     const sim = new Simulation(42)
     const site = placeSchool(sim)
     const originX = site.structure!.originX
     const originY = site.structure!.originY
-    site.structure!.cells[0]!.state = 'stocked'
-    site.structure!.cells[0]!.workedTicks = 29
+    setCell(site.structure!.cells[0]!, 1, 'stocked', STAGE_COSTS.frame.labourTicks - 1)
     const worker = sim.state.agents[0]!
     const blocker = sim.state.agents[1]!
     pinWorker(worker, site, site.x, site.y, sim.state.tick)
     pinWorker(blocker, site, originX, originY, sim.state.tick)
+    parkOthers(sim, [worker, blocker])
     sim.advanceTicks(1)
-    expect(site.structure!.cells[0]!.state).toBe('stocked')
-    expect(site.structure!.cells[0]!.workedTicks).toBe(29)
+    expect(site.structure!.cells[0]!.stageIndex).toBe(1)
+    expect(site.structure!.cells[0]!.stageState).toBe('stocked')
+    expect(site.structure!.cells[0]!.workedTicks).toBe(STAGE_COSTS.frame.labourTicks - 1)
     blocker.x = originX - 1
     blocker.y = originY - 1
     pinWorker(worker, site, site.x, site.y, sim.state.tick)
     sim.advanceTicks(1)
-    expect(site.structure!.cells[0]!.state).toBe('built')
+    expect(site.structure!.cells[0]!.stageIndex).toBe(2)
     expect(isWalkable(sim.state, originX, originY)).toBe(false)
+  })
+
+  it('keeps door and floor tiles walkable after their frame stage', () => {
+    const sim = new Simulation(42)
+    const site = placeSchool(sim)
+    const originX = site.structure!.originX
+    const originY = site.structure!.originY
+    setCell(site.structure!.cells[3]!, 1, 'stocked', STAGE_COSTS.frame.labourTicks - 1)
+    const worker = sim.state.agents[0]!
+    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    parkOthers(sim, [worker])
+    sim.advanceTicks(1)
+    expect(site.structure!.cells[3]!.stageIndex).toBe(2)
+    expect(isWalkable(sim.state, originX + 3, originY)).toBe(true)
+  })
+
+  it('refuses to stock a roof stage before the envelope is complete', () => {
+    const sim = new Simulation(42)
+    const site = placeSchool(sim)
+    parkOthers(sim, [])
+    for (let i = 0; i < SCHOOL_BLUEPRINT.cells.length; i++) {
+      const spec = SCHOOL_BLUEPRINT.cells[i]
+      const rec = site.structure!.cells[i]
+      if (!spec || !rec) continue
+      if (spec.kind === 'floor') setCell(rec, 1, 'pending', 0)
+      else setCell(rec, 2, 'stocked', 0)
+    }
+    const floorRoof = site.structure!.cells[8]!
+    site.inventory.wood = 40
+    site.inventory.stone = 0
+    sim.advanceTicks(1)
+    expect(floorRoof.stageIndex).toBe(1)
+    expect(floorRoof.stageState).toBe('pending')
+  })
+
+  it('does not apply work to a prematurely stocked roof while the envelope is incomplete', () => {
+    const sim = new Simulation(42)
+    const site = placeSchool(sim)
+    for (let i = 0; i < SCHOOL_BLUEPRINT.cells.length; i++) {
+      const rec = site.structure!.cells[i]
+      if (rec) setCell(rec, 0, 'pending', 0)
+    }
+    const roofCell = site.structure!.cells[8]!
+    setCell(roofCell, 1, 'stocked', 3)
+    setCell(site.structure!.cells[6]!, 0, 'stocked', 0)
+    const worker = sim.state.agents[0]!
+    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    parkOthers(sim, [worker])
+    sim.advanceTicks(1)
+    expect(roofCell.stageIndex).toBe(1)
+    expect(roofCell.stageState).toBe('stocked')
+    expect(roofCell.workedTicks).toBe(3)
+    expect(site.structure!.cells[6]!.workedTicks).toBeGreaterThan(0)
   })
 
   it('cancels with a refund and restores walkable tiles', () => {
@@ -119,7 +192,7 @@ describe('blueprint construction engine', () => {
     const before = store.inventory.wood
     site.inventory.wood = 4
     site.inventory.stone = 0
-    site.structure!.cells[0]!.state = 'built'
+    setCell(site.structure!.cells[0]!, 3, 'built', 8)
     const tile = sim.state.tiles[originY * sim.state.width + originX]!
     tile.walkable = false
     const cancelled = sim.issuePlayerCommand({ type: 'cancel-construction', placeId: site.id })
@@ -139,7 +212,24 @@ describe('blueprint construction engine', () => {
     const at = sim.state.tick
     expect(sim.stateAt(at).hash()).toBe(sim.hash())
     const replayed = sim.stateAt(at).state.places.find((p) => p.id === site.id)
-    const stocked = replayed?.structure?.cells.filter((c) => c && c.state !== 'planned').length ?? 0
-    expect(stocked).toBeGreaterThan(0)
+    const started = replayed?.structure?.cells.filter((c) => c && derivedStarted(c)).length ?? 0
+    expect(started).toBeGreaterThan(0)
+  })
+
+  it('progress is built stages over total stages', () => {
+    const sim = new Simulation(42)
+    const site = placeSchool(sim)
+    setCell(site.structure!.cells[0]!, 0, 'stocked', STAGE_COSTS.foundation.labourTicks - 1)
+    const worker = sim.state.agents[0]!
+    pinWorker(worker, site, site.x, site.y, sim.state.tick)
+    parkOthers(sim, [worker])
+    sim.advanceTicks(1)
+    expect(site.structure!.cells[0]!.stageIndex).toBe(1)
+    expect(cellDone(SCHOOL_BLUEPRINT, 0, site.structure!.cells[0]!)).toBe(false)
+    expect(site.construction!.progress).toBeCloseTo(1 / 110, 10)
   })
 })
+
+function derivedStarted(cell: StructureCell): boolean {
+  return !(cell.stageIndex === 0 && cell.stageState === 'pending')
+}

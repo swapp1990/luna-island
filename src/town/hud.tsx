@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties, type ReactElement } from 'react'
 import { firstStormObjectives, secureFood } from '../sim/firstStorm'
-import { BLUEPRINTS, blueprintBill, countBuiltByKind } from '../sim/blueprints'
+import { BLUEPRINTS, STRUCTURE_PHASE_LABEL, blueprintBill, countBuiltByKind, summarizeStructure } from '../sim/blueprints'
 import { BUILD_RECIPES, MAX_PLACE_LEVEL, isBuildableKind, placeLevel } from '../sim/sim'
 import type {
   BuildableKind,
@@ -229,6 +229,7 @@ export function Hud(props: {
   getMindMeter: () => MindMeter | null
   screenForAgent: (agentId: string) => { x: number; y: number } | null
   replayLatestMindMoment: () => { tick: number; label: string; reason: string; callsUnchanged: boolean } | null
+  stockSite?: (placeId: string) => void
 }): ReactElement {
   const [menuOpen, setMenuOpen] = useState(false)
   const [prioritiesOpen, setPrioritiesOpen] = useState(false)
@@ -328,6 +329,7 @@ export function Hud(props: {
   const selectedCellCounts = selected?.structure && selectedBlueprint
     ? countBuiltByKind(selectedBlueprint, selected.structure.cells)
     : null
+  const selectedStructure = selected ? summarizeStructure(selected) : null
   const selectedOnSite = selected
     ? currentWorld.agents.filter((agent) =>
         agent.employedAt === selected.id &&
@@ -930,6 +932,18 @@ export function Hud(props: {
               </div>
               {selectedCellCounts ? (
                 <div style={diagnosticBlock} data-testid="blueprint-cell-counts">
+                  {selectedStructure ? (
+                    <div style={diagnosticRow} data-testid="blueprint-phase">
+                      <span>Phase</span>
+                      <strong>{STRUCTURE_PHASE_LABEL[selectedStructure.phase]}</strong>
+                    </div>
+                  ) : null}
+                  {selectedStructure ? (
+                    <div style={diagnosticRow}>
+                      <span>Stages</span>
+                      <strong>{selectedStructure.stages.built}/{selectedStructure.stages.total}</strong>
+                    </div>
+                  ) : null}
                   <div style={diagnosticRow}>
                     <span>Walls</span>
                     <strong>{selectedCellCounts.wall.built}/{selectedCellCounts.wall.total}</strong>
@@ -977,6 +991,16 @@ export function Hud(props: {
                   ))}
                 </div>
               </div>
+              {import.meta.env.DEV && selected.structure && props.stockSite ? (
+                <button
+                  type="button"
+                  data-testid="stock-site"
+                  onClick={() => props.stockSite?.(selected.id)}
+                  style={sandboxButton}
+                >
+                  Stock site (sandbox)
+                </button>
+              ) : null}
               <button type="button" data-testid="cancel-construction" onClick={props.cancelSelected} style={dangerButton}>
                 Cancel construction
               </button>
@@ -1480,6 +1504,17 @@ const filterButtonOn: CSSProperties = {
   background: 'rgba(72,126,75,0.32)',
 }
 const sitePriorityButtons: CSSProperties = { display: 'flex', gap: 4 }
+const sandboxButton: CSSProperties = {
+  width: '100%',
+  marginTop: 8,
+  border: '1px solid rgba(203,167,95,0.62)',
+  borderRadius: 5,
+  background: 'rgba(115,85,43,0.46)',
+  color: '#fff3d8',
+  padding: '7px 10px',
+  cursor: 'pointer',
+  font: '700 12px/1.2 ui-sans-serif, system-ui, sans-serif',
+}
 const dangerButton: CSSProperties = {
   width: '100%',
   marginTop: 12,

@@ -24,6 +24,8 @@ export type PlayerCommandInput =
   | ({ kind: 'set-stockpile-filter'; placeId: string; good: Good; enabled: boolean })
   | ({ kind: 'upgrade-place'; placeId: string })
   | ({ kind: 'accept-invitation'; candidateId: string })
+  | ({ kind: 'debug-stock-site'; placeId: string })
+  | ({ type: 'debug-stock-site'; placeId: string })
 
 export type PlayerCommandReason =
   | 'ok'
@@ -200,6 +202,9 @@ export function normalizePlayerCommand(input: PlayerCommandInput): PlayerCommand
   }
   if (type === 'accept-invitation' && typeof raw.candidateId === 'string') {
     return { type, candidateId: raw.candidateId }
+  }
+  if (type === 'debug-stock-site' && typeof raw.placeId === 'string') {
+    return { type: 'debug-stock-site', placeId: raw.placeId }
   }
   if (
     type === 'place-blueprint' &&

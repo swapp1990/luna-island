@@ -27,6 +27,8 @@ export interface StructureListItem {
   state: 'building' | 'built'
   cells: { planned: number; stocked: number; built: number; total: number }
   remaining: Partial<Record<'wood' | 'stone', number>>
+  stages: { built: number; total: number }
+  phase: 'foundation' | 'frame' | 'walls' | 'roofing' | 'done'
 }
 
 export interface TownState {
@@ -103,6 +105,8 @@ export interface TownControl {
   }
   placeBlueprint: (id: string, x: number, y: number) => { ok: boolean; reason?: string }
   listStructures: () => StructureListItem[]
+  /** DEV sandbox: inject remaining materials into a blueprint site. */
+  stockSite: (placeId: string) => { ok: boolean; reason?: string }
   /** Synchronously step the sim N ticks, no render between. Capped at 20000/call. */
   fastForward: (ticks: number) => void
   validateBlueprint: (id: string, x: number, y: number) => { ok: boolean; reason: string }

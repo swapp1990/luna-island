@@ -25,4 +25,23 @@ describe('blueprint determinism', () => {
     expect(a.hash()).toBe(b.hash())
     expect(a.getEventCount()).toBe(b.getEventCount())
   })
+
+  it('same seed + debug-stock-site command log ⇒ identical hash', () => {
+    const seed = 42
+    const a = new Simulation(seed)
+    const b = new Simulation(seed)
+    const plot = findSchoolPlot(a)
+    const placedA = a.issuePlayerCommand({ type: 'place-blueprint', blueprintId: 'school', x: plot.x, y: plot.y })
+    const placedB = b.issuePlayerCommand({ type: 'place-blueprint', blueprintId: 'school', x: plot.x, y: plot.y })
+    expect(placedA.placeId).toBe(placedB.placeId)
+    a.issuePlayerCommand({ type: 'debug-stock-site', placeId: placedA.placeId! })
+    b.issuePlayerCommand({ type: 'debug-stock-site', placeId: placedB.placeId! })
+    a.advanceTicks(120)
+    b.advanceTicks(120)
+    expect(a.hash()).toBe(b.hash())
+    expect(a.getEventCount()).toBe(b.getEventCount())
+    const stocked = a.getEvents().filter((e) => e.type === 'structure:sandbox-stocked')
+    expect(stocked).toHaveLength(1)
+    expect(stocked[0]?.reason).toBe('sandbox: site fully stocked')
+  })
 })

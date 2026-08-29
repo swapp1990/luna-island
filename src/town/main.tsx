@@ -330,6 +330,11 @@ async function boot(): Promise<void> {
       }
       return rows
     },
+    stockSite: (placeId) => {
+      const result = sim.issuePlayerCommand({ type: 'debug-stock-site', placeId })
+      if (result.ok) syncAfterCommand()
+      return { ok: result.ok, reason: result.reason }
+    },
     fastForward: (ticks) => {
       const n = Math.max(0, Math.min(20_000, Math.floor(ticks)))
       loop.advanceTicks(n, true)
@@ -466,6 +471,10 @@ async function boot(): Promise<void> {
       }}
       getMindMeter={() => mind?.getMeter() ?? null}
       screenForAgent={screenForAgent}
+      stockSite={(placeId) => {
+        const result = sim.issuePlayerCommand({ type: 'debug-stock-site', placeId })
+        if (result.ok) syncAfterCommand()
+      }}
       replayLatestMindMoment={() => {
         const record = sim.state.externalIntentLog.at(-1)
         if (!record) return null
