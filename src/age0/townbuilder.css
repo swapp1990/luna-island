@@ -1,0 +1,20 @@
+/* Map materials remain intentionally simple placeholders while the HUD follows the town route. */
+.cell {
+  border-width: 1px 1px 3px;
+  border-color: rgba(255,255,255,0.12) rgba(0,0,0,0.18) rgba(0,0,0,0.34);
+  box-shadow: inset 0 1px rgba(255,255,255,0.08);
+}
+
+.cell-glyph { text-shadow: 0 1px 3px rgba(0,0,0,0.42); }
+.cell-open { background: linear-gradient(145deg,#807d5f,#68684f); }
+.cell-water { background: repeating-linear-gradient(0deg,#527b88 0,#527b88 7px,#5f8995 8px,#5f8995 10px); }
+.cell-forest { background: radial-gradient(circle at 32% 30%,#587960 0 12%,transparent 13%),linear-gradient(145deg,#42654a,#304e38); }
+.cell-food { background: radial-gradient(circle at 67% 33%,#b5757c 0 8%,transparent 9%),linear-gradient(145deg,#985d64,#70464b); }
+.cell-stone { background: linear-gradient(135deg,#858b83 0 34%,#666d67 35% 64%,#757b75 65%); }
+.cell-fiber { background: repeating-linear-gradient(75deg,#a78b51 0,#a78b51 5px,#947842 6px,#947842 9px); }
+.cell-building { color: #fff1c2; background: linear-gradient(145deg,#a07e4d,#6f5333); }
+.cell.is-project { background: repeating-linear-gradient(45deg,#71654a,#71654a 7px,#4b4637 7px,#4b4637 14px); }
+
+@media (min-width: 981px) {
+  .cell:hover { transform: translateY(-2px) scale(1.025); }
+}

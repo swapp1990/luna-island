@@ -53,6 +53,10 @@ function townPlugin(): Plugin {
           req.url = '/gallery.html'
           return next()
         }
+        if (req.url === '/age-0' || req.url === '/age-0/') {
+          req.url = '/age-0.html'
+          return next()
+        }
         if (req.url?.startsWith('/assets/gltf/')) {
           const rel = decodeURIComponent(req.url.slice('/assets/gltf/'.length).split('?')[0])
           const file = path.resolve(gltfRoot, rel)
@@ -84,6 +88,7 @@ export default defineConfig({
         god: 'god.html',
         town: 'town.html',
         gallery: 'gallery.html',
+        ageZero: 'age-0.html',
       },
     },
   },
