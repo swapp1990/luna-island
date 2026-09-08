@@ -1,0 +1,100 @@
+{
+  "source": "D:\\MyProjects\\Claude\\luna-island\\art\\universal-base-characters\\assets\\ubc-male-ual.glb",
+  "target": "D:\\MyProjects\\Claude\\luna-island\\art\\meadow-harbor-rebuild\\completion\\public\\assets\\ubc\\ubc-male-ual-village.glb",
+  "source_bytes": 22602092,
+  "source_sha256": "52acf9ffa84278bf51c879421fb4b56af76b016b648d47ca4989ede1437903c7",
+  "output_bytes": 6324496,
+  "clips": [
+    "Fixing_Kneeling",
+    "Idle_Loop",
+    "Idle_Talking_Loop",
+    "Walk_Loop"
+  ],
+  "images": [
+    {
+      "name": "T_Hair_1_Normal",
+      "source": [
+        2048,
+        2048
+      ],
+      "output": [
+        1024,
+        1024
+      ],
+      "bytes": 1314193
+    },
+    {
+      "name": "T_Hair_1_BaseColor",
+      "source": [
+        2048,
+        2048
+      ],
+      "output": [
+        1024,
+        1024
+      ],
+      "bytes": 699919
+    },
+    {
+      "name": "T_Eye_Normal",
+      "source": [
+        256,
+        256
+      ],
+      "output": [
+        256,
+        256
+      ],
+      "bytes": 14971
+    },
+    {
+      "name": "T_Eye_Brown",
+      "source": [
+        256,
+        256
+      ],
+      "output": [
+        256,
+        256
+      ],
+      "bytes": 35632
+    },
+    {
+      "name": "T_Superhero_Male_Normal",
+      "source": [
+        2048,
+        2048
+      ],
+      "output": [
+        1024,
+        1024
+      ],
+      "bytes": 1154287
+    },
+    {
+      "name": "T_Superhero_Male_Dark",
+      "source": [
+        2048,
+        2048
+      ],
+      "output": [
+        1024,
+        1024
+      ],
+      "bytes": 522316
+    },
+    {
+      "name": "T_Superhero_Male_Roughness",
+      "source": [
+        2048,
+        2048
+      ],
+      "output": [
+        1024,
+        1024
+      ],
+      "bytes": 652466
+    }
+  ],
+  "source_preserved": true
+}
