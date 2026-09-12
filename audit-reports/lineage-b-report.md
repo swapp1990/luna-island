@@ -203,3 +203,91 @@ replay hash 792a3bd4 events 54 — MATCH
 1. Gate run at `--yield 1.0` (CLI default, mock e2e) or 0.5 (`DEFAULT_CONFIG`, Phase A scarcity)? At 0.5, high-generosity villagers starve and n(high) for give collapses unless the LLM works more than the mock.
 2. Keep `expressed` as slope>0 ∧ n(high)≥5 ∧ n(low)≥5 ∧ p<0.05, knowing voice/temper fail the n(low) bar at K=12? Or compare high vs mid when n(low)<5?
 3. Is counting mock successes in `mind.llm` acceptable, or do you want a fourth `mock` counter in `mind.json`?
+
+---
+
+## Main session: gate runs (2026-09-12)
+
+All runs: codex engine (`gpt-5.6-luna`, effort low), seed 42, cohort 12, 2 seasons, concurrency 3,
+0 fallbacks and 0 invalid replies in every run, mean latency 4.0–4.3 s.
+
+### Gate 1 — yield 0.5, original prompt: extinction in both arms
+
+| arm | dir | seasons completed | born | starved | decisions | failed eats |
+|---|---|---|---|---|---|---|
+| DNA on | `gate-codex-dnaon-seed42-20260912-141833` | 0 | 0 | 11 | 353 | 158 |
+| DNA off | `gate-codex-dnaoff-seed42-20260912-142831` | 0 | 0 | 12 | 335 | 84 |
+
+Cause (from the trace, not the DNA): work yields 0.5 grain per turn and a meal needs a whole 1.0.
+The model read "Grain: 0.5" as food, tried to eat, failed with "no grain to eat", and repeated with
+reasons like "I have enough personal grain for one meal". 45% of all DNA-on turns were failed eats.
+The instinct brain never hits this because it checks for a whole grain before eating.
+
+Fix (facts only, no advice): the eat rule now states a meal is one whole grain and that smaller
+amounts fail and cost the turn; the observation shows `Grain: 0.5 (less than one meal)` and the
+granary the same way. `src/lineage/prompt.ts`, `mealsText`.
+
+### Gate 2 — yield 0.5, legible-meal prompt: survival fixed, no expression
+
+| arm | dir | seasons | born | starved | decisions | failed eats | acts taken |
+|---|---|---|---|---|---|---|---|
+| DNA on | `gate2-codex-dnaon-seed42-20260912-144038` | 2 | 24 | 4 | 932 | 47 | rest 566, work 456, eat 446, forage 198, talk 162, court 14 |
+| DNA off | `gate2-codex-dnaoff-seed42-20260912-150655` | 2 | 24 | 2 | 934 | 40 | rest 560, eat 446, work 442, forage 236, talk 130, withdraw 13, court 12, store 4 |
+
+Expression: **0 of 8 disposition pairs in both arms**, by band table and by rank correlation.
+`give`, `propose`, `shun`, and `vote` were never taken in either arm; `store` 4 times, only
+without DNA. The only p < 0.05 anywhere is caution→rest by rank in the DNA-on arm (rho 0.36,
+p 0.04), which is the expected false-positive rate for eight tests.
+
+The DNA block is being read: reasons echo its clauses verbatim ("I ache for company", "seek what I
+do not know" are the high-sociability and high-curiosity lines). It does not reach acts because at
+yield 0.5 every turn is spent on eat, rest, or grain; the social and civic acts have no survival
+value and the model does not spend turns on them. Gate 3 tests whether slack alone changes that.
+
+### Gate 3 — yield 1.0 (slack world), legible-meal prompt: survival total, still no expression
+
+| arm | dir | seasons | born | starved | decisions | acts taken |
+|---|---|---|---|---|---|---|
+| DNA on | `gate3y1-codex-dnaon-seed42-20260912-153258` | 2 | 24 | 0 | 960 | rest 662, eat 506, work 444, talk 266, court 36, give 4, withdraw 2 |
+| DNA off | stopped by main after the DNA-on result: a control cannot add information when the treatment shows zero | | | | | |
+
+Expression: **0 of 8** by band and by rank. `propose`, `shun`, `store`, `forage`, `vote`
+never taken. `give` was taken by exactly one villager, Xan Ember (generosity 0.83, the highest
+band), twice, with the reasons "I prefer to give before anyone needs to ask" and "I give grain
+freely because I have enough for myself and want to help a neighbor". That is the DNA clause "you
+give before you are asked" acted on, once, by the one villager it was written for. n = 1.
+
+### Phase B verdict (go/no-go per plans/lineage.md §6): **no-go for Phase C as designed**
+
+The LLM reads the DNA block (verbatim echoes in reasons in every run) and, when it can act on it,
+does so in the right direction (Xan Ember). It almost never can. Two independent reasons, both
+world/prompt design rather than model failure:
+
+1. **Scarcity crowds out choice** (gate 2): at yield 0.5 every turn goes to eat, rest, or grain.
+2. **Slack removes the triggers** (gate 3): at yield 1.0 nobody is hungry, so there is nobody to
+   give to; nobody hoards, so there is nothing to shun; the granary never matters, so there is
+   nothing to propose. And even where a trigger exists, **the observation hides it**: the
+   "Others" line shows room and standing only, never that a neighbour is starving
+   (`prompt.ts:215`). Generosity cannot fire at a hunger it cannot see.
+
+The disposition acts need a world with *inequality inside slack* and an observation that shows it.
+None of the three worlds run today had both.
+
+### What to change before another LLM gate (not run; for the user to pick)
+
+- **Observation**: show public state that triggers disposition acts as facts: "Yue Lark, woods,
+  standing 0, starving" and "Tal Mirason, hall, standing 3, holds 6 meals". Both are things a
+  neighbour could see. Pure prompt change, zero world change.
+- **World**: a middle yield (≈ 0.7) so some villagers run short while others hold surplus, or
+  heterogeneous field access so inequality exists without extinction. Re-pin the Phase A
+  baseline in the same change.
+- **Effort**: the sidecar decides at `DECIDE_EFFORT = 'low'`. 662 of 1,920 acts were `rest`
+  with near-identical reasons. A medium-effort probe on one season (≈ 480 calls) would show
+  whether the model is capable of the mapping or only lazy under low effort.
+- **Compiler**: move the DNA block to sit directly above the response contract (recency) and
+  head it "Your nature:". Keep it facts-only.
+- **Statistic**: for dominant traits at K = 12, the low band is 1–3 villagers; use the rank
+  companion (`scripts/lineage-expression-rank.mjs`) as the primary test or grow the cohort.
+
+Budget used today: 353 + 335 + 932 + 934 + 960 + ~50 (partial control) ≈ 3,560 codex decisions,
+0 fallbacks, 0 invalid replies, mean 4.0–4.6 s.

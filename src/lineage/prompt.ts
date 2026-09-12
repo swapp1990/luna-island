@@ -13,6 +13,13 @@ import type {
 import { TURN_NAMES } from './types'
 import { fullName, grain1, livingVillagers } from './world'
 
+/** A meal is one whole grain; the model must not read 0.5 as food. */
+function mealsText(grain: number): string {
+  const meals = Math.floor(grain + 1e-9)
+  if (meals <= 0) return 'less than one meal'
+  return meals === 1 ? '1 meal' : `${meals} meals`
+}
+
 export const LINEAGE_ACTS: readonly LineageActKind[] = [
   'work',
   'forage',
@@ -42,7 +49,7 @@ export const WORLD_RULES_TEXT = [
   'work (fields): grain rises by the harvest yield; energy falls 0.2.',
   'forage (woods): grain +1 with chance one half; energy falls 0.1.',
   'rest (homes): energy +0.5.',
-  'eat (any room): one personal grain becomes satiety +0.5; else the granary if the granary rule allows.',
+  'eat (any room): a meal takes one whole grain (1.0) and gives satiety +0.5. It comes from your personal grain if you hold at least 1.0, else from the granary if the rule allows and it holds at least 1.0. Amounts under 1.0 cannot be eaten; the act fails and the turn is spent.',
   'store / withdraw (hall): move grain to or from the granary; withdraw follows the granary rule.',
   'give (any room): grain to a named villager; your standing +1.',
   'talk (any room): text up to 140 characters to a named villager; both companionship +0.3.',
@@ -226,8 +233,8 @@ export function buildUserPrompt(
     `Season ${state.season + 1}, day ${state.day + 1}, ${turnName}.`,
     `You are in the ${self.room}.`,
     `Satiety ${pct(self.satiety)}%. Energy ${pct(self.energy)}%. Companionship ${pct(self.companionship)}%.`,
-    `Grain: ${grain1(self.grain)}. Standing: ${self.standing}.`,
-    `Granary: ${grain1(state.granary)}. Harvest yield: ${grain1(state.config.harvestYield)} grain per turn of field work. Rules in force: ${rules}.`,
+    `Grain: ${grain1(self.grain)} (${mealsText(self.grain)}). Standing: ${self.standing}.`,
+    `Granary: ${grain1(state.granary)} (${mealsText(state.granary)}). Harvest yield: ${grain1(state.config.harvestYield)} grain per turn of field work. Rules in force: ${rules}.`,
     proposalLine,
     'Others:',
     ...(otherLines.length > 0 ? otherLines : ['(none)']),

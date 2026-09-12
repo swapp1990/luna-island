@@ -182,6 +182,24 @@ presence. Control arm: same genomes, DNA block removed. Budget: 12 villagers × 
 × 2 seasons ≈ 1,000 decisions for the gate run. **Go/no-go:** if band does not predict act rate
 with the DNA block and not without it, stop and rework the compiler before Phase C.
 
+*Phase B ran 2026-09-12* (grok 4.6 implementation, commit `de13665`; gates run by main; report
+`audit-reports/lineage-b-report.md`). Verdict: **no-go for Phase C as designed.** Three gates
+on codex, seed 42, 12 villagers, 2 seasons, ≈ 3,560 decisions, 0 fallbacks:
+
+- Gate 1 (yield 0.5): extinction in both arms. The model read "Grain: 0.5" as a meal and spent
+  45% of turns failing to eat. Fixed with two world facts in the prompt, no advice.
+- Gate 2 (yield 0.5, fixed prompt): 24 born, 4 starved, **0 of 8 traits expressed**. `give`,
+  `propose`, `shun` never taken. Every turn goes to survival.
+- Gate 3 (yield 1.0): 0 starved, **0 of 8 expressed**. Nobody hungry, so nothing to give to;
+  `give` taken twice, both by the single highest-generosity villager, with the DNA clause quoted
+  as the reason. The observation never shows a neighbour's hunger.
+
+The DNA block is read and, on the rare occasion it can be acted on, acted on correctly. It
+almost never can: scarcity removes the slack and slack removes the triggers, and the "Others"
+line hides the triggers anyway. Next iteration must give the world inequality inside slack and
+make it visible (a starving neighbour, a hoarded surplus) before any further LLM gate. Options
+and costs are in the report.
+
 **Phase C — the demonstration.** 8 seasons, 5 seeds per arm on the LLM (≈ 20k decisions),
 the `/lineage` text page with chronicle, census, tree, trajectories, and the between-season
 dials (harvest yield, blight, granary rule). Run Theater lists lineage runs like any other.
