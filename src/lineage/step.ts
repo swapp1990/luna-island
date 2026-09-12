@@ -83,7 +83,7 @@ function intentData(intent: LineageIntent): Record<string, unknown> {
   return data
 }
 
-function observe(state: LineageState, self: Villager): LineageObservation {
+export function observe(state: LineageState, self: Villager): LineageObservation {
   const others = livingVillagers(state).filter((v) => v.id !== self.id)
   return {
     self,
