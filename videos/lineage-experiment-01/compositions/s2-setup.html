@@ -1,0 +1,194 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+  </head>
+  <body>
+    <template>
+      <style>
+        #root {
+          position: absolute;
+          inset: 0;
+          width: 1920px;
+          height: 1080px;
+          overflow: hidden;
+          background: #14120f;
+          color: #e9dfc8;
+          font-family: Inter, system-ui, sans-serif;
+        }
+        .clip {
+          position: absolute;
+          inset: 0;
+        }
+        .row {
+          inset: auto;
+          left: 140px;
+          right: 140px;
+          top: 280px;
+          height: 280px;
+          display: flex;
+          gap: 36px;
+        }
+        .card {
+          flex: 1;
+          height: 280px;
+          border: 1px solid rgba(233, 223, 200, 0.18);
+          border-radius: 16px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 32px;
+          background: rgba(20, 18, 15, 0.4);
+          opacity: 0;
+        }
+        .card-num {
+          display: block;
+          width: 100%;
+          text-align: center;
+          font-size: 64px;
+          font-weight: 600;
+          color: #e07a3a;
+          line-height: 1.1;
+        }
+        .card-label {
+          display: block;
+          width: 100%;
+          margin-top: 16px;
+          text-align: center;
+          font-size: 32px;
+          font-weight: 500;
+          color: #e9dfc8;
+        }
+        .gen {
+          inset: auto;
+          left: 140px;
+          right: 140px;
+          top: 600px;
+          height: auto;
+          text-align: center;
+          font-size: 36px;
+          font-weight: 400;
+          color: #a99c82;
+          opacity: 0;
+        }
+        .caption {
+          inset: auto;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: 200px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px 160px;
+          background: rgba(20, 18, 15, 0.6);
+          font-size: 40px;
+          font-weight: 400;
+          line-height: 1.3;
+          text-align: center;
+          color: #e9dfc8;
+          z-index: 20;
+        }
+      </style>
+      <div
+        id="root"
+        data-composition-id="s2-setup"
+        data-start="0"
+        data-width="1920"
+        data-height="1080"
+        data-duration="12.427"
+      >
+        <div id="s2-row" class="clip row" data-start="0" data-duration="12.427" data-track-index="1">
+          <div id="s2-card-v" class="card">
+            <span class="card-num">12</span>
+            <span class="card-label">villagers</span>
+          </div>
+          <div id="s2-card-r" class="card">
+            <span class="card-num">5</span>
+            <span class="card-label">rooms</span>
+          </div>
+          <div id="s2-card-g" class="card">
+            <span class="card-num">30 → 12</span>
+            <span class="card-label">genes to traits</span>
+          </div>
+        </div>
+        <div id="s2-gen" class="clip gen" data-start="0" data-duration="12.427" data-track-index="2">
+          every ten days a generation passes
+        </div>
+        <div
+          id="s2-cap-1"
+          class="clip caption"
+          data-start="0"
+          data-duration="1.22"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          Twelve villagers.
+        </div>
+        <div
+          id="s2-cap-2"
+          class="clip caption"
+          data-start="1.22"
+          data-duration="0.789"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          Five rooms.
+        </div>
+        <div
+          id="s2-cap-3"
+          class="clip caption"
+          data-start="2.01"
+          data-duration="7.033"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          Each carries thirty genes that set twelve traits: half in their bodies, half in their temperament.
+        </div>
+        <div
+          id="s2-cap-4"
+          class="clip caption"
+          data-start="9.043"
+          data-duration="2.584"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          Every ten days, a generation passes.
+        </div>
+      </div>
+      <script>
+        const tl = gsap.timeline({ paused: true });
+        tl.fromTo(
+          "#s2-card-v",
+          { y: 36, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.55, ease: "power2.out" },
+          0.1,
+        );
+        tl.fromTo(
+          "#s2-card-r",
+          { y: 36, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.55, ease: "power2.out" },
+          2.6,
+        );
+        tl.fromTo(
+          "#s2-card-g",
+          { y: 36, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.55, ease: "power2.out" },
+          5.2,
+        );
+        tl.fromTo(
+          "#s2-gen",
+          { y: 28, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.6, ease: "power2.out" },
+          7.8,
+        );
+        tl.fromTo("#s2-cap-1", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 0);
+        tl.fromTo("#s2-cap-2", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 1.22);
+        tl.fromTo("#s2-cap-3", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 2.01);
+        tl.fromTo("#s2-cap-4", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 9.043);
+        window.__timelines["s2-setup"] = tl;
+      </script>
+    </template>
+  </body>
+</html>

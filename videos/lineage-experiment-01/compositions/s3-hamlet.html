@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+  </head>
+  <body>
+    <template>
+      <style>
+        #root {
+          position: absolute;
+          inset: 0;
+          width: 1920px;
+          height: 1080px;
+          overflow: hidden;
+          background: #14120f;
+          color: #e9dfc8;
+          font-family: Inter, system-ui, sans-serif;
+        }
+        .clip {
+          position: absolute;
+          inset: 0;
+        }
+        #s3-uw {
+          position: absolute;
+          inset: 0;
+          z-index: 1;
+          opacity: 0;
+        }
+        #s3-uw video {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+        #s3-laptop {
+          position: absolute;
+          left: 72px;
+          top: 72px;
+          width: 1280px;
+          height: 720px;
+          border: 1px solid rgba(233, 223, 200, 0.18);
+          border-radius: 12px;
+          overflow: hidden;
+          background: #14120f;
+          z-index: 2;
+        }
+        #s3-laptop video {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        #s3-phone {
+          position: absolute;
+          right: 64px;
+          top: 72px;
+          width: 351px;
+          height: 760px;
+          border: 1px solid rgba(233, 223, 200, 0.18);
+          border-radius: 16px;
+          overflow: hidden;
+          background: #14120f;
+          z-index: 3;
+          opacity: 0;
+        }
+        #s3-phone video {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: contain;
+        }
+        .hf-badge {
+          inset: auto;
+          left: 32px;
+          top: 32px;
+          width: auto;
+          height: auto;
+          padding: 8px 18px;
+          border: 1px solid #e07a3a;
+          border-radius: 999px;
+          background: rgba(20, 18, 15, 0.92);
+          font-size: 34px;
+          font-weight: 500;
+          line-height: 1.2;
+          color: #e9dfc8;
+          white-space: nowrap;
+          z-index: 8;
+        }
+        .caption {
+          inset: auto;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: 200px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px 160px;
+          background: rgba(20, 18, 15, 0.6);
+          font-size: 40px;
+          font-weight: 400;
+          line-height: 1.3;
+          text-align: center;
+          color: #e9dfc8;
+          z-index: 20;
+        }
+      </style>
+      <div
+        id="root"
+        data-composition-id="s3-hamlet"
+        data-start="0"
+        data-width="1920"
+        data-height="1080"
+        data-duration="15"
+      >
+        <div id="s3-uw">
+          <video
+            id="s3-a2"
+            src="public/footage/A2.mp4"
+            data-start="8"
+            data-duration="7"
+            data-track-index="0"
+            muted
+            playsinline
+          ></video>
+        </div>
+        <div id="s3-laptop">
+          <video
+            id="s3-a1"
+            src="public/footage/A1.mp4"
+            data-start="0"
+            data-duration="8"
+            data-track-index="0"
+            muted
+            playsinline
+          ></video>
+        </div>
+        <div id="s3-phone">
+          <video
+            id="s3-a3"
+            src="public/footage/A3.mp4"
+            data-start="4"
+            data-duration="8"
+            data-media-start="0"
+            data-track-index="0"
+            muted
+            playsinline
+          ></video>
+        </div>
+        <div id="s3-chip" class="clip hf-badge" data-start="0" data-duration="15" data-track-index="2">64×</div>
+        <div
+          id="s3-cap-1"
+          class="clip caption"
+          data-start="0"
+          data-duration="6.91"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          Here is the hamlet running at sixty-four times speed, on a phone, a laptop, and a wide screen.
+        </div>
+        <div
+          id="s3-cap-2"
+          class="clip caption"
+          data-start="6.91"
+          data-duration="1.911"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          The feed is what they did.
+        </div>
+        <div
+          id="s3-cap-3"
+          class="clip caption"
+          data-start="8.822"
+          data-duration="2.058"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          The tree is who they became.
+        </div>
+      </div>
+      <script>
+        const tl = gsap.timeline({ paused: true });
+        tl.fromTo("#s3-laptop", { opacity: 1 }, { opacity: 0, duration: 0.45, ease: "power2.out" }, 7.55);
+        tl.set("#s3-laptop", { opacity: 0 }, 8);
+        tl.fromTo("#s3-uw", { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, 8);
+        tl.fromTo("#s3-phone", { opacity: 0 }, { opacity: 1, duration: 0.45, ease: "power2.out" }, 4);
+        tl.to("#s3-phone", { opacity: 0, duration: 0.4, ease: "power2.out" }, 12);
+        tl.set("#s3-phone", { opacity: 0 }, 12.4);
+        tl.fromTo("#s3-chip", { y: 24, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: "power2.out" }, 0.2);
+        tl.fromTo("#s3-cap-1", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 0);
+        tl.fromTo("#s3-cap-2", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 6.91);
+        tl.fromTo("#s3-cap-3", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 8.822);
+        window.__timelines["s3-hamlet"] = tl;
+      </script>
+    </template>
+  </body>
+</html>

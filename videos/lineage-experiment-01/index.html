@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>Luna Island · Experiment 01</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      @font-face {
+        font-family: "Inter";
+        src: url("fonts/inter-latin-400-normal.woff2") format("woff2");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Inter";
+        src: url("fonts/inter-latin-500-normal.woff2") format("woff2");
+        font-weight: 500;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Inter";
+        src: url("fonts/inter-latin-600-normal.woff2") format("woff2");
+        font-weight: 600;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Inter";
+        src: url("fonts/inter-latin-700-normal.woff2") format("woff2");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Georgia";
+        src: url("fonts/georgia.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Georgia";
+        src: url("fonts/georgiai.ttf") format("truetype");
+        font-weight: 400;
+        font-style: italic;
+        font-display: swap;
+      }
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #14120f;
+      }
+      body {
+        font-family: Inter, system-ui, sans-serif;
+        color: #e9dfc8;
+      }
+      #root {
+        position: relative;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #14120f;
+      }
+      .clip {
+        position: absolute;
+        inset: 0;
+      }
+      [data-composition-src] {
+        position: absolute;
+        inset: 0;
+        width: 1920px;
+        height: 1080px;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-start="0"
+      data-duration="96.265"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div
+        id="el-s1-title"
+        class="clip"
+        data-composition-id="s1-title"
+        data-composition-src="compositions/s1-title.html"
+        data-start="0"
+        data-duration="8.864"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+      <div
+        id="el-s2-setup"
+        class="clip"
+        data-composition-id="s2-setup"
+        data-composition-src="compositions/s2-setup.html"
+        data-start="8.864"
+        data-duration="12.427"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+      <div
+        id="el-s3-hamlet"
+        class="clip"
+        data-composition-id="s3-hamlet"
+        data-composition-src="compositions/s3-hamlet.html"
+        data-start="21.291"
+        data-duration="15"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+      <div
+        id="el-s4-generations"
+        class="clip"
+        data-composition-id="s4-generations"
+        data-composition-src="compositions/s4-generations.html"
+        data-start="36.291"
+        data-duration="13.579"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+      <div
+        id="el-s5-minds"
+        class="clip"
+        data-composition-id="s5-minds"
+        data-composition-src="compositions/s5-minds.html"
+        data-start="49.87"
+        data-duration="16.395"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+      <div
+        id="el-s6-finding"
+        class="clip"
+        data-composition-id="s6-finding"
+        data-composition-src="compositions/s6-finding.html"
+        data-start="66.265"
+        data-duration="16"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+      <div
+        id="el-s7-coda"
+        class="clip"
+        data-composition-id="s7-coda"
+        data-composition-src="compositions/s7-coda.html"
+        data-start="82.265"
+        data-duration="14"
+        data-width="1920"
+        data-height="1080"
+        data-track-index="1"
+      ></div>
+
+      <audio
+        id="vo-s1"
+        src="public/vo/s1.wav"
+        data-start="0"
+        data-duration="8.064"
+        data-track-index="10"
+      ></audio>
+      <audio
+        id="vo-s2"
+        src="public/vo/s2.wav"
+        data-start="8.864"
+        data-duration="11.627"
+        data-track-index="11"
+      ></audio>
+      <audio
+        id="vo-s3"
+        src="public/vo/s3.wav"
+        data-start="21.291"
+        data-duration="10.88"
+        data-track-index="12"
+      ></audio>
+      <audio
+        id="vo-s4"
+        src="public/vo/s4.wav"
+        data-start="36.291"
+        data-duration="12.779"
+        data-track-index="13"
+      ></audio>
+      <audio
+        id="vo-s5"
+        src="public/vo/s5.wav"
+        data-start="49.87"
+        data-duration="15.595"
+        data-track-index="14"
+      ></audio>
+      <audio
+        id="vo-s6"
+        src="public/vo/s6.wav"
+        data-start="66.265"
+        data-duration="14.443"
+        data-track-index="15"
+      ></audio>
+      <audio
+        id="vo-s7"
+        src="public/vo/s7.wav"
+        data-start="82.265"
+        data-duration="12.907"
+        data-track-index="16"
+      ></audio>
+    </div>
+
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

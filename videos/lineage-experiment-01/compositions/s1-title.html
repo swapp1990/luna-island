@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+  </head>
+  <body>
+    <template>
+      <style>
+        #root {
+          position: absolute;
+          inset: 0;
+          width: 1920px;
+          height: 1080px;
+          overflow: hidden;
+          background: #14120f;
+          color: #e9dfc8;
+          font-family: Inter, system-ui, sans-serif;
+        }
+        .clip {
+          position: absolute;
+          inset: 0;
+        }
+        .kicker {
+          inset: auto;
+          left: 160px;
+          right: 160px;
+          top: 332px;
+          height: auto;
+          text-align: center;
+          font-size: 32px;
+          font-weight: 500;
+          letter-spacing: 0.08em;
+          color: #a99c82;
+        }
+        .rule {
+          inset: auto;
+          left: 860px;
+          top: 392px;
+          width: 200px;
+          height: 2px;
+          background: #d4a437;
+        }
+        .question {
+          inset: auto;
+          left: 180px;
+          right: 180px;
+          top: 430px;
+          height: auto;
+          text-align: center;
+          font-size: 64px;
+          font-weight: 600;
+          line-height: 1.22;
+          color: #e9dfc8;
+        }
+        .caption {
+          inset: auto;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          height: 200px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px 160px;
+          background: rgba(20, 18, 15, 0.6);
+          font-size: 40px;
+          font-weight: 400;
+          line-height: 1.3;
+          text-align: center;
+          color: #e9dfc8;
+          z-index: 20;
+        }
+      </style>
+      <div
+        id="root"
+        data-composition-id="s1-title"
+        data-start="0"
+        data-width="1920"
+        data-height="1080"
+        data-duration="8.864"
+      >
+        <div id="s1-kicker" class="clip kicker" data-start="0" data-duration="8.864" data-track-index="1">
+          Luna Island · Experiment 01
+        </div>
+        <div id="s1-rule" class="clip rule" data-start="0" data-duration="8.864" data-track-index="1"></div>
+        <div id="s1-question" class="clip question" data-start="0" data-duration="8.864" data-track-index="1">
+          Can an AI villager inherit a personality?
+        </div>
+        <div
+          id="s1-cap-1"
+          class="clip caption"
+          data-start="0"
+          data-duration="1.12"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          Experiment one.
+        </div>
+        <div
+          id="s1-cap-2"
+          class="clip caption"
+          data-start="1.12"
+          data-duration="2.016"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          We asked a simple question.
+        </div>
+        <div
+          id="s1-cap-3"
+          class="clip caption"
+          data-start="3.136"
+          data-duration="4.928"
+          data-track-index="5"
+          data-layout-allow-caption-zone
+        >
+          If you give an AI villager a genome, does it act like its parents?
+        </div>
+      </div>
+      <script>
+        const tl = gsap.timeline({ paused: true });
+        tl.fromTo(
+          "#s1-kicker",
+          { y: 36, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.6, ease: "power2.out" },
+          0.15,
+        );
+        tl.fromTo(
+          "#s1-rule",
+          { opacity: 0 },
+          { opacity: 1, duration: 0.4, ease: "power2.out" },
+          0.35,
+        );
+        tl.fromTo(
+          "#s1-question",
+          { y: 40, opacity: 0 },
+          { y: 0, opacity: 1, duration: 0.7, ease: "power2.out" },
+          0.55,
+        );
+        tl.fromTo("#s1-cap-1", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 0);
+        tl.fromTo("#s1-cap-2", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 1.12);
+        tl.fromTo("#s1-cap-3", { opacity: 0 }, { opacity: 1, duration: 0.2, ease: "power2.out" }, 3.136);
+        window.__timelines["s1-title"] = tl;
+      </script>
+    </template>
+  </body>
+</html>
