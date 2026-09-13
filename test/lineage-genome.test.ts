@@ -143,6 +143,10 @@ describe('lineage genome', () => {
     expect(bandOf(0.34)).toBe('mid')
     expect(bandOf(0.66)).toBe('mid')
     expect(bandOf(0.67)).toBe('high')
+    // Three additive loci produce sixths: 2/6 is low, 4/6 is high, 3/6 is mid.
+    expect(bandOf(2 / 6)).toBe('low')
+    expect(bandOf(3 / 6)).toBe('mid')
+    expect(bandOf(4 / 6)).toBe('high')
 
     const bands: Band[] = ['low', 'mid', 'high']
     const values: Record<Band, number> = { low: 0, mid: 0.5, high: 1 }

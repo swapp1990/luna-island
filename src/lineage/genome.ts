@@ -34,10 +34,13 @@ export function locusCount(trait: TraitName): number {
   return n
 }
 
+// Trait values are k/(2·loci); 2/3 must land in "high" and 1/3 in "low", so the
+// edges are true thirds with a tolerance, not decimal 0.34/0.67.
+const BAND_EPS = 1e-9
 export function bandOf(t: number): Band {
-  if (t < 0.34) return 'low'
-  if (t < 0.67) return 'mid'
-  return 'high'
+  if (t <= 1 / 3 + BAND_EPS) return 'low'
+  if (t >= 2 / 3 - BAND_EPS) return 'high'
+  return 'mid'
 }
 
 function locusScore(a: Allele, b: Allele, mode: LocusMode): number {

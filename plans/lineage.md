@@ -196,9 +196,17 @@ on codex, seed 42, 12 villagers, 2 seasons, ≈ 3,560 decisions, 0 fallbacks:
 
 The DNA block is read and, on the rare occasion it can be acted on, acted on correctly. It
 almost never can: scarcity removes the slack and slack removes the triggers, and the "Others"
-line hides the triggers anyway. Next iteration must give the world inequality inside slack and
-make it visible (a starving neighbour, a hoarded surplus) before any further LLM gate. Options
-and costs are in the report.
+line hides the triggers anyway.
+
+*Offline probes the same day (58 calls, `scripts/lineage-probe.mjs`)* settled the cause without
+another season: medium effort on identical prompts changed nothing (0 disposition acts in 17);
+a well-fed villager shown a starving neighbour gave 7 times in 8 at low effort, with the DNA
+block on **or off**; low-generosity villagers gave 2 of 3. So the model acts on what it can see,
+the observation showed it nothing to act on, and the DNA block currently changes the stated
+reason but not the act. Next iteration, in order: (1) show neighbour hunger and surplus as facts
+in the "Others" line; (2) a world with inequality inside slack (yield ≈ 0.7 or uneven fields);
+(3) rewrite the low-band DNA clauses as constraints on self and make giving cost something the
+low band declines, so the genome can separate the bands. Then one two-season gate, not before.
 
 **Phase C — the demonstration.** 8 seasons, 5 seeds per arm on the LLM (≈ 20k decisions),
 the `/lineage` text page with chronicle, census, tree, trajectories, and the between-season

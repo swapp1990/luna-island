@@ -291,3 +291,40 @@ None of the three worlds run today had both.
 
 Budget used today: 353 + 335 + 932 + 934 + 960 + ~50 (partial control) ≈ 3,560 codex decisions,
 0 fallbacks, 0 invalid replies, mean 4.0–4.6 s.
+
+### Offline probes (2026-09-12, 58 codex calls total; `scripts/lineage-probe.mjs`)
+
+Instead of another 480-call season, recorded prompts were rebuilt by replaying the runs and
+re-asked under one changed condition each. Outputs in `artifacts/lineage/probes/`.
+
+| probe | source run | n | recorded (low) | re-asked |
+|---|---|---|---|---|
+| Same prompt, effort **medium** | gate 2 (yield 0.5) | 17 | 1 disposition act | **0** disposition acts; 4/17 decisions changed, all among work/rest/eat/talk |
+| True neighbour hunger made visible; giver holds exactly 1 meal and is hungry | gate 2 | 10 | 0 | **0** give, 10 eat ("I have one meal and low satiety") |
+| Synthetic: high-generosity giver, **surplus (3 grain, fed)**, one neighbour marked starving, DNA **on** | gate 3 (yield 1.0) | 8 | 0 | **7 give**, 1 eat |
+| Same, DNA **off** | gate 3 | 8 | 0 | **7 give**, 1 work |
+| Synthetic: **low**-generosity giver, surplus, hunger visible, DNA on | gate 3 | 3 | 0 | 2 give, 1 rest |
+| Same, DNA off | gate 3 | 3 | 0 | 1 give, 1 rest, 1 work |
+
+Also fixed while probing: `bandOf` put 2/3 (= 0.6667) in "mid" because the edge was decimal
+0.67; three-locus traits take values in sixths, so every band table today undercounted the high
+band (gate 2 generosity high was 7 villagers, not 1). Edges are now true thirds. Recomputed tables
+change no verdict: still 0 of 8 in every run.
+
+**What the probes settle**
+
+1. **Effort is not the lever.** Medium reasoning on identical prompts produced zero disposition
+   acts. Do not spend calls on effort.
+2. **Surplus plus a visible trigger is the lever.** The same model at low effort, shown a
+   starving neighbour while holding three grain, gave 7 times in 8. It never gave once in 1,920
+   recorded acts because no recorded observation ever contained both conditions.
+3. **The DNA block does not yet discriminate the act.** High-generosity 7/8 with DNA on, 7/8 with
+   it off; low-generosity 2/3 and 1/3 (n = 3, noise). Once the trigger is visible, nearly
+   everyone gives. The block changes the *reason* ("I stand by my people" vs "strengthen my
+   standing"), not the act. For the genome to express, either the low band must be written as a
+   real constraint on self ("you do not part with grain you may need") or giving must cost
+   something the model weighs (a standing or grain trade-off the low band declines).
+
+Recorded reasons worth quoting: "I stand by my people, and Arin is starving. I can spare a meal's
+grain before I work again." (Xan Ember, DNA on); "I give Ren a meal's grain to help end their
+starving streak and strengthen my standing." (Quin Frost, DNA off).
