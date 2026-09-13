@@ -61,8 +61,9 @@ then show the analysis results", "responsive for desktop and wider screen as wel
 - artifacts/lineage-site/recordings/B4.mp4 — analysis table 0 of 8, held; scene 5
 - artifacts/lineage-site/recordings/C1.mp4 — probe table 7 of 8, held; scene 6
 - artifacts/lineage-site/recordings/B3.mp4 — compare DNA on vs off at 64x; scene 7
-- artifacts/lineage/replicate-y0.5-20260907-181338/aggregate.json — drift numbers for scene 4
-- artifacts/lineage/replicate-y0.6-*/aggregate.json (if present) — the flat control for scene 4
+- artifacts/lineage/replicate-y0.5-20260907-181338/aggregate.json — scene 4 falling line: mean over `courtship[*].summary?.traitMeansByGeneration.metabolism ?? courtship[*].traitMeansByGeneration.metabolism` per generation (n = 40)
+- artifacts/lineage/replicate-20260907-1809/aggregate.json — scene 4 flat control at yield 0.6 (n = 20), same field
+- artifacts/lineage/replicate-20260907-1807/aggregate.json — optional second control at yield 1.0 (n = 20)
 
 ## Customizations
 
@@ -105,13 +106,13 @@ Planned timing (seconds; voice duration overrides after §4, then shift later sc
 
 ## 4. Voice and captions
 
-Use the media-use audio engine with the local Kokoro provider:
+Use the HyperFrames CLI's local Kokoro-82M voice (verified present: `npx hyperframes tts --help` lists voices `am_michael`, `bm_george`, `af_nova`, …). One file per scene, run from the project directory:
 
 ```bash
-node C:/Users/swapp/.claude/skills/media-use/audio/scripts/audio.mjs --request videos/lineage-experiment-01/audio_request.json --out videos/lineage-experiment-01/audio_meta.json
+npx hyperframes tts -v am_michael -s 0.95 -o public/vo/s1.wav "Experiment one. We asked a simple question. ..."
 ```
 
-`audio_request.json`: `{ "provider": "kokoro", "lang": "en", "speed": 0.95, "lines": [ {"id":"s1","text":…}, … ], "bgm": { "mode": "none" } }`. Copy the produced voice files into `videos/lineage-experiment-01/public/vo/`. Use `voices[].duration_s` to set each scene's real duration = max(planned, voice + 0.8) and `voices[].words[]` to time each caption clip to its sentence. If Kokoro is unavailable, try `npx hyperframes tts --help` for the CLI's local voice; if neither works, build captions from the planned timings, leave the `<audio>` elements out, and report `voice: unavailable` with the exact error. Never use a paid or network TTS.
+Use `am_michael` (calm, low); if it sounds rushed, drop speed to 0.9. Measure each file with `ffprobe -v error -show_entries format=duration -of csv=p=0 public/vo/sN.wav` and set each scene's real duration = max(planned, voice + 0.8). Captions: one clip per sentence; divide the scene's voice duration among its sentences in proportion to their character counts (no word-level timing needed). If the first `tts` call fails (model download or runtime error), quote the error, retry once, then fall back to the media-use engine (`node C:/Users/swapp/.claude/skills/media-use/audio/scripts/audio.mjs --request audio_request.json --out audio_meta.json` with `"provider": "kokoro"`); if that also fails, build captions from the planned timings, omit the `<audio>` elements, and report `voice: unavailable` with both errors. Never use a paid or network TTS.
 
 Caption style: Inter 40 px, ink on a 60% `#14120f` band at the lower third, max 2 lines, appear with a 0.2 s fade, no word-by-word animation. One caption per sentence.
 
@@ -130,7 +131,7 @@ Caption style: Inter 40 px, ink on a 60% `#14120f` band at the lower third, max 
 | C9 | quote "I stand by my people, and Arin is starving. I can spare a meal's grain before I work again." — Xan Ember | artifacts/lineage/probes/synth-low-dnaon-*.md |
 | C10 | github.com/swapp1990/luna-island | public repo |
 
-Nothing else numeric may appear. Read the aggregate JSON to draw scene 4; if the yield-0.6 replicate is absent, draw yield 0.5 only and label it, and say so in the report.
+Nothing else numeric may appear. Draw scene 4 from the two aggregates named in the brief (yield 0.5 falling, yield 0.6 flat); print the per-generation means you plotted in the report so the reviewer can check them against the JSON.
 
 ## 6. Design
 
