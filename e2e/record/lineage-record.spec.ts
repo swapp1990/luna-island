@@ -252,7 +252,20 @@ async function captureShot(browser: Browser, shot: Shot) {
 
       const mp4 = path.join(outDir, `${shot.id}.mp4`)
       const sheet = path.join(outDir, `${shot.id}-sheet.png`)
-      transcodeWebmToMp4(webm, mp4, { ss: readyOffsetSec })
+      // Playwright's recording does not start at context creation, so a wall-clock offset
+      // overshoots. Transcode everything, measure, then keep exactly the expected tail.
+      const expectedSecFull = (shot.leadInMs + wallMs + shot.tailMs) / 1000
+      const fullMp4 = path.join(outDir, `${shot.id}-full.mp4`)
+      transcodeWebmToMp4(webm, fullMp4, { ss: 0 })
+      const fullProbe = probeMp4(fullMp4)
+      const tailSs = Math.max(0, fullProbe.durationSec - expectedSecFull)
+      transcodeWebmToMp4(fullMp4, mp4, { ss: tailSs })
+      try {
+        fs.unlinkSync(fullMp4)
+      } catch {
+        // keep the untrimmed copy if unlink fails
+      }
+      console.log(`[record] ${shot.id} trim: full=${fullProbe.durationSec.toFixed(2)}s expected=${expectedSecFull.toFixed(2)}s ss=${tailSs.toFixed(2)}s (wallReadyOffset=${readyOffsetSec.toFixed(2)}s)`)
       const probe = probeMp4(mp4)
       writeContactSheet(mp4, sheet, probe.durationSec)
 

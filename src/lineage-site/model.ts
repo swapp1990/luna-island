@@ -447,10 +447,12 @@ function placeNormalized(ideals: number[]): number[] {
 function pillLabel(r: LineageRecord, pillW: number, rowN: number): { label: string; fontSize: number } {
   const full = `${r.givenName} ${r.surname}`
   const abbr = `${r.givenName.slice(0, 2)}. ${r.surname}`
-  if (rowN > 14) return { label: abbr, fontSize: 11 }
-  if (pillW < 40) return { label: `${r.givenName.charAt(0)}${r.surname.charAt(0)}`, fontSize: 10 }
-  if (pillW < 88) return { label: abbr, fontSize: 11 }
-  return { label: full, fontSize: 12 }
+  // Choose by estimated text width, not pill-width bands: at ~45 px pills (1920 three-column)
+  // the abbreviated label is wider than the pill and neighbours collide.
+  const fits = (s: string, fs: number) => s.length * fs * 0.58 + 10 <= pillW
+  if (rowN <= 14 && fits(full, 12)) return { label: full, fontSize: 12 }
+  if (fits(abbr, 11)) return { label: abbr, fontSize: 11 }
+  return { label: `${r.givenName.charAt(0)}${r.surname.charAt(0)}`, fontSize: 10 }
 }
 
 export function layoutTree(
