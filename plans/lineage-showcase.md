@@ -47,7 +47,7 @@ with `video: on` at the four viewports, real GPU, deterministic: every shot is `
 | A2 | same | bloodlines | 3440×1440 | 64× | 8 seasons | drift sparklines drawing in |
 | A3 | same | feed | 390×844 | 8× | 1 day | phone frame, readable lines |
 | B1 | gate-codex-dnaon (extinction) | feed | 1920×1080 | 8× | days 4–7 | failed eats piling up |
-| B2 | gate2-codex-dnaon | card (Xan Ember) | 1280×800 | 1× | 4 turns | the genome paragraph and a thought |
+| B2 | gate3y1-codex-dnaon | card (Xan Ember, v-17) | 1280×800 | 1× | turns 54–58 | the genome paragraph, then his give at turn 55 (season 2 day 4 dusk) |
 | B3 | gate2 on vs gate2 off | compare | 3440×1440 | 64× | 2 seasons | two hamlets, same turn |
 | B4 | gate3y1-codex-dnaon | analysis | 1920×1080 | — | hold 6 s | expression table 0 of 8 |
 | C1 | probes (synth) | analysis/probes | 1920×1080 | — | hold 6 s | 7 of 8 give |

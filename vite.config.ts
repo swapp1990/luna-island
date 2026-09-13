@@ -5,6 +5,7 @@ import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { lunaSidecarPlugin } from './scripts/luna-sidecar'
 import { lunaRunsPlugin } from './scripts/luna-runs'
+import { lineageRunsPlugin } from './scripts/lineage-runs'
 
 /**
  * Phase 6's god game lives on its own entry (`god.html` → `src/god/**`) and shares
@@ -45,6 +46,16 @@ function townPlugin(): Plugin {
           req.url = '/town.html'
           return next()
         }
+        {
+          // /lineage keeps its query string (run, t, speed, autoplay) through the rewrite.
+          const raw = req.url ?? ''
+          const q = raw.indexOf('?')
+          const pathname = q >= 0 ? raw.slice(0, q) : raw
+          if (pathname === '/lineage' || pathname === '/lineage/') {
+            req.url = `/lineage.html${q >= 0 ? raw.slice(q) : ''}`
+            return next()
+          }
+        }
         if (req.url === '/observer' || req.url === '/observer/') {
           req.url = '/observer.html'
           return next()
@@ -74,7 +85,7 @@ function townPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin(), godRoutePlugin(), townPlugin()],
+  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin(), lineageRunsPlugin(), godRoutePlugin(), townPlugin()],
   server: {
     host: '127.0.0.1',
     port: 5175,
@@ -88,6 +99,7 @@ export default defineConfig({
         god: 'god.html',
         town: 'town.html',
         gallery: 'gallery.html',
+        lineage: 'lineage.html',
         ageZero: 'age-0.html',
       },
     },

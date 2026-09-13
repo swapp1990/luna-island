@@ -1,0 +1,143 @@
+{
+  "experiment": "lineage-experiment-01",
+  "shots": [
+    {
+      "id": "A1",
+      "run": "courtship-seed42-*",
+      "view": "feed",
+      "viewport": [
+        1920,
+        1080
+      ],
+      "speed": 64,
+      "fromTurn": 0,
+      "turns": 320,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": null,
+      "note": "hamlet fast, tree growing"
+    },
+    {
+      "id": "A2",
+      "run": "courtship-seed42-*",
+      "view": "bloodlines",
+      "viewport": [
+        3440,
+        1440
+      ],
+      "speed": 64,
+      "fromTurn": 0,
+      "turns": 320,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": null,
+      "note": "drift sparklines drawing in"
+    },
+    {
+      "id": "A3",
+      "run": "courtship-seed42-*",
+      "view": "feed",
+      "viewport": [
+        390,
+        844
+      ],
+      "speed": 8,
+      "fromTurn": 0,
+      "turns": 4,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": null,
+      "note": "phone frame, readable lines"
+    },
+    {
+      "id": "B1",
+      "run": "gate-codex-dnaon-*",
+      "view": "feed",
+      "viewport": [
+        1920,
+        1080
+      ],
+      "speed": 8,
+      "fromTurn": 12,
+      "turns": 16,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": null,
+      "note": "failed eats piling up, days 4–7"
+    },
+    {
+      "id": "B2",
+      "run": "gate3y1-codex-dnaon-*",
+      "view": "card",
+      "viewport": [
+        1280,
+        800
+      ],
+      "speed": 1,
+      "fromTurn": 54,
+      "turns": 4,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": "v-17",
+      "vs": null,
+      "note": "Xan Ember card: genome paragraph, then his give at turn 55 (season 2 day 4 dusk)"
+    },
+    {
+      "id": "B3",
+      "run": "gate2-codex-dnaon-*",
+      "view": "compare",
+      "viewport": [
+        3440,
+        1440
+      ],
+      "speed": 64,
+      "fromTurn": 0,
+      "turns": 80,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": "gate2-codex-dnaoff-*",
+      "note": "two hamlets, same turn"
+    },
+    {
+      "id": "B4",
+      "run": "gate3y1-codex-dnaon-*",
+      "view": "analysis",
+      "viewport": [
+        1920,
+        1080
+      ],
+      "speed": 1,
+      "fromTurn": 0,
+      "turns": 0,
+      "holdMs": 6000,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": null,
+      "note": "expression table 0 of 8"
+    },
+    {
+      "id": "C1",
+      "run": "gate3y1-codex-dnaon-*",
+      "view": "analysis",
+      "viewport": [
+        1920,
+        1080
+      ],
+      "speed": 1,
+      "fromTurn": 0,
+      "turns": 0,
+      "holdMs": 6000,
+      "leadInMs": 800,
+      "tailMs": 800,
+      "villager": null,
+      "vs": null,
+      "note": "probes synth, 7 of 8 give"
+    }
+  ]
+}
