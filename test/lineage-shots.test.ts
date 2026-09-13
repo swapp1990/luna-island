@@ -27,10 +27,10 @@ const PLAN_TURNS: Record<string, { fromTurn: number; turns: number; holdMs?: num
   {
     A1: { fromTurn: 0, turns: 320, speed: 64, view: 'feed' },
     A2: { fromTurn: 0, turns: 320, speed: 64, view: 'bloodlines' },
-    A3: { fromTurn: 0, turns: 4, speed: 8, view: 'feed' },
-    B1: { fromTurn: 12, turns: 16, speed: 8, view: 'feed' },
+    A3: { fromTurn: 0, turns: 40, speed: 8, view: 'feed' },
+    B1: { fromTurn: 12, turns: 28, speed: 8, view: 'feed' },
     B2: { fromTurn: 54, turns: 4, speed: 1, view: 'card' },
-    B3: { fromTurn: 0, turns: 80, speed: 64, view: 'compare' },
+    B3: { fromTurn: 0, turns: 40, speed: 8, view: 'compare' },
     B4: { fromTurn: 0, turns: 0, holdMs: 6000, speed: 1, view: 'analysis' },
     C1: { fromTurn: 0, turns: 0, holdMs: 6000, speed: 1, view: 'analysis' },
   }
@@ -123,7 +123,7 @@ describe('lineage shot list', () => {
     const a1 = list.shots.find((s: { id: string }) => s.id === 'A1')
     expect(Math.round(expectedPlayMs(a1))).toBe(7488)
     const a3 = list.shots.find((s: { id: string }) => s.id === 'A3')
-    expect(expectedPlayMs(a3)).toBe(750)
+    expect(expectedPlayMs(a3)).toBe(7500)
     const b4 = list.shots.find((s: { id: string }) => s.id === 'B4')
     expect(expectedPlayMs(b4)).toBe(6000)
   })

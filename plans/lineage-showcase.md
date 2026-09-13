@@ -45,10 +45,10 @@ with `video: on` at the four viewports, real GPU, deterministic: every shot is `
 |---|---|---|---|---|---|---|
 | A1 | courtship-seed42 (Phase A, instinct) | feed | 1920×1080 | 64× | 8 seasons | the hamlet running fast, tree growing |
 | A2 | same | bloodlines | 3440×1440 | 64× | 8 seasons | drift sparklines drawing in |
-| A3 | same | feed | 390×844 | 8× | 1 day | phone frame, readable lines |
-| B1 | gate-codex-dnaon (extinction) | feed | 1920×1080 | 8× | days 4–7 | failed eats piling up |
+| A3 | same | feed | 390×844 | 8× | 1 season (40 turns, ~9.3 s) | phone frame, readable lines |
+| B1 | gate-codex-dnaon (extinction) | feed | 1920×1080 | 8× | turns 12–40, day 4 to the end (~7.0 s) | failed eats piling up |
 | B2 | gate3y1-codex-dnaon | card (Xan Ember, v-17) | 1280×800 | 1× | turns 54–58 | the genome paragraph, then his give at turn 55 (season 2 day 4 dusk) |
-| B3 | gate2 on vs gate2 off | compare | 3440×1440 | 64× | 2 seasons | two hamlets, same turn |
+| B3 | gate2 on vs gate2 off | compare | 3440×1440 | 8× | 1 season (40 turns, ~9.3 s) | two hamlets, same turn |
 | B4 | gate3y1-codex-dnaon | analysis | 1920×1080 | — | hold 6 s | expression table 0 of 8 |
 | C1 | probes (synth) | analysis/probes | 1920×1080 | — | hold 6 s | 7 of 8 give |
 
@@ -70,7 +70,7 @@ and `lineage-a-report.md`; they are declared in the spec before rendering):
 | 1 | Title | 0–5 | "Luna Island · Experiment 01" / "Can an AI villager inherit a personality?" | "Experiment one. We asked a simple question: if you give an AI villager a genome, does it act like its parents?" |
 | 2 | The setup | 5–17 | diagram: 12 villagers, 5 rooms, 30 genes → 12 traits; "every ten days the elders leave and their children arrive" | "Twelve villagers. Five rooms. Each carries thirty genes that set twelve traits, half in their bodies, half in their temperament. Every ten days a generation passes." |
 | 3 | The hamlet, fast | 17–32 | A1 desktop + A3 phone, then A2 ultrawide | "Here is the hamlet running at sixty-four times speed. The feed is what they did. The tree is who they became." |
-| 4 | Eight generations | 32–44 | drift chart from `aggregate.json`: metabolism at yield 0.5 vs 0.6+, 40 seeds | "With no AI at all, just simple instincts, scarcity did what scarcity does: over eight generations the fast metabolisms disappeared. Forty repeats. The physics works." |
+| 4 | Eight generations | 32–44 | drift chart from `aggregate.json`: metabolism at yield 0.5 (40 seeds, falls) vs yield 1.0 (20 seeds, steady) | "With no AI at all, just simple instincts, scarcity did what scarcity does: over eight generations the fast metabolisms disappeared. Forty repeats. The physics works." |
 | 5 | Then we gave them minds | 44–60 | B1 extinction, then B2 card, then B4 table | "Then we gave them language minds. The first hamlet starved in ten days: the model read half a grain as a meal. Two sentences of facts fixed that. Then they lived, but their inherited temperaments never showed. Zero of eight." |
 | 6 | The finding | 60–76 | C1 probe table; quote "I stand by my people." | "So we asked one villager, holding spare grain, while showing him a starving neighbour. Seven of eight gave. The minds were never lazy. They act on what they can see, and we had shown them nothing worth being generous about." |
 | 7 | Honest coda + next | 76–90 | B3 compare; end card with repo URL | "And with the genome removed they gave just as often. The trait is not in their behaviour yet. Next experiment: a world with inequality they can see, and a genome that costs something to follow. github dot com slash swapp1990 slash luna-island." |

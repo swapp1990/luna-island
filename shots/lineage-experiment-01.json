@@ -45,12 +45,12 @@
       ],
       "speed": 8,
       "fromTurn": 0,
-      "turns": 4,
+      "turns": 40,
       "leadInMs": 800,
       "tailMs": 800,
       "villager": null,
       "vs": null,
-      "note": "phone frame, readable lines"
+      "note": "phone frame, one season at 8x (~7.5 s), readable lines"
     },
     {
       "id": "B1",
@@ -62,12 +62,12 @@
       ],
       "speed": 8,
       "fromTurn": 12,
-      "turns": 16,
+      "turns": 28,
       "leadInMs": 800,
       "tailMs": 800,
       "villager": null,
       "vs": null,
-      "note": "failed eats piling up, days 4–7"
+      "note": "failed eats, day 4 to the end of season 1 (~5.3 s at 8x)"
     },
     {
       "id": "B2",
@@ -94,14 +94,14 @@
         3440,
         1440
       ],
-      "speed": 64,
+      "speed": 8,
       "fromTurn": 0,
-      "turns": 80,
+      "turns": 40,
       "leadInMs": 800,
       "tailMs": 800,
       "villager": null,
       "vs": "gate2-codex-dnaoff-*",
-      "note": "two hamlets, same turn"
+      "note": "two hamlets, same turn, one season at 8x (~7.5 s)"
     },
     {
       "id": "B4",

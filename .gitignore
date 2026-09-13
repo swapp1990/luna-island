@@ -9,3 +9,10 @@ marketing/
 .tmp-*
 *.local
 .DS_Store
+
+# HyperFrames film projects: regenerable media and renders
+videos/*/public/footage/
+videos/*/public/vo/
+videos/*/out/
+videos/*/snapshots/
+videos/*/node_modules/
