@@ -7,9 +7,11 @@ export const DEFAULT_MAX_PER_HOUR = 300
 export const DEFAULT_MAX_PER_DAY = 3500
 const HOUR_MS = 60 * 60 * 1000
 
-export type WorkerKind = 'mcp' | 'exec' | 'grok'
+import type { OpenRouterUsage } from './luna-openrouter'
+
+export type WorkerKind = 'mcp' | 'exec' | 'grok' | 'openrouter'
 export type WorkerHealth = 'up' | 'restarting' | 'fallback'
-export type MindEngine = 'codex' | 'grok'
+export type MindEngine = 'codex' | 'grok' | 'openrouter'
 
 export type MindCallMeta = { kind?: string }
 
@@ -17,7 +19,12 @@ export type CodexRunner = (
   system: string,
   user: string,
   meta?: MindCallMeta,
-) => Promise<{ text: string; latencyMs: number; worker?: WorkerKind }>
+) => Promise<{
+  text: string
+  latencyMs: number
+  worker?: WorkerKind
+  usage?: OpenRouterUsage
+}>
 
 export interface BudgetLimits {
   maxPerHour: number
@@ -225,15 +232,18 @@ export interface SidecarDeps {
   runner: CodexRunner
   /** Grok one-shot path. Required when a request resolves to engine=grok. */
   grokRunner?: CodexRunner
+  /** OpenRouter HTTP path. Required when a request resolves to engine=openrouter. */
+  openRouterRunner?: CodexRunner
   /** Used when the request body omits `engine`. Default stays `codex`. */
   defaultEngine?: MindEngine
 }
 
-/** Body `engine` wins; unknown/omitted → defaultEngine (codex unless sidecar env says grok). */
+/** Body `engine` wins; unknown/omitted → defaultEngine (codex unless sidecar env says grok/openrouter). */
 export function resolveRequestEngine(
   body: { engine?: string },
   defaultEngine: MindEngine = 'codex',
 ): MindEngine {
+  if (body.engine === 'openrouter') return 'openrouter'
   if (body.engine === 'grok') return 'grok'
   if (body.engine === 'codex') return 'codex'
   return defaultEngine
@@ -273,7 +283,12 @@ export async function handleDecide(
   }
 
   const engine = resolveRequestEngine(body, deps.defaultEngine ?? 'codex')
-  const runner = engine === 'grok' ? deps.grokRunner : deps.runner
+  const runner =
+    engine === 'openrouter'
+      ? deps.openRouterRunner
+      : engine === 'grok'
+        ? deps.grokRunner
+        : deps.runner
   if (!runner) {
     return {
       status: 502,
@@ -287,7 +302,7 @@ export async function handleDecide(
   const lane = deps.busy.count
   const maxLanes = deps.busy.max
   try {
-    const { text, latencyMs, worker } = await runner(system, user, {
+    const { text, latencyMs, worker, usage } = await runner(system, user, {
       kind: body.kind,
     })
     const snap = deps.budget.recordSuccess()
@@ -302,6 +317,7 @@ export async function handleDecide(
         text,
         latencyMs,
         budget: snap,
+        ...(usage ? { usage } : {}),
       },
     }
   } catch (err) {
@@ -322,13 +338,17 @@ export function healthPayload(
   scratch?: string,
   worker?: WorkerHealth,
   mindHome?: boolean,
+  engine: MindEngine = 'codex',
+  openRouter?: { model: string; keySource: 'env' | 'opencode' | 'missing' },
 ): Record<string, unknown> {
   const snap = budget.snapshot()
   return {
     ok: true,
+    engine,
     ...(scratch != null ? { scratch } : {}),
     ...(worker != null ? { worker } : {}),
     ...(mindHome != null ? { mindHome } : {}),
+    ...(engine === 'openrouter' && openRouter != null ? { openrouter: openRouter } : {}),
     budget: {
       usedHour: snap.usedHour,
       maxHour: snap.maxHour,

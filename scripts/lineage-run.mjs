@@ -3,7 +3,7 @@
  *
  *   node scripts/lineage-run.mjs [--seed 42] [--seasons 8] [--mating courtship|random]
  *     [--yield 0.5] [--mutation 0.01] [--cohort 12] [--days 10] [--seeds 1..20]
- *     [--brain instinct|llm|mock] [--engine codex|grok] [--dna on|off]
+ *     [--brain instinct|llm|mock] [--engine codex|grok|openrouter] [--model <id>] [--dna on|off]
  *     [--concurrency 3] [--budget-hour 2500] [--budget-day 6000]
  *     [--replay <dir>] [--tag <label>] [--out artifacts/lineage]
  */
@@ -130,7 +130,12 @@ function sidecarDecider(port, engine, sem, hooks) {
             if (!res.ok) return { fallback: true, error: `http ${res.status}` }
             const json = await res.json()
             if (json.budget) hooks.onBudget(json.budget)
-            return { text: String(json.text ?? ''), latencyMs: Number(json.latencyMs ?? 0) }
+            if (json.usage) hooks.onUsage(json.usage)
+            return {
+              text: String(json.text ?? ''),
+              latencyMs: Number(json.latencyMs ?? 0),
+              ...(json.usage ? { usage: json.usage } : {}),
+            }
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err)
             if (Date.now() + 750 >= deadline) return { fallback: true, error: msg }
@@ -155,7 +160,9 @@ const DAYS = Number(arg('days', '10'))
 const OUT = path.resolve(ROOT, arg('out', 'artifacts/lineage'))
 const seeds = parseSeeds(arg('seeds'))
 const BRAIN = String(arg('brain', 'instinct'))
-const ENGINE = String(arg('engine', 'codex')) === 'grok' ? 'grok' : 'codex'
+const ENGINE_RAW = String(arg('engine', 'openrouter'))
+const ENGINE = ['codex', 'grok', 'openrouter'].includes(ENGINE_RAW) ? ENGINE_RAW : 'codex'
+const MODEL = arg('model')
 const DNA_ON = String(arg('dna', 'on')) !== 'off'
 const REPLAY = arg('replay')
 const TAG = arg('tag')
@@ -171,6 +178,7 @@ if (BRAIN === 'llm' && !REPLAY) {
   process.env.LUNA_MAX_PER_DAY = String(BUDGET_DAY)
   process.env.LUNA_CONCURRENCY = String(CONCURRENCY)
   process.env.LUNA_ENGINE = ENGINE
+  if (MODEL != null) process.env.LUNA_OPENROUTER_MODEL = String(MODEL)
 }
 
 fs.mkdirSync(OUT, { recursive: true })
@@ -402,17 +410,37 @@ try {
     fs.mkdirSync(outDir, { recursive: true })
     pending.outDir = outDir
     pending.decisions = []
-    pending.mind = { llm: 0, fallback: 0, invalid: 0, meanLatencyMs: 0, budgetAtEnd: null, wallMs: 0 }
+    pending.mind = {
+      llm: 0,
+      fallback: 0,
+      invalid: 0,
+      meanLatencyMs: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      costUsd: 0,
+      budgetAtEnd: null,
+      wallMs: 0,
+    }
 
     let lastBudget = null
     let clock = { season: 0, day: 0 }
+    const usageTotals = { promptTokens: 0, completionTokens: 0, costUsd: 0, costSeen: false }
+    const useTotals = (u) => {
+      if (typeof u.promptTokens === 'number') usageTotals.promptTokens += u.promptTokens
+      if (typeof u.completionTokens === 'number') usageTotals.completionTokens += u.completionTokens
+      if (typeof u.costUsd === 'number') {
+        usageTotals.costUsd += u.costUsd
+        usageTotals.costSeen = true
+      }
+    }
 
     const logProgress = (mind) => {
       const budget = lastBudget
         ? `${lastBudget.usedHour}/${lastBudget.maxHour}h`
         : `${0}/${BUDGET_HOUR}h`
       const meanMs = mind.meanLatencyMs ?? 0
-      const line = `S${clock.season + 1} D${clock.day + 1} | llm ${mind.llm} fallback ${mind.fallback} | mean ${fmtMean(meanMs)} | budget ${budget} | wall ${fmtWall(Date.now() - t0)}`
+      const costTail = usageTotals.costSeen ? ` | cost $${usageTotals.costUsd.toFixed(4)}` : ''
+      const line = `S${clock.season + 1} D${clock.day + 1} | llm ${mind.llm} fallback ${mind.fallback} | mean ${fmtMean(meanMs)} | budget ${budget} | wall ${fmtWall(Date.now() - t0)}${costTail}`
       console.log(line)
       fs.appendFileSync(path.join(outDir, 'progress.log'), line + '\n')
     }
@@ -430,9 +458,15 @@ try {
         }
         const health = await hr.json()
         const worker = health.worker ?? '?'
-        const used = health.budget?.usedHour ?? 0
-        const maxH = health.budget?.maxHour ?? BUDGET_HOUR
-        console.log(`health worker=${worker} engine=${ENGINE} budget=${used}/${maxH}h`)
+        const engine = health.engine ?? ENGINE
+        const model = health.openrouter?.model ?? (MODEL != null ? String(MODEL) : '-')
+        const keySource = health.openrouter?.keySource ?? '-'
+        console.log(`health engine=${engine} worker=${worker} model=${model} key=${keySource}`)
+        if (ENGINE === 'openrouter' && keySource === 'missing') {
+          console.error('openrouter key missing')
+          process.exitCode = 1
+          throw new Error('openrouter key missing')
+        }
         if (health.budget) lastBudget = health.budget
       } catch (err) {
         if (process.exitCode === 1) throw err
@@ -444,6 +478,9 @@ try {
       decider = sidecarDecider(PORT, ENGINE, sem, {
         onBudget: (b) => {
           lastBudget = b
+        },
+        onUsage: (u) => {
+          useTotals(u)
         },
         onExhausted: () => {
           console.log(`BUDGET EXHAUSTED at S${clock.season + 1}/D${clock.day + 1}/T${clock.turn ?? 0}`)
@@ -482,6 +519,9 @@ try {
       fallback: result.mind.fallback,
       invalid: result.mind.invalid,
       meanLatencyMs: result.mind.meanLatencyMs,
+      promptTokens: usageTotals.promptTokens,
+      completionTokens: usageTotals.completionTokens,
+      costUsd: usageTotals.costUsd,
       budgetAtEnd: lastBudget,
       wallMs: Date.now() - t0,
     }

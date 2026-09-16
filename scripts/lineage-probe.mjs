@@ -33,6 +33,8 @@ const MAX = Number(arg('max', MODE === 'effort' ? '20' : '8'))
 // run result: it asks "given surplus AND visible hunger, does the model give?"
 const DNA = String(arg('dna', 'on')) !== 'off'
 const BAND = String(arg('band', 'high')) // synth mode: which generosity band to sample
+const ENGINE_RAW = String(arg('engine', 'openrouter'))
+const ENGINE = ['codex', 'grok', 'openrouter'].includes(ENGINE_RAW) ? ENGINE_RAW : 'openrouter'
 const CONC = 3
 if (!RUN || !fs.existsSync(path.join(RUN, 'decisions.jsonl'))) {
   console.error('need --run <dir with decisions.jsonl>')
@@ -40,7 +42,7 @@ if (!RUN || !fs.existsSync(path.join(RUN, 'decisions.jsonl'))) {
 }
 
 process.env.LUNA_MIND_EFFORT = EFFORT
-process.env.LUNA_ENGINE = 'codex'
+process.env.LUNA_ENGINE = ENGINE
 process.env.LUNA_CONCURRENCY = String(CONC)
 process.env.LUNA_MAX_PER_HOUR = '4000'
 process.env.LUNA_MAX_PER_DAY = '8000'
@@ -166,7 +168,7 @@ try {
           const res = await fetch(`http://127.0.0.1:${PORT}/api/luna/decide`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ system: c.system, user: c.user, engine: 'codex', kind: 'decision' }),
+            body: JSON.stringify({ system: c.system, user: c.user, engine: ENGINE, kind: 'decision' }),
           })
           if (res.status === 429) {
             await new Promise((r) => setTimeout(r, 750))

@@ -36,6 +36,13 @@ import {
   runGrokWithDeps,
 } from './luna-grok'
 import {
+  DEFAULT_OPENROUTER_MODEL,
+  OPENROUTER_KILL_MS,
+  resolveOpenRouterKey,
+  runOpenRouterWithDeps,
+  type OpenRouterUsage,
+} from './luna-openrouter'
+import {
   REFLECT_EFFORT,
   classifyMindRequest,
   effortOverrideFor,
@@ -56,6 +63,12 @@ import {
 
 export { DEFAULT_GROK_MODEL, GROK_KILL_MS, runGrokWithDeps } from './luna-grok'
 export { runCodexWithDeps } from './luna-codex-exec'
+export {
+  DEFAULT_OPENROUTER_MODEL,
+  OPENROUTER_KILL_MS,
+  resolveOpenRouterKey,
+  runOpenRouterWithDeps,
+} from './luna-openrouter'
 
 export {
   BudgetTracker,
@@ -87,7 +100,10 @@ function resolveSidecarConcurrency(): number {
 
 /** Default engine when the request omits `engine`. LUNA_ENGINE, default `codex`. */
 export function resolveDefaultEngine(): MindEngine {
-  return process.env.LUNA_ENGINE === 'grok' ? 'grok' : 'codex'
+  const raw = process.env.LUNA_ENGINE
+  if (raw === 'grok') return 'grok'
+  if (raw === 'openrouter') return 'openrouter'
+  return 'codex'
 }
 
 /** Grok CLI model id. LUNA_GROK_MODEL, default `grok-4.6`. */
@@ -95,6 +111,18 @@ export function resolveGrokModel(): string {
   const raw = process.env.LUNA_GROK_MODEL
   if (raw == null || raw.trim() === '') return DEFAULT_GROK_MODEL
   return raw.trim()
+}
+
+/** OpenRouter model id. LUNA_OPENROUTER_MODEL, default `deepseek/deepseek-v4.1-flash`. */
+export function resolveOpenRouterModel(): string {
+  const raw = process.env.LUNA_OPENROUTER_MODEL
+  if (raw == null || raw.trim() === '') return DEFAULT_OPENROUTER_MODEL
+  return raw.trim()
+}
+
+/** JSON response_format on by default; LUNA_OPENROUTER_JSON=0 turns it off. */
+function resolveOpenRouterJsonMode(): boolean {
+  return process.env.LUNA_OPENROUTER_JSON !== '0'
 }
 
 function ensureScratch(): void {
@@ -227,12 +255,39 @@ export function runGrok(
   })
 }
 
+/** Direct OpenRouter chat-completions HTTP call. Key comes from env or opencode auth. */
+export function runOpenRouter(
+  system: string,
+  user: string,
+): Promise<{
+  text: string
+  latencyMs: number
+  worker: 'openrouter'
+  usage?: OpenRouterUsage
+}> {
+  const resolved = resolveOpenRouterKey(
+    process.env,
+    (p) => fs.readFileSync(p, 'utf8'),
+    os.homedir(),
+  )
+  return runOpenRouterWithDeps(system, user, {
+    apiKey: resolved.key ?? '',
+    model: resolveOpenRouterModel(),
+    killMs: OPENROUTER_KILL_MS,
+    jsonMode: resolveOpenRouterJsonMode(),
+    now: () => Date.now(),
+    fetchImpl: (url, init) => fetch(url, init),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+  })
+}
+
 function attachMiddleware(
   middlewares: Connect.Server,
   deps: SidecarDeps,
   scratchDir: string,
   getWorker: () => WorkerHealth,
   mindHome: boolean,
+  openRouter?: { model: string; keySource: 'env' | 'opencode' | 'missing' },
 ): void {
   middlewares.use(async (req, res, next) => {
     const url = req.url?.split('?')[0] ?? ''
@@ -240,7 +295,16 @@ function attachMiddleware(
       res.statusCode = 200
       res.setHeader('Content-Type', 'application/json')
       res.end(
-        JSON.stringify(healthPayload(deps.budget, scratchDir, getWorker(), mindHome)),
+        JSON.stringify(
+          healthPayload(
+            deps.budget,
+            scratchDir,
+            getWorker(),
+            mindHome,
+            deps.defaultEngine ?? 'codex',
+            openRouter,
+          ),
+        ),
       )
       return
     }
@@ -363,9 +427,25 @@ export function lunaSidecarPlugin(): Plugin {
     onUnauthorized: recopyMindAuth,
   })
   const defaultEngine = resolveDefaultEngine()
-  const workerLabel = defaultEngine === 'grok' ? 'grok' : 'mcp'
+  const workerLabel =
+    defaultEngine === 'openrouter' ? 'openrouter' : defaultEngine === 'grok' ? 'grok' : 'mcp'
+  const openRouterResolved = resolveOpenRouterKey(
+    process.env,
+    (p) => fs.readFileSync(p, 'utf8'),
+    os.homedir(),
+  )
+  const openRouterInfo =
+    defaultEngine === 'openrouter'
+      ? { model: resolveOpenRouterModel(), keySource: openRouterResolved.source }
+      : undefined
   // eslint-disable-next-line no-console
   console.log(`[luna-sidecar] concurrency=${concurrency} worker=${workerLabel}`)
+  if (defaultEngine === 'openrouter' && openRouterResolved.source === 'missing') {
+    // eslint-disable-next-line no-console
+    console.log(
+      '[luna-sidecar] openrouter: no API key (set OPENROUTER_API_KEY or log in with opencode)',
+    )
+  }
   const deps: SidecarDeps = {
     busy,
     budget,
@@ -385,6 +465,7 @@ export function lunaSidecarPlugin(): Plugin {
       return pool.decide(system, user, effort)
     },
     grokRunner: (system, user) => runGrok(system, user),
+    openRouterRunner: (system, user) => runOpenRouter(system, user),
     defaultEngine,
   }
   return {
@@ -396,6 +477,7 @@ export function lunaSidecarPlugin(): Plugin {
         SCRATCH,
         () => pool.status(),
         mind.ready && reflectMind.ready,
+        openRouterInfo,
       )
       server.httpServer?.on('close', () => pool.dispose())
     },
@@ -406,6 +488,7 @@ export function lunaSidecarPlugin(): Plugin {
         SCRATCH,
         () => pool.status(),
         mind.ready && reflectMind.ready,
+        openRouterInfo,
       )
       server.httpServer?.on('close', () => pool.dispose())
     },
