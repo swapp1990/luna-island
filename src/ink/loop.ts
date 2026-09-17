@@ -7,6 +7,7 @@ import { ruleBrain } from './sim/ruleBrain'
 import { advanceTick, applyIntent } from './sim/step'
 import type { InkBrains, InkState, Intent, IntentSource, MindId, Vec2 } from './sim/types'
 import { createWorld, fridgeOf } from './sim/world'
+import { applyScenario, type ScenarioId } from './sim/scenarios'
 import type { SceneHandle } from './render/scene'
 
 // A live decide measures ~0.9s median and has been seen at 5.4s; 12s an hour keeps the
@@ -129,10 +130,16 @@ export function createInkLoop(opts: {
   scene: SceneHandle
   seed: number
   brain?: 'rule' | 'grok'
+  scenario?: ScenarioId
 }): InkLoop {
   const brainMode = opts.brain === 'grok' ? 'grok' : 'rule'
   const ruleBrains: InkBrains = { A: ruleBrain, B: ruleBrain }
-  let state = createWorld(opts.seed)
+  const newWorld = (seed: number) => {
+    const s = createWorld(seed)
+    if (opts.scenario) applyScenario(s, opts.scenario)
+    return s
+  }
+  let state = newWorld(opts.seed)
   let events = new EventTrace()
   let rng = createRng(opts.seed)
   const sources: Record<MindId, IntentSource> = { A: 'rule', B: 'rule' }
@@ -197,7 +204,7 @@ export function createInkLoop(opts: {
 
   const rebuild = (seed: number) => {
     pump?.abortAll()
-    state = createWorld(seed)
+    state = newWorld(seed)
     events = new EventTrace()
     rng = createRng(seed)
     sources.A = 'rule'

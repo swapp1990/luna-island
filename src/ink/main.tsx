@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createInkLoop, type InkLoop } from './loop'
+import { isScenarioId } from './sim/scenarios'
 import { createScene } from './render/scene'
 import { Hud } from './ui/Hud'
 import './ui/ink.css'
@@ -17,6 +18,8 @@ function main(): void {
   const params = new URLSearchParams(window.location.search)
   const seed = Number(params.get('seed') ?? 42) || 42
   const brain = params.get('brain') === 'grok' ? 'grok' : 'rule'
+  const scenarioParam = params.get('scenario')
+  const scenario = isScenarioId(scenarioParam) ? scenarioParam : undefined
 
   const shell = document.createElement('div')
   shell.className = 'ink-shell'
@@ -34,7 +37,7 @@ function main(): void {
   root.append(shell)
 
   const scene = createScene(canvas, seed)
-  const loop = createInkLoop({ canvas, scene, seed, brain })
+  const loop = createInkLoop({ canvas, scene, seed, brain, scenario })
   createRoot(hudHost).render(<HudRoot loop={loop} />)
   loop.start()
 }
