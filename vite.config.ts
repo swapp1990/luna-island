@@ -68,6 +68,10 @@ function townPlugin(): Plugin {
           req.url = '/age-0.html'
           return next()
         }
+        if (req.url === '/ink' || req.url === '/ink/') {
+          req.url = '/ink.html'
+          return next()
+        }
         if (req.url?.startsWith('/assets/gltf/')) {
           const rel = decodeURIComponent(req.url.slice('/assets/gltf/'.length).split('?')[0])
           const file = path.resolve(gltfRoot, rel)
@@ -101,6 +105,7 @@ export default defineConfig({
         gallery: 'gallery.html',
         lineage: 'lineage.html',
         ageZero: 'age-0.html',
+        ink: 'ink.html',
       },
     },
   },

@@ -1,0 +1,64 @@
+import { clockOf, INK_CONFIG, isMarketOpenAt, isWorkOpenAt } from './config'
+import type { InkState, MindId, Observation } from './types'
+import { findMind, fridgeOf, otherMind, placePhrase } from './world'
+
+export function observationFor(state: InkState, mindId: MindId): Observation {
+  const clock = clockOf(state.tick)
+  const self = findMind(state, mindId)
+  const other = otherMind(state, mindId)
+  const fridge = fridgeOf(state, self)
+  const marketOpen = isMarketOpenAt(state.tick)
+  const workOpen = isWorkOpenAt(state.tick)
+  const busy = self.busyUntilTick > state.tick
+  const selfAt = self.at ? `at ${placePhrase(self.at)}` : 'on the road'
+  const otherAt = other.at ? `at ${placePhrase(other.at)}` : 'on the road'
+  const facts = [
+    `It is ${clock.dayNameLong} ${String(clock.hour).padStart(2, '0')}:${String(clock.minute).padStart(2, '0')}.`,
+    clock.isNight ? 'It is dark.' : 'It is daylight.',
+    marketOpen ? 'The market is open.' : 'The market is shut.',
+    workOpen ? 'The workshop is open.' : 'The workshop is shut.',
+    `You are ${selfAt}.`,
+    `Your fridge holds ${fridge} of ${INK_CONFIG.fridgeCapacity} meals.`,
+    `You have ${self.money} money.`,
+    `A meal costs ${INK_CONFIG.mealPrice}. Work pays ${INK_CONFIG.wagePerHour} per hour.`,
+    `Hunger ${self.hunger.toFixed(2)}, energy ${self.energy.toFixed(2)}, social ${self.social.toFixed(2)}.`,
+    `${other.name} is ${otherAt}.`,
+  ]
+  return {
+    tick: state.tick,
+    day: clock.day,
+    dayName: clock.dayName,
+    hour: clock.hour,
+    minute: clock.minute,
+    isWeekend: clock.isWeekend,
+    isNight: clock.isNight,
+    marketOpen,
+    workOpen,
+    self: {
+      id: self.id,
+      name: self.name,
+      home: self.home,
+      at: self.at,
+      pos: { x: self.pos.x, y: self.pos.y },
+      walking: self.path.length > 0,
+      hunger: self.hunger,
+      energy: self.energy,
+      social: self.social,
+      money: self.money,
+      fridge,
+      asleep: self.asleep,
+      busy,
+      current: self.current,
+      sufferedHours: self.sufferedHours,
+    },
+    other: {
+      id: other.id,
+      name: other.name,
+      at: other.at,
+      hunger: other.hunger,
+      energy: other.energy,
+      social: other.social,
+    },
+    facts,
+  }
+}

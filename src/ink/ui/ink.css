@@ -1,0 +1,164 @@
+:root {
+  --ink-paper: #f7f5f0;
+  --ink: #161616;
+  --ink-hatch: #8c8880;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #ink-root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ink-paper);
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+.ink-shell {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.ink-stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--ink-paper);
+}
+
+.ink-stage canvas {
+  display: block;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.ink-hud {
+  width: 300px;
+  flex: 0 0 300px;
+  height: 100%;
+  overflow: auto;
+  padding: 18px 16px 24px;
+  border-left: 1px solid var(--ink);
+  background: var(--ink-paper);
+  color: var(--ink);
+}
+
+.ink-hud h1 {
+  font-size: 20px;
+  font-weight: 400;
+  margin: 0 0 4px;
+  letter-spacing: 0.04em;
+}
+
+.ink-hud .ink-sub {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: var(--ink-hatch);
+}
+
+.ink-speeds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.ink-speeds button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--ink);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.ink-speeds button[data-on='1'] {
+  background: var(--ink);
+  color: var(--ink-paper);
+}
+
+.ink-mind {
+  border: 1px solid var(--ink);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.ink-mind h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 400;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ink-mind h2 span {
+  font-size: 12px;
+  color: var(--ink-hatch);
+}
+
+.ink-need {
+  display: grid;
+  grid-template-columns: 56px 1fr 36px;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 12px;
+}
+
+.ink-bar {
+  height: 8px;
+  border: 1px solid var(--ink);
+  position: relative;
+}
+
+.ink-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+}
+
+.ink-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.ink-fridge {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ink-fridge b {
+  width: 12px;
+  height: 16px;
+  border: 1px solid var(--ink);
+  display: block;
+}
+
+.ink-fridge b[data-full='1'] {
+  background: var(--ink);
+}
+
+.ink-reason {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.35;
+  min-height: 2.6em;
+}
+
+.ink-reason em {
+  font-style: italic;
+  color: var(--ink-hatch);
+}
