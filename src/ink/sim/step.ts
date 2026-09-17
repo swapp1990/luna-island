@@ -93,7 +93,44 @@ function applyNeeds(state: InkState, events: EventTrace): void {
     if (mind.hunger < t || mind.energy < t || mind.social < t) {
       mind.sufferedHours += 1 / INK_CONFIG.ticksPerHour
     }
+
+    stepCollapse(state, mind, events)
   }
+}
+
+/**
+ * Empty at 0 fullness means the body stops: the mind drops where it stands and loses the
+ * next `collapseHours`. Waking grants one hour before it can happen again, so a mind that
+ * never eats spends most of its day face down rather than collapsing every single tick.
+ */
+function stepCollapse(state: InkState, mind: Mind, events: EventTrace): void {
+  if (mind.collapsedUntilTick > state.tick) return
+  if (mind.collapsedUntilTick === state.tick) {
+    mind.collapsedUntilTick = 0
+    mind.collapseGraceUntilTick = state.tick + INK_CONFIG.collapseGraceHours * INK_CONFIG.ticksPerHour
+    events.append({
+      tick: state.tick,
+      type: 'wake',
+      agentId: mind.id,
+      data: { from: 'collapse' },
+      reason: 'came round from hunger',
+    })
+    return
+  }
+  if (mind.hunger > 0) return
+  if (state.tick < mind.collapseGraceUntilTick) return
+  mind.collapsedUntilTick = state.tick + INK_CONFIG.collapseHours * INK_CONFIG.ticksPerHour
+  mind.asleep = false
+  mind.path = []
+  mind.busyUntilTick = 0
+  mind.current = null
+  events.append({
+    tick: state.tick,
+    type: 'collapse',
+    agentId: mind.id,
+    data: { untilTick: mind.collapsedUntilTick },
+    reason: 'collapsed from hunger',
+  })
 }
 
 function payWage(state: InkState, mind: Mind): void {

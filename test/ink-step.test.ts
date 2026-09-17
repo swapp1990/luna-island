@@ -102,3 +102,60 @@ describe('ink needs and wages', () => {
     expect(state.minds[0].money).toBe(INK_CONFIG.startMoney)
   })
 })
+
+describe('collapse from hunger', () => {
+  const run = (state: InkState, events: EventTrace, ticks: number) => {
+    const rng = createRng(7)
+    for (let i = 0; i < ticks; i++) advanceTick(state, keep, events, rng)
+  }
+
+  it('drops the mind for collapseHours once fullness hits 0, then wakes it', () => {
+    const state = createWorld(42)
+    const events = new EventTrace()
+    state.minds[0].hunger = 0
+    state.minds[1].hunger = 1
+
+    run(state, events, 1)
+    const collapsed = events.getAll().filter((e) => e.type === 'collapse')
+    expect(collapsed).toHaveLength(1)
+    expect(collapsed[0]!.agentId).toBe('A')
+    expect(state.minds[0].collapsedUntilTick).toBe(
+      state.tick - 1 + INK_CONFIG.collapseHours * INK_CONFIG.ticksPerHour,
+    )
+    // B is fed and must be untouched.
+    expect(state.minds[1].collapsedUntilTick).toBe(0)
+
+    run(state, events, INK_CONFIG.collapseHours * INK_CONFIG.ticksPerHour)
+    expect(events.getAll().filter((e) => e.type === 'wake')).toHaveLength(1)
+    expect(state.minds[0].collapsedUntilTick).toBe(0)
+  })
+
+  it('refuses every action while collapsed, naming the hour it ends', () => {
+    const state = createWorld(42)
+    const events = new EventTrace()
+    state.minds[0].hunger = 0
+    run(state, events, 1)
+
+    applyIntent(state, 'A', { action: 'eat', reason: 'try' }, 'rule', events)
+    const fails = events.getAll().filter((e) => e.type === 'action:fail')
+    expect(fails).toHaveLength(1)
+    expect(String(fails[0]!.data?.why)).toMatch(
+      /collapsed from hunger and cannot act until \d\d:\d\d/,
+    )
+  })
+
+  it('grants one waking hour before it can collapse again', () => {
+    const state = createWorld(42)
+    const events = new EventTrace()
+    state.minds[0].hunger = 0
+    run(state, events, 1 + INK_CONFIG.collapseHours * INK_CONFIG.ticksPerHour)
+    expect(state.minds[0].collapsedUntilTick).toBe(0)
+
+    // Still at 0 fullness, but inside the grace window: no new collapse yet.
+    run(state, events, INK_CONFIG.collapseGraceHours * INK_CONFIG.ticksPerHour - 2)
+    expect(events.getAll().filter((e) => e.type === 'collapse')).toHaveLength(1)
+
+    run(state, events, 3)
+    expect(events.getAll().filter((e) => e.type === 'collapse')).toHaveLength(2)
+  })
+})

@@ -25,6 +25,11 @@ export const INK_CONFIG = {
 
   workOpen: { days: [0, 1, 2, 3, 4], from: 9, to: 17 },   // Mon-Fri 09:00-17:00
   marketOpen: { days: [0, 1, 2, 3, 4], from: 9, to: 18 }, // Mon-Fri 09:00-18:00, SHUT at weekends
+  // Starving has to cost something or eating is never worth an hour: at 0 fullness the
+  // body drops where it stands. The grace window is one waking hour to act before it repeats.
+  collapseHours: 4,
+  collapseGraceHours: 1,
+
   nightFrom: 20, nightTo: 6,    // rendering + the "is it dark" observation fact
 } as const
 

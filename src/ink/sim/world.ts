@@ -155,6 +155,8 @@ function makeMind(id: MindId, name: string, home: HomeId): Mind {
     social: 1,
     money: INK_CONFIG.startMoney,
     busyUntilTick: 0,
+    collapsedUntilTick: 0,
+    collapseGraceUntilTick: 0,
     asleep: false,
     current: null,
     sufferedHours: 0,

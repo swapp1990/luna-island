@@ -65,6 +65,8 @@ export function observationFor(state: InkState, mindId: MindId): Observation {
       busy,
       current: self.current,
       sufferedHours: self.sufferedHours,
+      collapsed: self.collapsedUntilTick > state.tick,
+      collapsedUntilTick: self.collapsedUntilTick,
     },
     other: {
       id: other.id,

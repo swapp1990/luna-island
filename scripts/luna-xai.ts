@@ -100,6 +100,9 @@ export function runXaiWithDeps(
         outcome = await attempt()
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err))
+        // An abort is the caller giving up (client gone, or killMs). Retrying it would
+        // sleep 2s and fail again while still holding an in-flight slot.
+        if (lastError.name === 'AbortError' || lastError.name === 'TimeoutError') throw lastError
         if (attemptNo === 0) {
           await deps.sleep(2000)
           continue

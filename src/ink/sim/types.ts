@@ -44,6 +44,8 @@ export interface Mind {
   social: number
   money: number
   busyUntilTick: number
+  collapsedUntilTick: number
+  collapseGraceUntilTick: number
   asleep: boolean
   current: Intent | null
   sufferedHours: number
@@ -93,6 +95,8 @@ export interface Observation {
     busy: boolean
     current: Intent | null
     sufferedHours: number
+    collapsed: boolean
+    collapsedUntilTick: number
   }
   other: {
     id: MindId

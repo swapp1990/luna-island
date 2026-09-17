@@ -211,3 +211,30 @@ describe('resolveXaiKey', () => {
     })
   })
 })
+
+describe('an aborted call does not retry', () => {
+  it('rethrows immediately instead of sleeping and re-issuing', async () => {
+    let calls = 0
+    let slept = 0
+    const err = new Error('The operation was aborted.')
+    err.name = 'AbortError'
+    await expect(
+      runXaiWithDeps('sys', 'usr', {
+        apiKey: 'k',
+        model: 'm',
+        killMs: 1000,
+        jsonMode: true,
+        now: () => 0,
+        fetchImpl: () => {
+          calls += 1
+          return Promise.reject(err)
+        },
+        sleep: async () => {
+          slept += 1
+        },
+      }),
+    ).rejects.toThrow(/aborted/i)
+    expect(calls).toBe(1)
+    expect(slept).toBe(0)
+  })
+})

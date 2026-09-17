@@ -10,6 +10,7 @@ import { PLACE_IDS, PLACES, placePhrase } from '../sim/world'
 export type InkConfigView = {
   mealPrice: number
   fridgeCapacity: number
+  collapseHours: number
   wagePerHour: number
   hungerDecayAwake: number
   energyDecayAwake: number
@@ -98,6 +99,7 @@ export function buildSystem(name = 'A', config: InkConfigView = INK_CONFIG): str
     'An action only works where it works: sleep and eat at your own home, buy at the market, work at the workshop, socialize at the town centre. go_home, go_work, go_market and go_center walk you to those places. wait works anywhere.',
     `Fullness, energy and company sit between 0 and 1 and fall every hour. At 1 you are fed, rested and in company; at 0 you are starving, exhausted and alone. Eating raises fullness. Energy rises while you sleep. Company rises only while both of you are in the town centre at the same time.`,
     `Eating needs a meal in your own fridge and your fridge holds at most ${config.fridgeCapacity}.`,
+    `If fullness reaches 0 you collapse where you stand and cannot act for ${config.collapseHours} hours.`,
     `Meals are bought at the market for ${config.mealPrice} each. The market is open ${openWindow(config.marketOpen)}.`,
     `The workshop pays ${config.wagePerHour} an hour and is open ${openWindow(config.workOpen)}.`,
     'Walking between places takes minutes and you decide again each hour.',
@@ -120,6 +122,7 @@ export function buildUser(
   if (obs.workOpen) lines.push('The workshop is open.')
   else lines.push(nextOpenLine('workshop', obs.tick, config))
 
+  if (obs.self.collapsed) lines.push('You are collapsed from hunger and cannot act.')
   const selfWhere = whereLine(
     'You',
     obs.self.at,

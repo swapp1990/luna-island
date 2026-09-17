@@ -70,6 +70,12 @@ function resolveBuy(state: InkState, mind: Mind, intent: Intent): ActionResult {
 }
 
 export function resolveAction(state: InkState, mind: Mind, intent: Intent): ActionResult {
+  if (mind.collapsedUntilTick > state.tick) {
+    const c = clockOf(mind.collapsedUntilTick)
+    const hh = String(c.hour).padStart(2, '0')
+    const mm = String(c.minute).padStart(2, '0')
+    return fail(`you collapsed from hunger and cannot act until ${hh}:${mm}`)
+  }
   const action = intent.action
   switch (action) {
     case 'go_home':
