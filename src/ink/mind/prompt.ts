@@ -11,6 +11,8 @@ export type InkConfigView = {
   mealPrice: number
   fridgeCapacity: number
   collapseHours: number
+  mealMinutes: number
+  buyMinutes: number
   wagePerHour: number
   hungerDecayAwake: number
   energyDecayAwake: number
@@ -102,6 +104,7 @@ export function buildSystem(name = 'A', config: InkConfigView = INK_CONFIG): str
     `If fullness reaches 0 you collapse where you stand and cannot act for ${config.collapseHours} hours.`,
     `Meals are bought at the market for ${config.mealPrice} each. The market is open ${openWindow(config.marketOpen)}.`,
     `The workshop pays ${config.wagePerHour} an hour and is open ${openWindow(config.workOpen)}.`,
+    `Eating takes ${config.mealMinutes} minutes and buying takes ${config.buyMinutes} minutes, out of an hour of 60.`,
     'Walking between places takes minutes and you decide again each hour.',
   ].join('\n')
   return [identity, facts, ACT_CONTRACT].join('\n\n')
