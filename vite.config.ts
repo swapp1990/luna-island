@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react'
 import { lunaSidecarPlugin } from './scripts/luna-sidecar'
 import { lunaRunsPlugin } from './scripts/luna-runs'
 import { lineageRunsPlugin } from './scripts/lineage-runs'
+import { inkSidecarPlugin } from './scripts/ink-sidecar'
 
 /**
  * Phase 6's god game lives on its own entry (`god.html` → `src/god/**`) and shares
@@ -89,7 +90,7 @@ function townPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin(), lineageRunsPlugin(), godRoutePlugin(), townPlugin()],
+  plugins: [react(), lunaSidecarPlugin(), lunaRunsPlugin(), lineageRunsPlugin(), godRoutePlugin(), townPlugin(), inkSidecarPlugin()],
   server: {
     host: '127.0.0.1',
     port: 5175,

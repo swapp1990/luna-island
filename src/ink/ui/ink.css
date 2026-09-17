@@ -59,9 +59,23 @@ html, body, #ink-root {
 }
 
 .ink-hud .ink-sub {
-  margin: 0 0 16px;
+  margin: 0 0 8px;
   font-size: 12px;
   color: var(--ink-hatch);
+}
+
+.ink-engine {
+  margin: 0 0 16px;
+  font-size: 11px;
+  line-height: 1.35;
+  border: 1px solid var(--ink);
+  padding: 6px 8px;
+  word-break: break-word;
+}
+
+.ink-engine[data-hole='1'] {
+  background: var(--ink);
+  color: var(--ink-paper);
 }
 
 .ink-speeds {
@@ -90,6 +104,16 @@ html, body, #ink-root {
   border: 1px solid var(--ink);
   padding: 12px;
   margin-bottom: 12px;
+}
+
+.ink-mind[data-source='fallback'] {
+  background: var(--ink);
+  color: var(--ink-paper);
+}
+
+.ink-mind[data-source='fallback'] h2 span,
+.ink-mind[data-source='fallback'] .ink-reason em {
+  color: var(--ink-paper);
 }
 
 .ink-mind h2 {

@@ -16,6 +16,7 @@ function main(): void {
   if (!root) throw new Error('missing #ink-root')
   const params = new URLSearchParams(window.location.search)
   const seed = Number(params.get('seed') ?? 42) || 42
+  const brain = params.get('brain') === 'grok' ? 'grok' : 'rule'
 
   const shell = document.createElement('div')
   shell.className = 'ink-shell'
@@ -33,7 +34,7 @@ function main(): void {
   root.append(shell)
 
   const scene = createScene(canvas, seed)
-  const loop = createInkLoop({ canvas, scene, seed })
+  const loop = createInkLoop({ canvas, scene, seed, brain })
   createRoot(hudHost).render(<HudRoot loop={loop} />)
   loop.start()
 }

@@ -1,6 +1,7 @@
 import { EventTrace } from '../sim/events'
 import { createRng } from '../sim/rng'
 import type { SimEvent } from '../sim/types'
+import { createGrokPump, makeRunId, type InkEngineState } from './mind/grokBrain'
 import { clockOf, INK_CONFIG } from './sim/config'
 import { ruleBrain } from './sim/ruleBrain'
 import { advanceTick, applyIntent } from './sim/step'
@@ -38,6 +39,7 @@ export interface InkBridgeState {
   paused: boolean
   eventCount: number
   minds: InkMindBridge[]
+  engine: InkEngineState
 }
 
 export interface InkBridgeControl {
@@ -83,6 +85,17 @@ function snapshotMinds(state: InkState, sources: Record<MindId, IntentSource>): 
   }))
 }
 
+const ZERO_ENGINE: InkEngineState = {
+  brain: 'rule',
+  model: '',
+  llm: 0,
+  fallback: 0,
+  stale: 0,
+  budget: { hour: 0, day: 0, maxPerHour: 0, maxPerDay: 0 },
+  runId: '',
+  hourDecisions: 0,
+}
+
 function toBridge(
   state: InkState,
   speed: number,
@@ -90,6 +103,7 @@ function toBridge(
   events: EventTrace,
   sources: Record<MindId, IntentSource>,
   ready: boolean,
+  engine: InkEngineState,
 ): InkBridgeState {
   const c = clockOf(state.tick)
   return {
@@ -103,6 +117,7 @@ function toBridge(
     paused,
     eventCount: events.length,
     minds: snapshotMinds(state, sources),
+    engine,
   }
 }
 
@@ -110,8 +125,10 @@ export function createInkLoop(opts: {
   canvas: HTMLCanvasElement
   scene: SceneHandle
   seed: number
+  brain?: 'rule' | 'grok'
 }): InkLoop {
-  const brains: InkBrains = { A: ruleBrain, B: ruleBrain }
+  const brainMode = opts.brain === 'grok' ? 'grok' : 'rule'
+  const ruleBrains: InkBrains = { A: ruleBrain, B: ruleBrain }
   let state = createWorld(opts.seed)
   let events = new EventTrace()
   let rng = createRng(opts.seed)
@@ -126,11 +143,35 @@ export function createInkLoop(opts: {
   let acc = 0
   let prev = new Map<string, Vec2>(state.minds.map((m) => [m.id, { x: m.pos.x, y: m.pos.y }]))
   const listeners = new Set<() => void>()
+  let healthTimer: ReturnType<typeof setInterval> | 0 = 0
 
   const paused = () => userPaused || hiddenPause
 
+  const pump =
+    brainMode === 'grok'
+      ? createGrokPump({
+          runId: makeRunId(opts.seed, new Date()),
+          seed: opts.seed,
+          getState: () => state,
+          getEvents: () => events,
+          applyIntent: (mindId, intent, source) => {
+            applyIntent(state, mindId, intent, source, events)
+            sources[mindId] = source
+            notify()
+          },
+          isLive: () => !paused(),
+        })
+      : null
+
+  const brains: InkBrains = pump ? pump.brains : ruleBrains
+
+  const engineOf = (): InkEngineState => {
+    if (!pump) return ZERO_ENGINE
+    return pump.stats()
+  }
+
   const notify = () => {
-    const bridge = toBridge(state, speed, paused(), events, sources, ready)
+    const bridge = toBridge(state, speed, paused(), events, sources, ready, engineOf())
     window.__inkState = bridge
     for (const fn of listeners) fn()
   }
@@ -139,9 +180,9 @@ export function createInkLoop(opts: {
     prev = new Map(state.minds.map((m) => [m.id, { x: m.pos.x, y: m.pos.y }]))
   }
 
-  const tickOnce = () => {
+  const tickOnce = (use: InkBrains = brains, source: IntentSource = 'rule') => {
     capturePrev()
-    advanceTick(state, brains, events, rng, 'rule')
+    advanceTick(state, use, events, rng, source)
   }
 
   const stepTicks = (n: number) => {
@@ -152,6 +193,7 @@ export function createInkLoop(opts: {
   }
 
   const rebuild = (seed: number) => {
+    pump?.abortAll()
     state = createWorld(seed)
     events = new EventTrace()
     rng = createRng(seed)
@@ -193,11 +235,11 @@ export function createInkLoop(opts: {
       const seed = state.seed
       rebuild(seed)
       const target = Math.max(state.tick, tick)
-      while (state.tick < target) tickOnce()
+      while (state.tick < target) tickOnce(ruleBrains, 'rule')
       acc = 0
       notify()
     },
-    state: () => toBridge(state, speed, paused(), events, sources, ready),
+    state: () => toBridge(state, speed, paused(), events, sources, ready, engineOf()),
     events: (sinceSeq) => {
       const all = events.getAll()
       if (sinceSeq === undefined) return all.slice()
@@ -247,6 +289,20 @@ export function createInkLoop(opts: {
     notify()
   }
 
+  const pollHealth = () => {
+    if (!pump) return
+    void fetch('/api/ink/health')
+      .then((r) => r.json())
+      .then((j: { model?: unknown; budget?: InkEngineState['budget'] }) => {
+        if (typeof j.model === 'string' && j.model) pump.setModel(j.model)
+        if (j.budget && typeof j.budget === 'object') pump.setBudget(j.budget)
+        notify()
+      })
+      .catch(() => {
+        /* sidecar optional */
+      })
+  }
+
   const start = () => {
     if (running) return
     running = true
@@ -255,6 +311,11 @@ export function createInkLoop(opts: {
     window.addEventListener('resize', opts.scene.resize)
     opts.scene.resize()
     window.__inkControl = control
+    if (pump) {
+      pump.writeRunMeta()
+      pollHealth()
+      healthTimer = setInterval(pollHealth, 5000)
+    }
     notify()
     lastTs = 0
     raf = requestAnimationFrame(frame)
@@ -263,12 +324,15 @@ export function createInkLoop(opts: {
   const stop = () => {
     running = false
     cancelAnimationFrame(raf)
+    if (healthTimer) clearInterval(healthTimer)
+    healthTimer = 0
+    pump?.abortAll()
     document.removeEventListener('visibilitychange', onVis)
     window.removeEventListener('resize', opts.scene.resize)
   }
 
   window.__inkControl = control
-  window.__inkState = toBridge(state, speed, paused(), events, sources, ready)
+  window.__inkState = toBridge(state, speed, paused(), events, sources, ready, engineOf())
 
   return {
     start,
@@ -277,7 +341,7 @@ export function createInkLoop(opts: {
       listeners.add(fn)
       return () => listeners.delete(fn)
     },
-    getBridge: () => toBridge(state, speed, paused(), events, sources, ready),
+    getBridge: () => toBridge(state, speed, paused(), events, sources, ready, engineOf()),
     control,
   }
 }

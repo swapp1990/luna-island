@@ -1,5 +1,5 @@
 import type { Rng } from '../../sim/types'
-import type { DayName } from './config'
+import type { DayName, DayNameLong } from './config'
 
 export type PlaceId = 'home-a' | 'home-b' | 'market' | 'center' | 'work'
 export type HomeId = 'home-a' | 'home-b'
@@ -68,6 +68,7 @@ export interface Observation {
   tick: number
   day: number
   dayName: DayName
+  dayNameLong: DayNameLong
   hour: number
   minute: number
   isWeekend: boolean
@@ -81,6 +82,8 @@ export interface Observation {
     at: PlaceId | null
     pos: Vec2
     walking: boolean
+    walkingTo: PlaceId | null
+    walkMinutes: number | null
     hunger: number
     energy: number
     social: number
@@ -95,6 +98,9 @@ export interface Observation {
     id: MindId
     name: string
     at: PlaceId | null
+    walking: boolean
+    walkingTo: PlaceId | null
+    walkMinutes: number | null
     hunger: number
     energy: number
     social: number

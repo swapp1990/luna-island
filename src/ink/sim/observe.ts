@@ -1,6 +1,16 @@
 import { clockOf, INK_CONFIG, isMarketOpenAt, isWorkOpenAt } from './config'
-import type { InkState, MindId, Observation } from './types'
-import { findMind, fridgeOf, otherMind, placePhrase } from './world'
+import { pathLength } from './path'
+import type { InkState, Mind, MindId, Observation, PlaceId } from './types'
+import { findMind, fridgeOf, otherMind, placeAtDoor, placePhrase } from './world'
+
+function walkInfo(mind: Mind): { walkingTo: PlaceId | null; walkMinutes: number | null } {
+  if (mind.path.length === 0) return { walkingTo: null, walkMinutes: null }
+  const last = mind.path[mind.path.length - 1]!
+  const walkingTo = placeAtDoor(last, 0.6)
+  const len = pathLength(mind.path, mind.pos)
+  const walkMinutes = Math.max(1, Math.round(len / INK_CONFIG.walkUnitsPerMinute))
+  return { walkingTo, walkMinutes }
+}
 
 export function observationFor(state: InkState, mindId: MindId): Observation {
   const clock = clockOf(state.tick)
@@ -10,6 +20,8 @@ export function observationFor(state: InkState, mindId: MindId): Observation {
   const marketOpen = isMarketOpenAt(state.tick)
   const workOpen = isWorkOpenAt(state.tick)
   const busy = self.busyUntilTick > state.tick
+  const selfWalk = walkInfo(self)
+  const otherWalk = walkInfo(other)
   const selfAt = self.at ? `at ${placePhrase(self.at)}` : 'on the road'
   const otherAt = other.at ? `at ${placePhrase(other.at)}` : 'on the road'
   const facts = [
@@ -28,6 +40,7 @@ export function observationFor(state: InkState, mindId: MindId): Observation {
     tick: state.tick,
     day: clock.day,
     dayName: clock.dayName,
+    dayNameLong: clock.dayNameLong,
     hour: clock.hour,
     minute: clock.minute,
     isWeekend: clock.isWeekend,
@@ -41,6 +54,8 @@ export function observationFor(state: InkState, mindId: MindId): Observation {
       at: self.at,
       pos: { x: self.pos.x, y: self.pos.y },
       walking: self.path.length > 0,
+      walkingTo: selfWalk.walkingTo,
+      walkMinutes: selfWalk.walkMinutes,
       hunger: self.hunger,
       energy: self.energy,
       social: self.social,
@@ -55,6 +70,9 @@ export function observationFor(state: InkState, mindId: MindId): Observation {
       id: other.id,
       name: other.name,
       at: other.at,
+      walking: other.path.length > 0,
+      walkingTo: otherWalk.walkingTo,
+      walkMinutes: otherWalk.walkMinutes,
       hunger: other.hunger,
       energy: other.energy,
       social: other.social,

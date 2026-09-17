@@ -43,6 +43,7 @@ export const DAY_NAMES_LONG = [
 ] as const
 
 export type DayName = (typeof DAY_NAMES)[number]
+export type DayNameLong = (typeof DAY_NAMES_LONG)[number]
 
 export interface InkClock {
   tick: number
