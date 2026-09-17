@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createGrokPump } from '../src/ink/mind/grokBrain'
+import { MS_PER_HOUR_1X } from '../src/ink/loop'
 import { EventTrace } from '../src/sim/events'
 import { createRng } from '../src/sim/rng'
 import { INK_CONFIG } from '../src/ink/sim/config'
@@ -53,7 +54,7 @@ describe('grok pump 90 sim minutes', () => {
       },
     })
 
-    const msPerTick = 4000 / INK_CONFIG.ticksPerHour
+    const msPerTick = MS_PER_HOUR_1X / INK_CONFIG.ticksPerHour
     const tickMs: number[] = []
     for (let i = 0; i < 90; i++) {
       const t0 = Date.now()
@@ -93,5 +94,58 @@ describe('grok pump 90 sim minutes', () => {
     const ruleMs = Date.now() - tRule0
     expect(ruleState.tick).toBe(state.tick)
     expect(ruleMs).toBeGreaterThanOrEqual(0)
+  })
+})
+
+describe('a stale hour does not lock the LLM out (regression)', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('recovers to llm decisions after the first reply misses its hour', async () => {
+    vi.useFakeTimers()
+    const state = createWorld(42)
+    const events = new EventTrace()
+    const rng = createRng(42)
+
+    // First call per mind takes longer than a sim hour and must go stale; the rest are fast.
+    const seen = new Map<string, number>()
+    const pump = createGrokPump({
+      runId: 'ink-42-stale',
+      seed: 42,
+      model: 'stub',
+      getState: () => state,
+      getEvents: () => events,
+      applyIntent: (mindId, intent, source) => {
+        applyInkIntent(state, mindId, intent, source, events)
+      },
+      isLive: () => true,
+      decideFn: async ({ mindId }) => {
+        const n = (seen.get(mindId) ?? 0) + 1
+        seen.set(mindId, n)
+        const slow = n === 1
+        await new Promise<void>((resolve) => setTimeout(resolve, slow ? 20000 : 400))
+        return {
+          text: '{"action":"wait","reason":"stub"}',
+          latencyMs: slow ? 20000 : 400,
+          usage: { promptTokens: 1, completionTokens: 1 },
+        }
+      },
+      journalFn: () => {},
+    })
+
+    const msPerTick = MS_PER_HOUR_1X / INK_CONFIG.ticksPerHour
+    for (let i = 0; i < 300; i++) {
+      advanceTick(state, pump.brains, events, rng)
+      await vi.advanceTimersByTimeAsync(msPerTick)
+    }
+
+    const stats = pump.stats()
+    // The first hour per mind is lost to staleness; every hour after it is the model's.
+    expect(stats.stale).toBe(2)
+    // The bug this guards: abandoning a stale request used to apply a fallback to the NEW
+    // hour, claiming its slot, so the reply we then requested was dropped on arrival.
+    expect(stats.fallback).toBe(0)
+    expect(stats.llm).toBeGreaterThanOrEqual(6)
   })
 })

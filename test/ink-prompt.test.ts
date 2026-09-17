@@ -60,7 +60,7 @@ describe('ink prompt', () => {
     expect(user).not.toContain('0.37')
     expect(user).not.toContain('0.41')
     expect(user).not.toContain('0.43')
-    expect(user).toContain('Hunger 0.80')
+    expect(user).toContain('Fullness 0.80')
     expect(user).toContain('Nothing yet.')
   })
 

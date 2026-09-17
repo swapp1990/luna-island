@@ -45,6 +45,8 @@ function send(
   status: number,
   json: unknown,
 ): void {
+  // A decide whose client walked away is aborted, not answered; writing here would throw.
+  if (res.writableEnded || res.headersSent) return
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
@@ -226,6 +228,13 @@ export function inkSidecarPlugin(): Plugin {
 
             inFlight += 1
             budget.take()
+            // The browser abandons a decide that missed its sim hour. Without this the
+            // upstream call runs on and holds an in-flight slot, so a few stale hours
+            // saturate MAX_IN_FLIGHT and every later hour 429s.
+            const gone = new AbortController()
+            req.on('close', () => {
+              if (!res.writableEnded) gone.abort()
+            })
             try {
               const result = await runXaiWithDeps(body.system, body.user, {
                 apiKey: resolved.key,
@@ -233,7 +242,13 @@ export function inkSidecarPlugin(): Plugin {
                 killMs: XAI_KILL_MS,
                 jsonMode: true,
                 now: () => Date.now(),
-                fetchImpl: fetchInk,
+                fetchImpl: (url, init) =>
+                  fetchInk(url, {
+                    ...init,
+                    signal: init.signal
+                      ? AbortSignal.any([init.signal, gone.signal])
+                      : gone.signal,
+                  }),
                 sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
               })
               if (debug) {

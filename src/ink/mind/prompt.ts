@@ -96,7 +96,7 @@ export function buildSystem(name = 'A', config: InkConfigView = INK_CONFIG): str
   const facts = [
     `The town has five places: ${placeList()}.`,
     'An action only works where it works: sleep and eat at your own home, buy at the market, work at the workshop, socialize at the town centre. go_home, go_work, go_market and go_center walk you to those places. wait works anywhere.',
-    `Hunger, energy and company sit between 0 and 1 and fall every hour. Energy rises while you sleep. Company rises only while both of you are in the town centre at the same time.`,
+    `Fullness, energy and company sit between 0 and 1 and fall every hour. At 1 you are fed, rested and in company; at 0 you are starving, exhausted and alone. Eating raises fullness. Energy rises while you sleep. Company rises only while both of you are in the town centre at the same time.`,
     `Eating needs a meal in your own fridge and your fridge holds at most ${config.fridgeCapacity}.`,
     `Meals are bought at the market for ${config.mealPrice} each. The market is open ${openWindow(config.marketOpen)}.`,
     `The workshop pays ${config.wagePerHour} an hour and is open ${openWindow(config.workOpen)}.`,
@@ -130,7 +130,7 @@ export function buildUser(
   lines.push(`${selfWhere}.`)
 
   lines.push(
-    `Hunger ${obs.self.hunger.toFixed(2)}. Energy ${obs.self.energy.toFixed(2)}. Company ${obs.self.social.toFixed(2)}.`,
+    `Fullness ${obs.self.hunger.toFixed(2)}. Energy ${obs.self.energy.toFixed(2)}. Company ${obs.self.social.toFixed(2)}.`,
   )
   const money =
     Math.abs(obs.self.money - Math.round(obs.self.money)) < 1e-6

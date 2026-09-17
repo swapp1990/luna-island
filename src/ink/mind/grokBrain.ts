@@ -361,9 +361,11 @@ export function createGrokPump(deps: GrokPumpDeps): {
   function decide(mindId: MindId, _obs: ReturnType<typeof observationFor>, rng: Rng): Intent | null {
     const had = abandon(mindId)
     if (had) {
+      // The expired hour is gone; the mind spent it continuing its last action. Claiming
+      // this hour with a fallback would set appliedSlot and make the reply we are about to
+      // request undroppable-on-arrival, locking the LLM out for the rest of the run.
       stale += 1
       journal({ source: 'llm', stale: true, error: 'late' }, mindId)
-      fallbackNow(mindId, rng)
     }
     if (deps.isLive()) startRequest(mindId, rng)
     return null

@@ -9,9 +9,12 @@ import type { InkBrains, InkState, Intent, IntentSource, MindId, Vec2 } from './
 import { createWorld, fridgeOf } from './sim/world'
 import type { SceneHandle } from './render/scene'
 
-export const MS_PER_HOUR_1X = 4000
+// A live decide measures ~0.9s median and has been seen at 5.4s; 12s an hour keeps the
+// slow tail inside its own hour, so a decision is rarely wasted. Faster speeds still work,
+// they just spend more hours on the fallback brain.
+export const MS_PER_HOUR_1X = 12000
 export const MAX_TICKS_PER_FRAME = 120
-export const INK_SPEEDS = [0.25, 1, 2, 4] as const
+export const INK_SPEEDS = [0.5, 1, 2, 4] as const
 
 export interface InkMindBridge {
   id: MindId
